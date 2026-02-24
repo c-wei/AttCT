@@ -1,0 +1,18 @@
+model:
+  name: "meta-llama/Llama-3.1-8B"
+  output_attentions: true
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  learning_rate: 2e-5
+  grad_clip: 1.0
+  log_every_n_steps: 10
+  save_dir: "checkpoints"
