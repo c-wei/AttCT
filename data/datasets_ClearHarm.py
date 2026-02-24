@@ -6,7 +6,7 @@ from typing import List, Optional
 from datasets import load_dataset
 import pandas as pd
 
-from .wrappers_jailbreak import AdversarialWrapper, STRONG_JAILBREAK_TEMPLATES
+from wrappers_jailbreak import AdversarialWrapper, STRONG_JAILBREAK_TEMPLATES
 
 
 def get_prompts(source: str = "clear-harm", split: str = "train", limit: Optional[int] = None) -> List[str]:
@@ -27,7 +27,7 @@ def get_prompts(source: str = "clear-harm", split: str = "train", limit: Optiona
         try:
             print(f"--> Loading AlignmentResearch/ClearHarm (config={split})...")
             # Use streaming mode to avoid schema mismatch issues
-            ds = load_dataset("AlignmentResearch/ClearHarm", "default", split=split, streaming=True)
+            ds = load_dataset("AlignmentResearch/ClearHarm", "rep40", split=split, streaming=True)
 
             # Collect prompts from stream
             prompts_raw = []
