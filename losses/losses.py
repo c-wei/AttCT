@@ -8,6 +8,16 @@ from typing import Dict, Optional
 
 
 class ConsistencyLoss(nn.Module, ABC):
+    """
+    Abstract base class for all attention consistency loss functions.
+
+    Args:
+        weight: Global scalar multiplier applied to the final loss.
+    """
+
+    # Subclasses that don't require a clean forward pass should override this to False.
+    needs_clean_pass: bool = True
+
     def __init__(self, weight: float = 1.0):
         super().__init__()
         self.weight = weight
@@ -23,6 +33,10 @@ class ConsistencyLoss(nn.Module, ABC):
     ) -> Dict[str, torch.Tensor]:
         pass
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _jsd(p: torch.Tensor, q: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
     """
@@ -272,6 +286,12 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
     """
     Match attention outputs (attention_weights @ values) instead of just weights.
 
+    NOTE: True pre-projection attention outputs (A @ V) are not exposed by
+    HuggingFace's standard model API. This class uses residual stream hidden
+    states as the closest accessible proxy, making it functionally similar to
+    ACT (Irpan et al., 2025, Eq. 1). For a true A @ V loss, forward hooks on
+    the attention sub-module would be required.
+
     Args:
         weight: Global scalar multiplier.
     """
@@ -318,11 +338,23 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
         }
 
 
+# ---------------------------------------------------------------------------
+# Wrapper suppression loss
+# ---------------------------------------------------------------------------
+
 class WrapperEntropyRegularizationLoss(ConsistencyLoss):
     """
     Directly suppresses attention flowing to adversarial wrapper tokens.
 
-    Practical advantage: does not require a forward pass on the clean prompt.
+    Rather than holistic consistency (matching clean vs. adv patterns everywhere),
+    this loss specifically penalizes attention mass on wrapper token positions.
+    It is the most direct numerical test of the core AttCT hypothesis:
+
+        "Biases and jailbreaks work by redirecting the model's attention
+        toward the adversarial wrapper text." (Africa, SPAR Proposal)
+
+    Practical advantage: does not require a forward pass on the clean prompt,
+    halving memory cost per training step compared to paired-output losses.
 
     Args:
         weight:        Global scalar multiplier.
@@ -330,6 +362,8 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
                        comparable across prompts with different wrapper sizes.
         layer_weights: "uniform", "linear_decay", or "exponential_decay".
     """
+
+    needs_clean_pass: bool = False  # only needs the adversarial forward pass
 
     def __init__(
         self,
@@ -406,7 +440,9 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
     Combines KL divergence on attention weights with L2 on hidden states.
 
     Targets two different levels simultaneously: AttCT (attention weights)
-    and ACT-style (hidden states). 
+    and ACT-style (hidden states). Irpan et al. (2025, §5, Figure 4) show
+    that attention-based and output-based losses produce different gradient
+    updates, suggesting they may be complementary rather than redundant.
 
     Args:
         weight:        Global scalar multiplier.
