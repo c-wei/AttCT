@@ -34,17 +34,18 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.yaml")
-    args = parser.parse_args()
+    # TODO: complete later
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--config", default="config.yaml")
+    # args = parser.parse_args()
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
 
-    if args.config != "config.yaml":
-        with open(args.config) as f:
-            overrides = yaml.safe_load(f)
-        config = _deep_merge(config, {k: v for k, v in overrides.items() if k != "defaults"})
+    # if args.config != "config.yaml":
+    #     with open(args.config) as f:
+    #         overrides = yaml.safe_load(f)
+    #     config = _deep_merge(config, {k: v for k, v in overrides.items() if k != "defaults"})
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
