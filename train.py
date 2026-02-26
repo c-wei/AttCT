@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -42,8 +43,10 @@ class Trainer:
         self.output_attentions = model_cfg.get("output_attentions", True)
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
 
-        # Losses that don't need a clean (WrapperEntropyRegularizationLoss) forward pass declare needs_clean_pass=False
+        # Losses that don't need a clean forward pass declare needs_clean_pass=False
         self.needs_clean_pass = loss_fn.needs_clean_pass
+
+        self.save_dir = train_cfg.get("save_dir")
 
         self.optimizer = AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
@@ -61,8 +64,12 @@ class Trainer:
     def _step(self, batch):
         wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
         wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
-        start_index            = int(batch["start_index"][0].item())
-        clean_len              = int(batch["clean_len"][0].item())
+        # Assert uniform within batch — if your data pipeline produces heterogeneous
+        # start_index/clean_len values, batches must be grouped by wrapper length.
+        assert batch["start_index"].unique().numel() == 1,             "All items in a batch must have the same start_index. Group by wrapper length."
+        assert batch["clean_len"].unique().numel() == 1,             "All items in a batch must have the same clean_len. Group by wrapper length."
+        start_index = int(batch["start_index"][0].item())
+        clean_len   = int(batch["clean_len"][0].item())
 
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
 
@@ -114,15 +121,26 @@ class Trainer:
 
             avg = epoch_loss / len(self.dataloader)
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+            self._save_checkpoint(epoch)
 
         print("Training complete.")
 
+    def _save_checkpoint(self, epoch: int):
+        if self.save_dir is None:
+            return
+        os.makedirs(self.save_dir, exist_ok=True)
+        path = os.path.join(self.save_dir, f"epoch_{epoch}")
+        self.model.save_pretrained(path)
+        print(f"Checkpoint saved to {path}")
+
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
-        mean_layer = loss_dict.get("mean_layer_loss", "—")
+        mean_layer = loss_dict.get("mean_layer_loss")
         wrapper_att = loss_dict.get("mean_wrapper_attention")
 
-        line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}  mean_layer_loss: {mean_layer:.4f}"
+        line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}"
+        if mean_layer is not None:
+            line += f"  mean_layer_loss: {mean_layer:.4f}"
         if wrapper_att is not None:
             line += f"  mean_wrapper_attn: {wrapper_att:.4f}"
         print(line)
