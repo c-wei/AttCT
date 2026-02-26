@@ -1,5 +1,3 @@
-"""Attention Consistency Loss Functions (AttCT)"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,8 +12,6 @@ class ConsistencyLoss(nn.Module, ABC):
     Args:
         weight: Global scalar multiplier applied to the final loss.
     """
-
-    # Subclasses that don't require a clean forward pass should override this to False.
     needs_clean_pass: bool = True
 
     def __init__(self, weight: float = 1.0):
@@ -74,10 +70,6 @@ def _get_layer_weight(layer_weights_type: str, layer_idx: int, total_layers: int
 class AttentionConsistencyLoss(ConsistencyLoss):
     """
     Enforces consistent attention patterns between clean and adversarial prompts.
-
-    Computes either L2 (MSE) or KL divergence between attention weight matrices
-    at each layer, slicing the adversarial sequence to align with the clean prompt
-    region. This is the core AttCT loss described in the SPAR proposal.
 
     Args:
         weight:          Global scalar multiplier.
@@ -158,11 +150,6 @@ class AttentionConsistencyLoss(ConsistencyLoss):
 class AttentionConsistencyLossV2(ConsistencyLoss):
     """
     Attention consistency loss that operates on head-averaged attention distributions.
-
-    Averages over attention heads before enforcing consistency, rather than
-    enforcing per-head consistency. May be more robust to head specialization
-    (where different heads legitimately attend differently), while still
-    preventing wrapper text from shifting the aggregate information-gathering pattern.
 
     Args:
         weight:        Global scalar multiplier.
@@ -277,27 +264,22 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
             'mean_layer_loss': sum(layer_losses) / len(layer_losses)
         }
 
-
-# ---------------------------------------------------------------------------
-# Hidden state / attention output losses
-# ---------------------------------------------------------------------------
-
 class AttentionOutputConsistencyLoss(ConsistencyLoss):
     """
     Match attention outputs (attention_weights @ values) instead of just weights.
 
-    NOTE: True pre-projection attention outputs (A @ V) are not exposed by
-    HuggingFace's standard model API. This class uses residual stream hidden
-    states as the closest accessible proxy, making it functionally similar to
-    ACT (Irpan et al., 2025, Eq. 1). For a true A @ V loss, forward hooks on
-    the attention sub-module would be required.
+    Requires output_hidden_states=True in config.
 
     Args:
         weight: Global scalar multiplier.
     """
 
-    def __init__(self, weight: float = 1.0):
+    def __init__(self, weight: float = 1.0, output_hidden_states: bool = False):
         super().__init__(weight)
+        if not output_hidden_states:
+            raise ValueError(
+                "AttentionOutputConsistencyLoss requires output_hidden_states=True in config."
+            )
 
     def forward(
         self,
@@ -338,20 +320,12 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
         }
 
 
-# ---------------------------------------------------------------------------
-# Wrapper suppression loss
-# ---------------------------------------------------------------------------
-
 class WrapperEntropyRegularizationLoss(ConsistencyLoss):
     """
     Directly suppresses attention flowing to adversarial wrapper tokens.
 
     Rather than holistic consistency (matching clean vs. adv patterns everywhere),
     this loss specifically penalizes attention mass on wrapper token positions.
-    It is the most direct numerical test of the core AttCT hypothesis:
-
-        "Biases and jailbreaks work by redirecting the model's attention
-        toward the adversarial wrapper text." (Africa, SPAR Proposal)
 
     Practical advantage: does not require a forward pass on the clean prompt,
     halving memory cost per training step compared to paired-output losses.
@@ -430,11 +404,6 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
             'mean_wrapper_attention': sum(wrapper_attention_totals) / len(wrapper_attention_totals)
         }
 
-
-# ---------------------------------------------------------------------------
-# Combined losses
-# ---------------------------------------------------------------------------
-
 class CombinedAttentionConsistencyLoss(ConsistencyLoss):
     """
     Combines KL divergence on attention weights with L2 on hidden states.
@@ -454,9 +423,14 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         kl_weight: float = 0.5,
-        output_weight: float = 0.5
+        output_weight: float = 0.5,
+        output_hidden_states: bool = False
     ):
         super().__init__(weight)
+        if not output_hidden_states:
+            raise ValueError(
+                "CombinedAttentionConsistencyLoss requires output_hidden_states=True in config."
+            )
         self.kl_weight = kl_weight
         self.output_weight = output_weight
 
