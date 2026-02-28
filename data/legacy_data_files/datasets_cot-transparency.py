@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import Dataset
 from typing import List, Literal, Optional
 
-from wrappers_sycophancy import AdversarialWrapper, SYCOPHANCY_TEMPLATES
+from AttCT.data.legacy_data_files.wrappers_sycophancy import AdversarialWrapper, SYCOPHANCY_TEMPLATES
 
 
 def _read_jsonl_user_messages(path: str | Path) -> List[str]:
