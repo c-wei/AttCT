@@ -27,7 +27,7 @@ def _load_module(module_name: str, file_name: str):
 
 datasets_ct = _load_module("datasets_cot_transparency_mod", "datasets_cot-transparency.py")
 
-from wrappers_sycophancy import (  # noqa: E402
+from AttCT.data.legacy_data_files.wrappers_sycophancy import (  # noqa: E402
     AdversarialWrapper,
     IdentityWrapper,
     SYCOPHANCY_TEMPLATES,
