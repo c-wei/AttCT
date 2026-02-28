@@ -9,7 +9,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from wrappers_jailbreak import (
+from AttCT.data.legacy_data_files.wrappers_jailbreak import (
     AdversarialWrapper,
     IdentityWrapper,
     STRONG_JAILBREAK_TEMPLATES,
@@ -17,7 +17,7 @@ from wrappers_jailbreak import (
     BIAS_TEMPLATES,
     REFUSAL_KEYWORDS,
 )
-from datasets_ClearHarm import (
+from AttCT.data.legacy_data_files.datasets_ClearHarm import (
     get_prompts,
     AttCTDataset,
     collate_fn_batch1,
