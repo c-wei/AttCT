@@ -12,12 +12,14 @@ from .wrappers import (
 )
 from .attct_datasets import (
     AttCTDataset,
+    get_dataloader,
     get_prompts,
     collate_fn_batch1,
 )
 
 __all__ = [
     'AttCTDataset',
+    'get_dataloader',
     'get_prompts',
     'collate_fn_batch1',
     'AdversarialWrapper',
