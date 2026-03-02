@@ -1,11 +1,12 @@
 """Dataset classes for consistency training (unified jailbreak + sycophancy)."""
 
 import json
+from functools import partial
 from pathlib import Path
 from typing import List, Literal, Optional
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 
 try:
     from datasets import load_dataset as _hf_load_dataset
@@ -294,6 +295,41 @@ class AttCTDataset(Dataset):
 # ==========================================
 # COLLATE FUNCTIONS
 # ==========================================
+
+def get_dataloader(config: dict, split: str = "train") -> DataLoader:
+    """
+    Build a DataLoader from config. Expects an optional `data` section in config:
+        data:
+          source: "hardcoded" | "clear-harm" | "sycophancy_bct" | <file path>
+          limit: <int>          # optional, caps number of prompts
+          mode: "jailbreak" | "sycophancy"
+          batch_size: 1         # must be 1 for current collate logic
+
+    The tokenizer is loaded from config["model"]["name"].
+    """
+    from transformers import AutoTokenizer
+
+    data_cfg = config.get("data", {})
+    source = data_cfg.get("source", "hardcoded")
+    limit = data_cfg.get("limit", None)
+    mode = data_cfg.get("mode", "jailbreak")
+    batch_size = data_cfg.get("batch_size", 1)
+
+    tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    prompts = get_prompts(source=source, split=split, limit=limit)
+    dataset = AttCTDataset(prompts, tokenizer, mode=mode)
+    collate = partial(collate_fn_batch1, mode=mode)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(split == "train"),
+        collate_fn=collate,
+    )
+
 
 def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbreak"):
     """
