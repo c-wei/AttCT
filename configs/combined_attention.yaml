@@ -1,0 +1,11 @@
+# Requires output_hidden_states: true — overrides base config.
+# Logs kl_loss and l2_loss separately to wandb.
+model:
+  output_hidden_states: true
+
+loss:
+  name: "CombinedAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    kl_weight: 0.5
+    output_weight: 0.5
