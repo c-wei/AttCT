@@ -24,3 +24,8 @@ loss:
     layer_weights: "uniform"
     slice_strategy: "full_matrix"
     distance_metric: "l2"
+
+data:
+  source: "clear-harm"
+  mode: "jailbreak"
+  batch_size: 1

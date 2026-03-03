@@ -85,7 +85,8 @@ class AttentionConsistencyLoss(ConsistencyLoss):
         weight: float = 1.0,
         layer_weights: str = "uniform",
         slice_strategy: str = "full_matrix",
-        distance_metric: str = "l2"
+        distance_metric: str = "l2",
+        **kwargs
     ):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
@@ -156,7 +157,7 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         kl_divergence: If True, use KL divergence; otherwise MSE.
     """
 
-    def __init__(self, weight: float = 1.0, kl_divergence: bool = False):
+    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, **kwargs):
         super().__init__(weight)
         self.use_kl = kl_divergence
 
@@ -219,7 +220,7 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         layer_weights: "uniform", "linear_decay", or "exponential_decay".
     """
 
-    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform"):
+    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", **kwargs):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
 
@@ -274,7 +275,7 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
         weight: Global scalar multiplier.
     """
 
-    def __init__(self, weight: float = 1.0, output_hidden_states: bool = False):
+    def __init__(self, weight: float = 1.0, output_hidden_states: bool = False, **kwargs):
         super().__init__(weight)
         if not output_hidden_states:
             raise ValueError(
@@ -343,7 +344,8 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         normalize: bool = True,
-        layer_weights: str = "uniform"
+        layer_weights: str = "uniform",
+        **kwargs
     ):
         super().__init__(weight)
         self.normalize = normalize
@@ -424,7 +426,8 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         weight: float = 1.0,
         kl_weight: float = 0.5,
         output_weight: float = 0.5,
-        output_hidden_states: bool = False
+        output_hidden_states: bool = False,
+        **kwargs
     ):
         super().__init__(weight)
         if not output_hidden_states:
@@ -511,7 +514,8 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         jsd_weight: float = 0.5,
-        wrapper_weight: float = 0.5
+        wrapper_weight: float = 0.5,
+        **kwargs
     ):
         super().__init__(weight)
         self._jsd_loss     = JSDAttentionConsistencyLoss(weight=1.0)
