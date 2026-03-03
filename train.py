@@ -1,5 +1,6 @@
 import os
 import torch
+import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
@@ -135,12 +136,28 @@ class Trainer:
 
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
-        mean_layer = loss_dict.get("mean_layer_loss")
-        wrapper_att = loss_dict.get("mean_wrapper_attention")
+
+        metrics = {
+            "train/loss": loss_val,
+            "train/epoch": epoch,
+        }
+        if "mean_layer_loss" in loss_dict:
+            metrics["train/mean_layer_loss"] = loss_dict["mean_layer_loss"]
+        if "mean_wrapper_attention" in loss_dict:
+            metrics["train/mean_wrapper_attention"] = loss_dict["mean_wrapper_attention"]
+        if "kl_loss" in loss_dict:
+            metrics["train/kl_loss"] = loss_dict["kl_loss"]
+        if "output_loss" in loss_dict:
+            metrics["train/l2_loss"] = loss_dict["output_loss"]
+        if "jsd_loss" in loss_dict:
+            metrics["train/jsd_loss"] = loss_dict["jsd_loss"]
+        if "wrapper_loss" in loss_dict:
+            metrics["train/wrapper_loss"] = loss_dict["wrapper_loss"]
+        wandb.log(metrics, step=step)
 
         line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}"
-        if mean_layer is not None:
-            line += f"  mean_layer_loss: {mean_layer:.4f}"
-        if wrapper_att is not None:
-            line += f"  mean_wrapper_attn: {wrapper_att:.4f}"
+        if "mean_layer_loss" in loss_dict:
+            line += f"  mean_layer_loss: {loss_dict['mean_layer_loss']:.4f}"
+        if "mean_wrapper_attention" in loss_dict:
+            line += f"  mean_wrapper_attn: {loss_dict['mean_wrapper_attention']:.4f}"
         print(line)

@@ -1,4 +1,5 @@
 import torch
+import wandb
 from torch.utils.data import DataLoader
 
 class Evaluator:
@@ -98,6 +99,14 @@ class Evaluator:
         return results
 
     def _report(self, results: dict):
+        metrics = {"eval/mean_loss": results["mean_loss"]}
+        if "mean_wrapper_attention" in results:
+            metrics["eval/mean_wrapper_attention"] = results["mean_wrapper_attention"]
+        if "mean_layer_losses" in results:
+            for i, l in enumerate(results["mean_layer_losses"]):
+                metrics[f"eval/layer_{i:02d}_loss"] = l
+        wandb.log(metrics)
+
         print(f"\n--- Eval Results [{self.loss_fn.__class__.__name__}] ---")
         print(f"  mean_loss: {results['mean_loss']:.4f}")
 
