@@ -49,7 +49,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     lora_cfg = config["lora"]
-    model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation="eager")
     model = get_peft_model(model, LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=lora_cfg["r"],
@@ -61,7 +61,10 @@ def main():
     model.print_trainable_parameters()
 
     loss_cfg = config["loss"]
-    loss_fn = LOSS_REGISTRY[loss_cfg["name"]](weight=loss_cfg.get("weight", 1.0), **loss_cfg.get("kwargs", {}))
+    loss_name = loss_cfg["name"]
+    loss_kwargs = loss_cfg.get("kwargs", {})
+    loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
+    loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
