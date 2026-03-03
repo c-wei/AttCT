@@ -1,6 +1,7 @@
 import argparse
 import yaml
 import torch
+import wandb
 from transformers import AutoModelForCausalLM
 from peft import get_peft_model, LoraConfig, TaskType
 
@@ -66,10 +67,13 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
+    wandb.init(project="AttCT", name=loss_name, config=config)
+
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
     Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
