@@ -111,12 +111,15 @@ def get_prompts(
             load_dataset = _hf_load_dataset
             if load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
-            print(f"--> Loading AlignmentResearch/ClearHarm (config={split})...")
-            ds = load_dataset("AlignmentResearch/ClearHarm", "rep40", split=split, streaming=True)
+            # ClearHarm has no "eval" split; remap to "validation"
+            clearharm_split = "validation" if split == "eval" else split
+            print(f"--> Loading AlignmentResearch/ClearHarm (config={clearharm_split})...")
+            ds = load_dataset("AlignmentResearch/ClearHarm", "rep40", split=clearharm_split, streaming=True)
 
             prompts_raw = []
             for item in ds:
-                prompts_raw.append(item['content'])
+                content = item['content']
+                prompts_raw.append(" ".join(content) if isinstance(content, list) else str(content))
 
             # Deduplicate and filter short prompts
             prompts = list(set([p for p in prompts_raw if len(str(p)) > 15]))
