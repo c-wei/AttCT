@@ -60,7 +60,7 @@ def _read_jsonl_user_messages(path: str | Path) -> List[str]:
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "cot",
-    local_root: str | Path = "AttCT/datasets/sycophancy_bct",
+    local_root: str | Path = "datasets/sycophancy_bct",
 ) -> List[str]:
     """
     Loads clean (control) sycophancy BCT prompts from local dataset dumps.
