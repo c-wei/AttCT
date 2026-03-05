@@ -496,6 +496,150 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         }
 
 
+class ActivationConsistencyLoss(ConsistencyLoss):
+    """
+    Enforces consistent residual stream activations between clean and adversarial prompts.
+
+    Comparison baseline — constrains what is *computed* (hidden states) rather than
+    what information is *selected* (AttCT attention weights).
+
+    Args:
+        weight:          Global scalar multiplier.
+        layer_selection: "all", "last", "middle", or a list of layer indices.
+        normalize:       If True, L2-normalize activations before comparison.
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        layer_selection: str = "all",
+        normalize: bool = False,
+        **kwargs
+    ):
+        super().__init__(weight)
+        self.layer_selection = layer_selection
+        self.normalize = normalize
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_len: int,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
+            raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
+
+        num_layers = len(clean_outputs.hidden_states)
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last":
+            layer_indices = [num_layers - 1]
+        elif self.layer_selection == "middle":
+            layer_indices = [num_layers // 2]
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last', 'middle', or a list of indices."
+            )
+
+        total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
+        layer_losses = []
+        end_index = start_index + clean_len
+
+        for layer_idx in layer_indices:
+            clean_hidden = clean_outputs.hidden_states[layer_idx]
+            adv_hidden   = adv_outputs.hidden_states[layer_idx]
+
+            sliced_adv = adv_hidden[:, start_index:end_index, :]
+            min_len = min(clean_hidden.shape[1], sliced_adv.shape[1])
+
+            aligned_clean = clean_hidden[:, :min_len, :].detach()
+            aligned_adv   = sliced_adv[:, :min_len, :]
+
+            if self.normalize:
+                aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
+                aligned_adv   = F.normalize(aligned_adv,   p=2, dim=-1)
+
+            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            total_loss = total_loss + layer_loss
+            layer_losses.append(layer_loss.item())
+
+        avg_loss = total_loss / len(layer_indices)
+
+        return {
+            'loss': self.weight * avg_loss,
+            'layer_losses': layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
+            'num_layers_used': len(layer_indices),
+        }
+
+
+class BehavioralConsistencyLoss(ConsistencyLoss):
+    """
+    Enforces consistent output distributions between clean and adversarial prompts.
+
+    Most downstream consistency constraint — only matches final logits without
+    constraining internal computation.
+
+    Args:
+        weight:      Global scalar multiplier.
+        loss_type:   "kl" (KL divergence), "mse" (direct logit MSE), or "ce" (cross-entropy).
+        temperature: Temperature for softening distributions before comparison.
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        loss_type: str = "kl",
+        temperature: float = 1.0,
+        **kwargs
+    ):
+        super().__init__(weight)
+        self.loss_type = loss_type
+        self.temperature = temperature
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_len: int,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        # logits are always computed; no extra config flag needed
+        clean_logits = clean_outputs.logits[:, -1, :] / self.temperature
+        adv_logits   = adv_outputs.logits[:, start_index + clean_len - 1, :] / self.temperature
+
+        # Compute probs once — reused for both loss and monitoring metrics
+        clean_probs = F.softmax(clean_logits.detach(), dim=-1)
+        adv_probs   = F.softmax(adv_logits.detach(),   dim=-1)
+
+        if self.loss_type == "kl":
+            adv_log_probs = F.log_softmax(adv_logits, dim=-1)
+            loss = F.kl_div(adv_log_probs, clean_probs, reduction='batchmean')
+        elif self.loss_type == "mse":
+            loss = F.mse_loss(adv_logits, clean_logits.detach())
+        elif self.loss_type == "ce":
+            adv_log_probs = F.log_softmax(adv_logits, dim=-1)
+            loss = -(clean_probs * adv_log_probs).sum(dim=-1).mean()
+        else:
+            raise ValueError(f"Unknown loss_type: '{self.loss_type}'. Choose 'kl', 'mse', or 'ce'.")
+
+        with torch.no_grad():
+            top1_agreement = (clean_probs.argmax(dim=-1) == adv_probs.argmax(dim=-1)).float().mean()
+            js_divergence  = _jsd(clean_probs, adv_probs)
+
+        return {
+            'loss': self.weight * loss,
+            'top1_agreement': top1_agreement.item(),
+            'js_divergence':  js_divergence.item(),
+        }
+
+
 class CombinedJSDWrapperLoss(ConsistencyLoss):
     """
     Combines JSD attention consistency with wrapper entropy suppression.

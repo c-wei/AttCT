@@ -3,6 +3,7 @@ import torch
 import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class Trainer:
@@ -39,6 +40,7 @@ class Trainer:
         self.epochs = train_cfg["epochs"]
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.grad_accumulation = train_cfg.get("grad_accumulation_steps", 1)
 
         model_cfg = config["model"]
         self.output_attentions = model_cfg.get("output_attentions", True)
@@ -77,7 +79,8 @@ class Trainer:
         if self.needs_clean_pass:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
-            clean_outputs        = self._forward(clean_input_ids, clean_attention_mask)
+            with torch.no_grad():
+                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
         else:
             clean_outputs = None
 
@@ -96,26 +99,29 @@ class Trainer:
     def train(self):
         self.model.train()
         global_step = 0
+        self.optimizer.zero_grad()
 
         for epoch in range(1, self.epochs + 1):
             epoch_loss = 0.0
 
-            for batch in self.dataloader:
-                self.optimizer.zero_grad()
-
+            pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
+            for step_idx, batch in enumerate(pbar):
                 loss_dict = self._step(batch)
-                loss = loss_dict["loss"]
-
+                loss = loss_dict["loss"] / self.grad_accumulation
                 loss.backward()
 
-                if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.grad_clip
-                    )
+                if (step_idx + 1) % self.grad_accumulation == 0:
+                    if self.grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.grad_clip
+                        )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
-                self.optimizer.step()
                 global_step += 1
-                epoch_loss += loss.item()
+                loss_val = loss_dict["loss"].item()
+                epoch_loss += loss_val
+                pbar.set_postfix(loss=f"{loss_val:.4f}")
 
                 if global_step % self.log_every == 0:
                     self._log(epoch, global_step, loss_dict)
@@ -153,11 +159,23 @@ class Trainer:
             metrics["train/jsd_loss"] = loss_dict["jsd_loss"]
         if "wrapper_loss" in loss_dict:
             metrics["train/wrapper_loss"] = loss_dict["wrapper_loss"]
+        if "top1_agreement" in loss_dict:
+            metrics["train/top1_agreement"] = loss_dict["top1_agreement"]
+        if "js_divergence" in loss_dict:
+            metrics["train/js_divergence"] = loss_dict["js_divergence"]
+        if "num_layers_used" in loss_dict:
+            metrics["train/num_layers_used"] = loss_dict["num_layers_used"]
         wandb.log(metrics, step=step)
 
         line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}"
         if "mean_layer_loss" in loss_dict:
             line += f"  mean_layer_loss: {loss_dict['mean_layer_loss']:.4f}"
+        if "num_layers_used" in loss_dict:
+            line += f"  layers: {loss_dict['num_layers_used']}"
         if "mean_wrapper_attention" in loss_dict:
             line += f"  mean_wrapper_attn: {loss_dict['mean_wrapper_attention']:.4f}"
+        if "top1_agreement" in loss_dict:
+            line += f"  top1_agree: {loss_dict['top1_agreement']:.4f}"
+        if "js_divergence" in loss_dict:
+            line += f"  js_div: {loss_dict['js_divergence']:.4f}"
         print(line)

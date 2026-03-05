@@ -13,6 +13,8 @@ from losses.losses import (
     CombinedAttentionConsistencyLoss,
     WrapperEntropyRegularizationLoss,
     CombinedJSDWrapperLoss,
+    ActivationConsistencyLoss,
+    BehavioralConsistencyLoss,
 )
 from data import get_dataloader
 from train import Trainer
@@ -26,6 +28,8 @@ LOSS_REGISTRY = {
     "CombinedAttentionConsistencyLoss": CombinedAttentionConsistencyLoss,
     "WrapperEntropyRegularizationLoss": WrapperEntropyRegularizationLoss,
     "CombinedJSDWrapperLoss":           CombinedJSDWrapperLoss,
+    "ActivationConsistencyLoss":        ActivationConsistencyLoss,
+    "BehavioralConsistencyLoss":        BehavioralConsistencyLoss,
 }
 
 def _deep_merge(base: dict, override: dict) -> dict:
