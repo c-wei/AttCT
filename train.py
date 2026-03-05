@@ -119,8 +119,9 @@ class Trainer:
                     self.optimizer.zero_grad()
 
                 global_step += 1
-                epoch_loss += loss_dict["loss"].item()
-                pbar.set_postfix(loss=f"{loss_dict['loss'].item():.4f}")
+                loss_val = loss_dict["loss"].item()
+                epoch_loss += loss_val
+                pbar.set_postfix(loss=f"{loss_val:.4f}")
 
                 if global_step % self.log_every == 0:
                     self._log(epoch, global_step, loss_dict)

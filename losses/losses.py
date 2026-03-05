@@ -541,7 +541,10 @@ class ActivationConsistencyLoss(ConsistencyLoss):
         elif isinstance(self.layer_selection, (list, tuple)):
             layer_indices = list(self.layer_selection)
         else:
-            layer_indices = list(range(num_layers))
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last', 'middle', or a list of indices."
+            )
 
         total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
         layer_losses = []
@@ -611,29 +614,24 @@ class BehavioralConsistencyLoss(ConsistencyLoss):
         clean_logits = clean_outputs.logits[:, -1, :] / self.temperature
         adv_logits   = adv_outputs.logits[:, start_index + clean_len - 1, :] / self.temperature
 
+        # Compute probs once — reused for both loss and monitoring metrics
+        clean_probs = F.softmax(clean_logits.detach(), dim=-1)
+        adv_probs   = F.softmax(adv_logits.detach(),   dim=-1)
+
         if self.loss_type == "kl":
-            clean_probs   = F.softmax(clean_logits.detach(), dim=-1)
             adv_log_probs = F.log_softmax(adv_logits, dim=-1)
             loss = F.kl_div(adv_log_probs, clean_probs, reduction='batchmean')
         elif self.loss_type == "mse":
             loss = F.mse_loss(adv_logits, clean_logits.detach())
         elif self.loss_type == "ce":
-            clean_probs   = F.softmax(clean_logits.detach(), dim=-1)
             adv_log_probs = F.log_softmax(adv_logits, dim=-1)
             loss = -(clean_probs * adv_log_probs).sum(dim=-1).mean()
         else:
             raise ValueError(f"Unknown loss_type: '{self.loss_type}'. Choose 'kl', 'mse', or 'ce'.")
 
-        # Metrics (computed from undetached logits for monitoring only)
         with torch.no_grad():
-            clean_probs = F.softmax(clean_logits, dim=-1)
-            adv_probs   = F.softmax(adv_logits,   dim=-1)
             top1_agreement = (clean_probs.argmax(dim=-1) == adv_probs.argmax(dim=-1)).float().mean()
-            m = 0.5 * (clean_probs + adv_probs)
-            js_divergence = (
-                0.5 * F.kl_div(clean_probs.log(), m, reduction='batchmean') +
-                0.5 * F.kl_div(adv_probs.log(),   m, reduction='batchmean')
-            )
+            js_divergence  = _jsd(clean_probs, adv_probs)
 
         return {
             'loss': self.weight * loss,
