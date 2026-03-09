@@ -43,9 +43,6 @@ class Evaluator:
         all_layer_losses = []
         total_wrapper_attn = 0.0
         has_wrapper_attn = False
-        total_top1_agreement = 0.0
-        total_js_divergence = 0.0
-        has_bct_metrics = False
 
         for batch in tqdm(self.dataloader, desc="Eval", leave=False):
             wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
@@ -85,11 +82,6 @@ class Evaluator:
                 total_wrapper_attn += loss_dict["mean_wrapper_attention"]
                 has_wrapper_attn = True
 
-            if "top1_agreement" in loss_dict:
-                total_top1_agreement += loss_dict["top1_agreement"]
-                total_js_divergence  += loss_dict["js_divergence"]
-                has_bct_metrics = True
-
         n_batches = len(self.dataloader)
         results = {"mean_loss": total_loss / n_batches}
 
@@ -103,10 +95,6 @@ class Evaluator:
         if has_wrapper_attn:
             results["mean_wrapper_attention"] = total_wrapper_attn / n_batches
 
-        if has_bct_metrics:
-            results["top1_agreement"] = total_top1_agreement / n_batches
-            results["js_divergence"]  = total_js_divergence  / n_batches
-
         self._report(results)
         return results
 
@@ -117,10 +105,6 @@ class Evaluator:
         if "mean_layer_losses" in results:
             for i, l in enumerate(results["mean_layer_losses"]):
                 metrics[f"eval/layer_{i:02d}_loss"] = l
-        if "top1_agreement" in results:
-            metrics["eval/top1_agreement"] = results["top1_agreement"]
-        if "js_divergence" in results:
-            metrics["eval/js_divergence"] = results["js_divergence"]
         wandb.log(metrics)
 
         print(f"\n--- Eval Results [{self.loss_fn.__class__.__name__}] ---")
@@ -133,8 +117,4 @@ class Evaluator:
 
         if "mean_wrapper_attention" in results:
             print(f"  mean_wrapper_attention: {results['mean_wrapper_attention']:.4f}")
-        if "top1_agreement" in results:
-            print(f"  top1_agreement: {results['top1_agreement']:.4f}")
-        if "js_divergence" in results:
-            print(f"  js_divergence:  {results['js_divergence']:.4f}")
         print()

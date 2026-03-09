@@ -578,68 +578,6 @@ class ActivationConsistencyLoss(ConsistencyLoss):
         }
 
 
-class BehavioralConsistencyLoss(ConsistencyLoss):
-    """
-    Enforces consistent output distributions between clean and adversarial prompts.
-
-    Most downstream consistency constraint — only matches final logits without
-    constraining internal computation.
-
-    Args:
-        weight:      Global scalar multiplier.
-        loss_type:   "kl" (KL divergence), "mse" (direct logit MSE), or "ce" (cross-entropy).
-        temperature: Temperature for softening distributions before comparison.
-    """
-
-    def __init__(
-        self,
-        weight: float = 1.0,
-        loss_type: str = "kl",
-        temperature: float = 1.0,
-        **kwargs
-    ):
-        super().__init__(weight)
-        self.loss_type = loss_type
-        self.temperature = temperature
-
-    def forward(
-        self,
-        clean_outputs,
-        adv_outputs,
-        start_index: int,
-        clean_len: int,
-        **kwargs
-    ) -> Dict[str, torch.Tensor]:
-        # logits are always computed; no extra config flag needed
-        clean_logits = clean_outputs.logits[:, -1, :] / self.temperature
-        adv_logits   = adv_outputs.logits[:, start_index + clean_len - 1, :] / self.temperature
-
-        # Compute probs once — reused for both loss and monitoring metrics
-        clean_probs = F.softmax(clean_logits.detach(), dim=-1)
-        adv_probs   = F.softmax(adv_logits.detach(),   dim=-1)
-
-        if self.loss_type == "kl":
-            adv_log_probs = F.log_softmax(adv_logits, dim=-1)
-            loss = F.kl_div(adv_log_probs, clean_probs, reduction='batchmean')
-        elif self.loss_type == "mse":
-            loss = F.mse_loss(adv_logits, clean_logits.detach())
-        elif self.loss_type == "ce":
-            adv_log_probs = F.log_softmax(adv_logits, dim=-1)
-            loss = -(clean_probs * adv_log_probs).sum(dim=-1).mean()
-        else:
-            raise ValueError(f"Unknown loss_type: '{self.loss_type}'. Choose 'kl', 'mse', or 'ce'.")
-
-        with torch.no_grad():
-            top1_agreement = (clean_probs.argmax(dim=-1) == adv_probs.argmax(dim=-1)).float().mean()
-            js_divergence  = _jsd(clean_probs, adv_probs)
-
-        return {
-            'loss': self.weight * loss,
-            'top1_agreement': top1_agreement.item(),
-            'js_divergence':  js_divergence.item(),
-        }
-
-
 class CombinedJSDWrapperLoss(ConsistencyLoss):
     """
     Combines JSD attention consistency with wrapper entropy suppression.
@@ -690,3 +628,40 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
             'wrapper_loss': wrapper_result['loss'].item(),
             'mean_wrapper_attention': wrapper_result['mean_wrapper_attention']
         }
+
+
+class SFTLoss(nn.Module):
+    """
+    Standard causal language modelling loss for BCT supervised fine-tuning.
+
+    Trains on (biased_input, unbiased_output) pairs: given a biased prompt,
+    predict the unbiased response. Question tokens are masked (-100) so the
+    loss is computed only over response tokens.
+
+    Unlike ConsistencyLoss subclasses, this requires no paired clean/adversarial
+    forward pass — BCTTrainer calls it with (logits, labels) directly.
+
+    Args:
+        weight: Global scalar multiplier.
+    """
+
+    needs_clean_pass: bool = False
+
+    def __init__(self, weight: float = 1.0, **kwargs):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            logits: [batch, seq_len, vocab_size]
+            labels: [batch, seq_len] — question tokens masked to -100
+        """
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=-100,
+        )
+        return {"loss": self.weight * loss}
