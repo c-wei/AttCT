@@ -14,10 +14,11 @@ from losses.losses import (
     WrapperEntropyRegularizationLoss,
     CombinedJSDWrapperLoss,
     ActivationConsistencyLoss,
-    BehavioralConsistencyLoss,
+    SFTLoss,
 )
 from data import get_dataloader
-from train import Trainer
+from data.attct_datasets import get_bct_dataloader
+from train import Trainer, BCTTrainer
 from evaluate import Evaluator
 
 LOSS_REGISTRY = {
@@ -29,7 +30,7 @@ LOSS_REGISTRY = {
     "WrapperEntropyRegularizationLoss": WrapperEntropyRegularizationLoss,
     "CombinedJSDWrapperLoss":           CombinedJSDWrapperLoss,
     "ActivationConsistencyLoss":        ActivationConsistencyLoss,
-    "BehavioralConsistencyLoss":        BehavioralConsistencyLoss,
+    "SFTLoss":                          SFTLoss,
 }
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -54,7 +55,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     lora_cfg = config["lora"]
-    model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation="eager")
+    needs_attn_weights = config["model"].get("output_attentions", True)
+    if needs_attn_weights:
+        attn_impl = "eager"          # FA2 cannot return attention weights
+    else:
+        try:
+            import flash_attn        # noqa: F401
+            attn_impl = "flash_attention_2"
+        except ImportError:
+            attn_impl = "sdpa"       # torch built-in, no install required
+    print(f"attn_implementation: {attn_impl}")
+    model = AutoModelForCausalLM.from_pretrained(
+        config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation=attn_impl
+    )
     model = get_peft_model(model, LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=lora_cfg["r"],
@@ -75,8 +88,17 @@ def main():
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
-    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
-    Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+
+    if isinstance(loss_fn, SFTLoss):
+        train_dl = get_bct_dataloader(config, split="train")
+        eval_dl  = get_bct_dataloader(config, split="eval")
+        BCTTrainer(model, train_dl, loss_fn, config, device).train()
+        # BCT eval: just report held-out SFT loss (BRR requires evaluate_bct.py)
+        BCTTrainer(model, eval_dl, loss_fn, config, device)._eval_loss()
+    else:
+        Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
+        Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+
     wandb.finish()
 
 if __name__ == "__main__":
