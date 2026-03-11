@@ -75,14 +75,35 @@ def main():
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
+
+    is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
+    is_sanity = config.get("data", {}).get("limit") is not None
+
+    # Pre-training baseline: evaluate with adapters disabled (= frozen θ_init / base model)
+    if is_sycophancy and not is_sanity:
+        from evaluate_sycophancy import SycophancyEvaluator
+        from transformers import AutoTokenizer
+        import os as _os
+        tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+        # Use config filename stem as run label for the CSV
+        run_label = _os.path.splitext(_os.path.basename(args.config))[0]
+        results_csv = f"/workspace/results/{run_label}_syco_results.csv"
+        print("\n=== Pre-training baseline (base model, adapters disabled) ===")
+        model.disable_adapter_layers()
+        model.eval()
+        SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
+                            results_csv=results_csv).evaluate()
+        model.enable_adapter_layers()
+
     Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
 
-    if config.get("data", {}).get("mode") == "sycophancy":
-        from evaluate_sycophancy import SycophancyEvaluator
-        from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
-        SycophancyEvaluator(model, tokenizer, device).evaluate()
+    # Post-training evaluation
+    if is_sycophancy and not is_sanity:
+        print("\n=== Post-training evaluation (trained LoRA model) ===")
+        model.eval()
+        SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
+                            results_csv=results_csv).evaluate()
 
     wandb.finish()
 

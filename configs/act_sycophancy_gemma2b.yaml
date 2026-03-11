@@ -1,0 +1,25 @@
+model:
+  name: "google/gemma-2-2b"
+  output_attentions: false
+  output_hidden_states: true
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  save_dir: "/workspace/checkpoints/act_sycophancy_gemma2b"
