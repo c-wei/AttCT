@@ -57,6 +57,15 @@ def main():
     beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=200,
                        help="Max examples per JSONL file during behavioral eval (default: 200).")
 
+    # Data source / mode overrides. These take precedence over the YAML.
+    # For sycophancy runs, --control-cot already sets source+mode implicitly.
+    # For clear-harm and hardcoded runs, pass --data-source explicitly.
+    parser.add_argument("--data-source", dest="data_source", default=None,
+                        help="Override config data.source (clear-harm | hardcoded | sycophancy_bct | <path>).")
+    parser.add_argument("--data-mode",   dest="data_mode",   default=None,
+                        choices=["jailbreak", "sycophancy"],
+                        help="Override config data.mode (jailbreak | sycophancy).")
+
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -96,6 +105,17 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # Wire data source/mode into config.
+    # Priority: --data-source/--data-mode > --control-cot (sycophancy shorthand) > YAML.
+    if args.data_source is not None:
+        config.setdefault("data", {})["source"] = args.data_source
+    elif args.control_cot_path is not None:
+        config.setdefault("data", {})["source"] = args.control_cot_path
+    if args.data_mode is not None:
+        config.setdefault("data", {})["mode"] = args.data_mode
+    elif args.control_cot_path is not None and args.data_source is None:
+        config.setdefault("data", {})["mode"] = "sycophancy"
+
     # Build BehavioralEvaluator only if all four JSONL paths were provided.
     beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
     behavioral_evaluator = None
@@ -112,9 +132,17 @@ def main():
     else:
         print("No behavioral eval paths provided. Pass all four --bct-cot/--bct-noncot/--control-cot/--control-noncot to enable.")
 
-    # Compute log directory — behavioural eval writes one file per checkpoint.
-    log_dir = config.get("logging", {}).get("log_dir", "logs")
-    import os; os.makedirs(log_dir, exist_ok=True)
+    # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
+    import os
+    _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
+    _data_source_tag = (
+        args.data_source if args.data_source is not None
+        else ("sycophancy_bct" if args.control_cot_path is not None else "unknown")
+    )
+    log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
+    os.makedirs(log_dir, exist_ok=True)
+    # Also update config so train.py writes training_data.jsonl into the same dir.
+    config.setdefault("logging", {})["log_dir"] = log_dir
 
     def make_checkpoint_fn(evaluator):
         """Return a closure that passes a per-step log_path to evaluate()."""
