@@ -439,7 +439,8 @@ class BCTDataset(Dataset):
             prompt_ids  = self.tokenizer(prompt_text, add_special_tokens=True)["input_ids"]
 
         full_ids = full_ids[:self.max_length]
-        prompt_len = min(len(prompt_ids), len(full_ids))
+        # Ensure at least one response token survives truncation
+        prompt_len = min(len(prompt_ids), len(full_ids) - 1)
 
         labels = list(full_ids)
         for i in range(prompt_len):

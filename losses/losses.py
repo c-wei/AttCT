@@ -659,9 +659,12 @@ class SFTLoss(nn.Module):
         """
         shift_logits = logits[:, :-1].contiguous()
         shift_labels = labels[:, 1:].contiguous()
+        flat_labels = shift_labels.view(-1)
+        if (flat_labels != -100).sum() == 0:
+            return {"loss": torch.zeros(1, device=logits.device, requires_grad=True).squeeze()}
         loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
+            flat_labels,
             ignore_index=-100,
         )
         return {"loss": self.weight * loss}
