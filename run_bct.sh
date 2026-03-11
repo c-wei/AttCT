@@ -14,6 +14,8 @@ set -euo pipefail
 FULL=false
 for arg in "$@"; do [[ "$arg" == "--full" ]] && FULL=true; done
 
+export PYTHONUNBUFFERED=1
+
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 TEST_ROOT="${COT_TEST_ROOT:-/workspace/cot-transparency/dataset_dumps/test}"
 RESULTS_DIR="results"
