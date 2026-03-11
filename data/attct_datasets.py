@@ -416,21 +416,20 @@ class BCTDataset(Dataset):
         has_template = getattr(self.tokenizer, "chat_template", None) is not None
 
         if has_template:
-            # Full conversation tokenised via chat template
-            full_ids = self.tokenizer.apply_chat_template(
+            # Get text via chat template, then tokenize explicitly
+            full_text = self.tokenizer.apply_chat_template(
                 [{"role": "user", "content": user_content},
                  {"role": "assistant", "content": asst_content}],
-                tokenize=True,
+                tokenize=False,
                 add_generation_prompt=False,
-                return_tensors=None,
             )
-            # Prompt-only (up to where the assistant starts generating)
-            prompt_ids = self.tokenizer.apply_chat_template(
+            prompt_text = self.tokenizer.apply_chat_template(
                 [{"role": "user", "content": user_content}],
-                tokenize=True,
+                tokenize=False,
                 add_generation_prompt=True,
-                return_tensors=None,
             )
+            full_ids   = self.tokenizer(full_text,   add_special_tokens=False)["input_ids"]
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
         else:
             # Fallback for base models without a chat template
             prompt_text = f"User: {user_content}\nAssistant: "
