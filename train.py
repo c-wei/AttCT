@@ -30,7 +30,6 @@ class Trainer:
         checkpoint_fn:   Optional callable(global_step: int) -> None.
                          Called at three evenly-spaced steps during training:
                          ~33%, ~66%, and 100% of total optimizer steps.
-                         Intended for behavioral evaluation at checkpoints.
     """
 
     def __init__(
@@ -68,12 +67,15 @@ class Trainer:
         # IO logging — open file handle if path provided, else None
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
 
+        # For end-of-training per-layer delta summary.
+        # Populated on first and last log step that contains layer_losses.
+        self._first_layer_losses: list = []
+        self._last_layer_losses:  list = []
+
         # Compute the three step indices at which behavioral eval fires.
         # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
         # We use integer division throughout; the final checkpoint is always the
         # last optimizer step, so behavioral eval always runs at end-of-training.
-        #
-        # Example: 1000 steps total → checkpoints at steps 333, 666, 1000.
         batches_per_epoch = len(dataloader)
         total_batches = batches_per_epoch * self.epochs
         total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
@@ -182,6 +184,16 @@ class Trainer:
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
 
         print("Training complete.")
+        if self._first_layer_losses and self._last_layer_losses:
+            print("\n── Per-layer loss change (first log → last log) ──")
+            for i, (first, last) in enumerate(zip(self._first_layer_losses, self._last_layer_losses)):
+                delta = last - first
+                direction = "↓" if delta < 0 else ("↑" if delta > 0 else "→")
+                print(f"  Layer {i:02d}: {first:.4f} → {last:.4f}  ({direction} {abs(delta):.4f})")
+            total_first = sum(self._first_layer_losses)
+            total_last  = sum(self._last_layer_losses)
+            print(f"  {'Total':>8}: {total_first:.4f} → {total_last:.4f}  ({'↓' if total_last < total_first else '↑'} {abs(total_last - total_first):.4f})")
+            print("──────────────────────────────────────────────────")
         if self._log_io_file is not None:
             self._log_io_file.close()
 
@@ -246,6 +258,10 @@ class Trainer:
         if "layer_losses" in loss_dict:
             for i, layer_loss in enumerate(loss_dict["layer_losses"]):
                 metrics[f"train/layer_{i:02d}_loss"] = layer_loss
+            # Track first and last observation for end-of-training delta summary.
+            if not self._first_layer_losses:
+                self._first_layer_losses = list(loss_dict["layer_losses"])
+            self._last_layer_losses = list(loss_dict["layer_losses"])
 
         wandb.log(metrics, step=step)
 
