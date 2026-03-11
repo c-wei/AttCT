@@ -37,6 +37,9 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--log-io", metavar="FILE", default=None,
+                        help="Write every model input (clean + wrapped) and its greedy-decoded "
+                             "response to FILE as JSONL. One JSON object per forward pass.")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -71,7 +74,14 @@ def main():
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
-    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
+
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device,
+            log_io_path=args.log_io, tokenizer=tokenizer).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
     wandb.finish()
 
