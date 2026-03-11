@@ -11,7 +11,6 @@ _ANSWER_LETTER_RE = re.compile(r"[Tt]he best answer is:\s*\(([A-E])\)")
 # Appended after the assistant header to prime the model for answer-letter prediction.
 _ANSWER_PREFIX = "The best answer is: ("
 
-
 def _parse_ground_truth(assistant_content: str) -> Optional[str]:
     """Extract the correct answer letter from the assistant response."""
     m = _ANSWER_LETTER_RE.search(assistant_content)
@@ -50,7 +49,7 @@ class BehavioralEvaluator:
         self.bct_noncot_path     = beval_cfg.get("bct_noncot_path")
         self.control_cot_path    = beval_cfg.get("control_cot_path")
         self.control_noncot_path = beval_cfg.get("control_noncot_path")
-        self.max_samples         = beval_cfg.get("max_samples", 500)
+        self.max_samples         = beval_cfg.get("max_samples", 200)
 
         # Pre-compute and cache the answer prefix token IDs.
         # These are appended after the assistant header to prime the model.
@@ -104,8 +103,8 @@ class BehavioralEvaluator:
         input_ids = self.tokenizer.apply_chat_template(
             [{"role": "user", "content": user_content}],
             tokenize=True,
-            add_generation_prompt=True, # adds <|start_header_id|>assistant<|end_header_id|>\n\n
-        )["input_ids"]
+            add_generation_prompt=True,  # adds <|start_header_id|>assistant<|end_header_id|>\n\n
+        )
 
         # Append answer prefix: "The best answer is: ("
         # Now the model predicts what comes after "(" — the answer letter.
@@ -124,11 +123,18 @@ class BehavioralEvaluator:
         return max(letter_logits, key=letter_logits.get)
 
     @torch.no_grad()
-    def _evaluate_file(self, path: str) -> dict:
+    def _evaluate_file(
+        self,
+        path: str,
+        split_name: str,
+        log_file=None,
+    ) -> dict:
         """
         Evaluate one JSONL file. Returns accuracy and counts.
 
         Skips examples where ground truth can't be parsed.
+        If log_file is provided, writes one JSONL record per example:
+          split, input_text, ground_truth, predicted, correct
         """
         examples = self._load_jsonl(path)
         correct = 0
@@ -146,9 +152,21 @@ class BehavioralEvaluator:
                 continue
 
             predicted = self._predict_answer(user_content)
-            if predicted == gt:
+            is_correct = (predicted == gt)
+            if is_correct:
                 correct += 1
             total += 1
+
+            if log_file is not None:
+                record = {
+                    "split":        split_name,
+                    "input_text":   user_content,
+                    "ground_truth": gt,
+                    "predicted":    predicted,
+                    "correct":      is_correct,
+                }
+                log_file.write(json.dumps(record) + "\n")
+                log_file.flush()
 
         if skipped > 0:
             print(f"    Warning: skipped {skipped} examples with unparseable ground truth.")
@@ -156,7 +174,7 @@ class BehavioralEvaluator:
         accuracy = correct / total if total > 0 else 0.0
         return {"accuracy": accuracy, "correct": correct, "total": total}
 
-    def evaluate(self, global_step: Optional[int] = None) -> dict:
+    def evaluate(self, global_step: Optional[int] = None, log_path: Optional[str] = None) -> dict:
         """
         Run behavioral evaluation across all configured JSONL files.
 
@@ -177,6 +195,15 @@ class BehavioralEvaluator:
             "wrapped_noncot": self.bct_noncot_path,
         }
 
+        # Open per-checkpoint log file if path provided.
+        # Each checkpoint gets its own file (beval_step_333.jsonl etc.) so
+        # you can track how responses change as training progresses.
+        beval_log_file = None
+        if log_path is not None:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            beval_log_file = open(log_path, "w")
+            print(f"  [BehavioralEval] Writing per-example log to {log_path}")
+
         split_results = {}
         for split_name, path in file_map.items():
             if path is None:
@@ -185,9 +212,12 @@ class BehavioralEvaluator:
                 print(f"  [BehavioralEval] Skipping '{split_name}': path not found ({path})")
                 continue
             print(f"  [BehavioralEval] Evaluating {split_name} ...")
-            result = self._evaluate_file(path)
+            result = self._evaluate_file(path, split_name=split_name, log_file=beval_log_file)
             split_results[split_name] = result
             print(f"    accuracy: {result['accuracy']:.4f}  ({result['correct']}/{result['total']})")
+
+        if beval_log_file is not None:
+            beval_log_file.close()
 
         clean_accs   = [r["accuracy"] for k, r in split_results.items() if k.startswith("clean")]
         wrapped_accs = [r["accuracy"] for k, r in split_results.items() if k.startswith("wrapped")]
