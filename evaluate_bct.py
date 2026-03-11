@@ -166,13 +166,18 @@ def main():
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     args = parser.parse_args()
 
+    import os
     model_short = args.model.split("/")[-1]
     stage       = "baseline" if not args.lora_path else "bct_trained"
     suffix      = f"_limit{args.limit}" if args.limit else ""
     auto_name   = f"{model_short}_{stage}{suffix}"
+    # Resume an existing run if WANDB_RUN_ID is set (e.g. shared with training run)
+    resume_id   = os.environ.get("WANDB_RUN_ID")
     wandb.init(
         project=args.wandb_project,
         name=args.wandb_name or auto_name,
+        id=resume_id,
+        resume="allow" if resume_id else None,
         config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit},
     )
 
