@@ -1,8 +1,10 @@
+import json
 import os
 import torch
 import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class Trainer:
@@ -21,37 +23,71 @@ class Trainer:
         wrapper_mask          : BoolTensor [batch, wrapped_seq_len]
 
     Args:
-        model:      A PEFT-wrapped HuggingFace model (already on device).
-        dataloader: DataLoader yielding batches in the format above.
-        loss_fn:    An instantiated ConsistencyLoss subclass.
-        config:     The full config dict (from config.yaml).
-        device:     torch.device to run on.
+        model:           A PEFT-wrapped HuggingFace model (already on device).
+        dataloader:      DataLoader yielding batches in the format above.
+        loss_fn:         An instantiated ConsistencyLoss subclass.
+        config:          The full config dict (from config.yaml).
+        device:          torch.device to run on.
+        checkpoint_fn:   Optional callable(global_step: int) -> None.
+                         Called at three evenly-spaced steps during training:
+                         ~33%, ~66%, and 100% of total optimizer steps.
+                         Intended for behavioral evaluation at checkpoints.
     """
 
-    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device):
+    def __init__(
+        self,
+        model,
+        dataloader: DataLoader,
+        loss_fn,
+        config: dict,
+        device: torch.device,
+        checkpoint_fn=None,
+        log_io_path: str = None,
+        tokenizer=None,
+    ):
         self.model = model
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.config = config
         self.device = device
+        self.tokenizer = tokenizer
+        self._log_io_file = open(log_io_path, "w") if log_io_path else None
 
         train_cfg = config["training"]
         self.epochs = train_cfg["epochs"]
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.grad_accumulation = train_cfg.get("grad_accumulation_steps", 1)
 
         model_cfg = config["model"]
         self.output_attentions = model_cfg.get("output_attentions", True)
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
 
-        # Losses that don't need a clean forward pass declare needs_clean_pass=False
         self.needs_clean_pass = loss_fn.needs_clean_pass
-
         self.save_dir = train_cfg.get("save_dir")
+        self.checkpoint_fn = checkpoint_fn
+
+        # Compute the three step indices at which behavioral eval fires.
+        # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
+        # We use integer division throughout; the final checkpoint is always the
+        # last optimizer step, so behavioral eval always runs at end-of-training.
+        #
+        # Example: 1000 steps total → checkpoints at steps 333, 666, 1000.
+        batches_per_epoch = len(dataloader)
+        total_batches = batches_per_epoch * self.epochs
+        total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
+        self.checkpoint_steps = {
+            total_optimizer_steps // 3,
+            (2 * total_optimizer_steps) // 3,
+            total_optimizer_steps,
+        }
+        # Remove zero in case total_optimizer_steps < 3
+        self.checkpoint_steps.discard(0)
+        print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
         self.optimizer = AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
-            lr=train_cfg["learning_rate"]
+            lr=train_cfg["learning_rate"],
         )
 
     def _forward(self, input_ids, attention_mask):
@@ -62,22 +98,37 @@ class Trainer:
             output_hidden_states=self.output_hidden_states,
         )
 
+    def _write_io_record(self, label: str, input_ids: torch.Tensor, logits: torch.Tensor):
+        """Decode one forward-pass input and its greedy response, append to the log file."""
+        if self._log_io_file is None or self.tokenizer is None:
+            return
+        ids = input_ids[0].tolist()
+        input_text = self.tokenizer.decode(ids, skip_special_tokens=False)
+        response_ids = logits[0].argmax(dim=-1).tolist()
+        response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
+        record = {"pass": label, "input": input_text, "response": response_text}
+        self._log_io_file.write(json.dumps(record) + "\n")
+        self._log_io_file.flush()
+
     def _step(self, batch):
         wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
         wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
-        # Assert uniform within batch — if your data pipeline produces heterogeneous
-        # start_index/clean_len values, batches must be grouped by wrapper length.
-        assert batch["start_index"].unique().numel() == 1,             "All items in a batch must have the same start_index. Group by wrapper length."
-        assert batch["clean_len"].unique().numel() == 1,             "All items in a batch must have the same clean_len. Group by wrapper length."
+        assert batch["start_index"].unique().numel() == 1, \
+            "All items in a batch must have the same start_index. Group by wrapper length."
+        assert batch["clean_len"].unique().numel() == 1, \
+            "All items in a batch must have the same clean_len. Group by wrapper length."
         start_index = int(batch["start_index"][0].item())
         clean_len   = int(batch["clean_len"][0].item())
 
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
+        self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
 
         if self.needs_clean_pass:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
-            clean_outputs        = self._forward(clean_input_ids, clean_attention_mask)
+            with torch.no_grad():
+                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+            self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
             clean_outputs = None
 
@@ -95,42 +146,58 @@ class Trainer:
 
     def train(self):
         self.model.train()
-        global_step = 0
+        global_step = 0       # counts optimizer (weight update) steps
+        batch_count = 0       # counts individual batches (for grad accumulation)
+        self.optimizer.zero_grad()
 
         for epoch in range(1, self.epochs + 1):
             epoch_loss = 0.0
+            pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
 
-            for batch in self.dataloader:
-                self.optimizer.zero_grad()
-
+            for batch in pbar:
                 loss_dict = self._step(batch)
-                loss = loss_dict["loss"]
-
+                loss = loss_dict["loss"] / self.grad_accumulation
                 loss.backward()
+                batch_count += 1
 
-                if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.grad_clip
-                    )
+                if batch_count % self.grad_accumulation == 0:
+                    if self.grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.grad_clip
+                        )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    global_step += 1
 
-                self.optimizer.step()
-                global_step += 1
-                epoch_loss += loss.item()
+                    # Fire checkpoint callback at the three designated steps.
+                    # The model is saved first so the checkpoint corresponds to
+                    # the weights that behavioral eval will measure.
+                    if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                        self._save_checkpoint(tag=f"step_{global_step}")
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()  # restore train mode after eval
 
-                if global_step % self.log_every == 0:
-                    self._log(epoch, global_step, loss_dict)
+                    if global_step % self.log_every == 0:
+                        self._log(epoch, global_step, loss_dict)
+
+                loss_val = loss_dict["loss"].item()
+                epoch_loss += loss_val
+                pbar.set_postfix(loss=f"{loss_val:.4f}")
 
             avg = epoch_loss / len(self.dataloader)
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
-            self._save_checkpoint(epoch)
 
         print("Training complete.")
+        if self._log_io_file is not None:
+            self._log_io_file.close()
 
-    def _save_checkpoint(self, epoch: int):
+    def _save_checkpoint(self, tag: str):
+        """Save a LoRA checkpoint. Tag is used as the subdirectory name."""
         if self.save_dir is None:
             return
-        os.makedirs(self.save_dir, exist_ok=True)
-        path = os.path.join(self.save_dir, f"epoch_{epoch}")
+        path = os.path.join(self.save_dir, tag)
+        os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
 
@@ -153,11 +220,30 @@ class Trainer:
             metrics["train/jsd_loss"] = loss_dict["jsd_loss"]
         if "wrapper_loss" in loss_dict:
             metrics["train/wrapper_loss"] = loss_dict["wrapper_loss"]
+        if "top1_agreement" in loss_dict:
+            metrics["train/top1_agreement"] = loss_dict["top1_agreement"]
+        if "js_divergence" in loss_dict:
+            metrics["train/js_divergence"] = loss_dict["js_divergence"]
+        if "num_layers_used" in loss_dict:
+            metrics["train/num_layers_used"] = loss_dict["num_layers_used"]
+
+        # Per-layer breakdown — keys match eval/layer_XX_loss in the Evaluator
+        # so they can be overlaid on the same W&B chart panel.
+        if "layer_losses" in loss_dict:
+            for i, layer_loss in enumerate(loss_dict["layer_losses"]):
+                metrics[f"train/layer_{i:02d}_loss"] = layer_loss
+
         wandb.log(metrics, step=step)
 
         line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}"
         if "mean_layer_loss" in loss_dict:
             line += f"  mean_layer_loss: {loss_dict['mean_layer_loss']:.4f}"
+        if "num_layers_used" in loss_dict:
+            line += f"  layers: {loss_dict['num_layers_used']}"
         if "mean_wrapper_attention" in loss_dict:
             line += f"  mean_wrapper_attn: {loss_dict['mean_wrapper_attention']:.4f}"
+        if "top1_agreement" in loss_dict:
+            line += f"  top1_agree: {loss_dict['top1_agreement']:.4f}"
+        if "js_divergence" in loss_dict:
+            line += f"  js_div: {loss_dict['js_divergence']:.4f}"
         print(line)
