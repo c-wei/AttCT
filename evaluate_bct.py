@@ -127,6 +127,8 @@ def evaluate_bias(model, tokenizer, records: list, device, batch_size: int) -> d
         n:             number of records evaluated
     """
     records = [r for r in records if r.get("biased_question") and r.get("unbiased_question")]
+    if not records:
+        return {"biased_rate": 0.0, "unbiased_rate": 0.0, "brr": 0.0, "n": 0}
     biased_prompts   = [_format_messages(r["biased_question"],   tokenizer) for r in records]
     unbiased_prompts = [_format_messages(r["unbiased_question"], tokenizer) for r in records]
     biased_options   = [r["biased_option"].upper() for r in records]
