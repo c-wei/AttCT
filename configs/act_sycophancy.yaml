@@ -12,3 +12,6 @@ loss:
 data:
   source: sycophancy_bct
   mode: sycophancy
+
+training:
+  save_dir: "/workspace/checkpoints/act_sycophancy"  # persist to network volume
