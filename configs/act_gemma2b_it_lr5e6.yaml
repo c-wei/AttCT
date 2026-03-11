@@ -1,0 +1,31 @@
+# ACT Gemma-2-2B-IT (instruction-tuned): matches paper's model variant.
+# Paper reports 61% MMLU baseline and 48.9% not-sycophantic for Gemma 2 2B.
+# Using gemma-2-2b-it (not base) to replicate paper's setup.
+# Success criterion: post-train MMLU delta < -5% (>56%) and not_sycophantic > 60%.
+
+model:
+  name: "google/gemma-2-2b-it"
+  output_attentions: false
+  output_hidden_states: true
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001               # 1e-4 (paper weight)
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  learning_rate: 0.000005      # 5e-6 (same as successful Llama config)
+  save_dir: "/workspace/checkpoints/act_gemma2b_it_lr5e6"
