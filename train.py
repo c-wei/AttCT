@@ -67,6 +67,17 @@ class Trainer:
         # IO logging — open file handle if path provided, else None
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
 
+        # Training data log — one JSONL record per batch.
+        # Written to logs/training_data.jsonl so every example fed to the
+        # model (clean text, wrapped text, boundary indices, loss) is auditable.
+        self._train_log_file = None
+        if self.tokenizer is not None:
+            log_dir = config.get("logging", {}).get("log_dir", "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            train_log_path = os.path.join(log_dir, "training_data.jsonl")
+            self._train_log_file = open(train_log_path, "w")
+            print(f"Training data log: {train_log_path}")
+
         # For end-of-training per-layer delta summary.
         # Populated on first and last log step that contains layer_losses.
         self._first_layer_losses: list = []
@@ -151,6 +162,7 @@ class Trainer:
 
             for batch in pbar:
                 loss_dict = self._step(batch)
+                self._write_train_record(epoch, batch_count + 1, batch)
                 loss = loss_dict["loss"] / self.grad_accumulation
                 loss.backward()
                 batch_count += 1
@@ -196,6 +208,8 @@ class Trainer:
             print("──────────────────────────────────────────────────")
         if self._log_io_file is not None:
             self._log_io_file.close()
+        if self._train_log_file is not None:
+            self._train_log_file.close()
 
     def _write_io_record(self, label: str, input_ids: torch.Tensor, logits: torch.Tensor):
         """
@@ -218,7 +232,41 @@ class Trainer:
         self._log_io_file.write(json.dumps(record) + "\n")
         self._log_io_file.flush()
 
+    def _write_train_record(
+        self,
+        epoch: int,
+        batch_idx: int,
+        batch: dict,
+    ):
+        """
+        Write one JSONL record to logs/training_data.jsonl for every batch.
+
+        Fields:
+          epoch, batch        — position in training
+          clean_text          — decoded clean prompt (no special tokens)
+          wrapped_text        — decoded wrapped prompt (no special tokens)
+          start_index         — token position where content starts in wrapped seq
+          clean_start_index   — token position where content starts in clean seq
+          clean_len           — number of content tokens
+        """
+        if self._train_log_file is None or self.tokenizer is None:
+            return
+        clean_ids   = batch["clean_input_ids"][0].tolist()
+        wrapped_ids = batch["wrapped_input_ids"][0].tolist()
+        record = {
+            "epoch":             epoch,
+            "batch":             batch_idx,
+            "clean_text":        self.tokenizer.decode(clean_ids,   skip_special_tokens=False),
+            "wrapped_text":      self.tokenizer.decode(wrapped_ids, skip_special_tokens=False),
+            "start_index":       int(batch["start_index"][0].item()),
+            "clean_start_index": int(batch["clean_start_index"][0].item()),
+            "clean_len":         int(batch["clean_len"][0].item()),
+        }
+        self._train_log_file.write(json.dumps(record) + "\n")
+        self._train_log_file.flush()
+
     def _save_checkpoint(self, tag: str):
+
         """Save a LoRA checkpoint. Tag is used as the subdirectory name."""
         if self.save_dir is None:
             return

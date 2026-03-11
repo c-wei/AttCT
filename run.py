@@ -112,6 +112,19 @@ def main():
     else:
         print("No behavioral eval paths provided. Pass all four --bct-cot/--bct-noncot/--control-cot/--control-noncot to enable.")
 
+    # Compute log directory — behavioural eval writes one file per checkpoint.
+    log_dir = config.get("logging", {}).get("log_dir", "logs")
+    import os; os.makedirs(log_dir, exist_ok=True)
+
+    def make_checkpoint_fn(evaluator):
+        """Return a closure that passes a per-step log_path to evaluate()."""
+        if evaluator is None:
+            return None
+        def _fn(step):
+            log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
+            evaluator.evaluate(global_step=step, log_path=log_path)
+        return _fn
+
     Trainer(
         model,
         get_dataloader(config, split="train"),
@@ -120,10 +133,7 @@ def main():
         device,
         log_io_path=args.log_io,
         tokenizer=tokenizer,
-        checkpoint_fn=(
-            lambda step: behavioral_evaluator.evaluate(global_step=step)
-            if behavioral_evaluator is not None else None
-        ),
+        checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
     ).train()
 
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
