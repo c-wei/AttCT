@@ -166,9 +166,13 @@ def main():
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     args = parser.parse_args()
 
+    model_short = args.model.split("/")[-1]
+    stage       = "baseline" if not args.lora_path else "bct_trained"
+    suffix      = f"_limit{args.limit}" if args.limit else ""
+    auto_name   = f"{model_short}_{stage}{suffix}"
     wandb.init(
         project=args.wandb_project,
-        name=args.wandb_name or ("baseline" if not args.lora_path else "bct_trained"),
+        name=args.wandb_name or auto_name,
         config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit},
     )
 
