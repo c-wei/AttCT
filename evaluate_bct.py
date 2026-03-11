@@ -220,6 +220,19 @@ def main():
         stats = evaluate_bias(model, tokenizer, records, device, args.batch_size)
         results[bias_name] = stats
 
+        # Log incrementally so W&B shows progress as each bias type finishes
+        brr_pct = stats["brr"] * 100
+        log_dict = {
+            f"brr/{bias_name}": brr_pct,
+            f"biased_rate/{bias_name}": stats["biased_rate"] * 100,
+            f"unbiased_rate/{bias_name}": stats["unbiased_rate"] * 100,
+        }
+        if baseline and bias_name in baseline:
+            base_brr = baseline[bias_name]["brr"]
+            log_dict[f"brr_ratio/{bias_name}"] = stats["brr"] / base_brr if base_brr != 0 else float("nan")
+        wandb.log(log_dict)
+        print(f"    BRR: {brr_pct:.1f}%")
+
     # Print table
     header = f"{'Bias':<22} {'BRR%':>6}  {'biased%':>8}  {'unbiased%':>10}"
     if baseline:

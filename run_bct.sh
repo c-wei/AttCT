@@ -72,6 +72,7 @@ echo "==> Baseline BRR (full, untrained model)..."
 uv run python evaluate_bct.py \
     --model "$MODEL" \
     --test_root "$TEST_ROOT" \
+    --limit 600 \
     --batch_size 4 \
     --output_json "$RESULTS_DIR/baseline_brr.json"
 echo "    Baseline BRR saved to $RESULTS_DIR/baseline_brr.json"
@@ -87,6 +88,7 @@ uv run python evaluate_bct.py \
     --model "$MODEL" \
     --lora_path checkpoints/bct_sft/epoch_1 \
     --test_root "$TEST_ROOT" \
+    --limit 600 \
     --batch_size 4 \
     --baseline_json "$RESULTS_DIR/baseline_brr.json" \
     --output_json "$RESULTS_DIR/bct_brr.json"
