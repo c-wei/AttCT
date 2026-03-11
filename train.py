@@ -140,15 +140,20 @@ class Trainer:
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
 
-    def _eval_loss(self):
-        """Compute and log mean eval loss (used by BCTTrainer after training)."""
+    def _eval_loss(self, dataloader=None):
+        """Compute and log mean eval loss (used by BCTTrainer after training).
+
+        Args:
+            dataloader: DataLoader to evaluate on. Defaults to self.dataloader.
+        """
+        dl = dataloader if dataloader is not None else self.dataloader
         self.model.eval()
         total = 0.0
         with torch.no_grad():
-            for batch in tqdm(self.dataloader, desc="BCT eval", leave=False):
+            for batch in tqdm(dl, desc="BCT eval", leave=False):
                 loss_dict = self._step(batch)
                 total += loss_dict["loss"].item()
-        mean = total / max(len(self.dataloader), 1)
+        mean = total / max(len(dl), 1)
         wandb.log({"eval/mean_loss": mean})
         print(f"\n--- BCT Eval --- mean_loss: {mean:.4f}\n")
 

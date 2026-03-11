@@ -22,6 +22,7 @@ BRR ratio = BRR_trained / BRR_baseline  (lower is better)
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
@@ -166,7 +167,6 @@ def main():
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     args = parser.parse_args()
 
-    import os
     model_short = args.model.split("/")[-1]
     stage       = "baseline" if not args.lora_path else "bct_trained"
     suffix      = f"_limit{args.limit}" if args.limit else ""
