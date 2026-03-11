@@ -7,7 +7,7 @@
 #
 # Usage:
 #   bash run_bct.sh            # sanity check only
-#   bash run_bct.sh --full     # sanity, then full training + evaluation
+#   bash run_bct.sh --full     # full training + evaluation (no sanity)
 
 set -euo pipefail
 
@@ -40,26 +40,24 @@ import os; login(token=os.environ['HF_TOKEN'])
 "
 
 # ── 3. Tests ─────────────────────────────────────────────────────────────────
-echo "==> Running unit tests..."
 uv run python -m pytest data/test_bct_dataset.py data/test_attct_datasets.py -q
 echo "    Tests passed."
 
-# ── 4. Sanity check ──────────────────────────────────────────────────────────
-echo "==> Sanity check: 50-sample training run..."
-uv run python run.py --config configs/bct_sft_sanity.yaml
-echo "    Sanity training OK."
-
-echo "==> Sanity check: BRR evaluation (20 records per bias)..."
-uv run python evaluate_bct.py \
-    --model "$MODEL" \
-    --test_root "$TEST_ROOT" \
-    --limit 20 \
-    --batch_size 4 \
-    --wandb_name "sanity_baseline" \
-    --output_json "$RESULTS_DIR/sanity_baseline_brr.json"
-echo "    Sanity eval OK."
-
 if [[ "$FULL" == "false" ]]; then
+# ── 4. Sanity check ──────────────────────────────────────────────────────────
+    echo "==> Sanity check: 50-sample training run..."
+    uv run python run.py --config configs/bct_sft_sanity.yaml
+    echo "    Sanity training OK."
+
+    echo "==> Sanity check: BRR evaluation (20 records per bias)..."
+    uv run python evaluate_bct.py \
+        --model "$MODEL" \
+        --test_root "$TEST_ROOT" \
+        --limit 20 \
+        --batch_size 4 \
+        --output_json "$RESULTS_DIR/sanity_baseline_brr.json"
+    echo "    Sanity eval OK."
+
     echo ""
     echo "Sanity checks passed. Re-run with --full to train and evaluate."
     exit 0
@@ -71,7 +69,6 @@ uv run python evaluate_bct.py \
     --model "$MODEL" \
     --test_root "$TEST_ROOT" \
     --batch_size 4 \
-    --wandb_name "baseline" \
     --output_json "$RESULTS_DIR/baseline_brr.json"
 echo "    Baseline BRR saved to $RESULTS_DIR/baseline_brr.json"
 
@@ -87,7 +84,6 @@ uv run python evaluate_bct.py \
     --lora_path checkpoints/bct_sft/epoch_1 \
     --test_root "$TEST_ROOT" \
     --batch_size 4 \
-    --wandb_name "bct_epoch1" \
     --baseline_json "$RESULTS_DIR/baseline_brr.json" \
     --output_json "$RESULTS_DIR/bct_brr.json"
 
