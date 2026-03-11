@@ -1,4 +1,3 @@
-import json
 import os
 import torch
 import wandb
@@ -42,7 +41,7 @@ class Trainer:
         config: dict,
         device: torch.device,
         checkpoint_fn=None,
-        log_io_path: str = None,
+        log_io_path=None,
         tokenizer=None,
     ):
         self.model = model
@@ -51,7 +50,6 @@ class Trainer:
         self.config = config
         self.device = device
         self.tokenizer = tokenizer
-        self._log_io_file = open(log_io_path, "w") if log_io_path else None
 
         train_cfg = config["training"]
         self.epochs = train_cfg["epochs"]
@@ -66,6 +64,9 @@ class Trainer:
         self.needs_clean_pass = loss_fn.needs_clean_pass
         self.save_dir = train_cfg.get("save_dir")
         self.checkpoint_fn = checkpoint_fn
+
+        # IO logging — open file handle if path provided, else None
+        self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
 
         # Compute the three step indices at which behavioral eval fires.
         # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
@@ -98,27 +99,18 @@ class Trainer:
             output_hidden_states=self.output_hidden_states,
         )
 
-    def _write_io_record(self, label: str, input_ids: torch.Tensor, logits: torch.Tensor):
-        """Decode one forward-pass input and its greedy response, append to the log file."""
-        if self._log_io_file is None or self.tokenizer is None:
-            return
-        ids = input_ids[0].tolist()
-        input_text = self.tokenizer.decode(ids, skip_special_tokens=False)
-        response_ids = logits[0].argmax(dim=-1).tolist()
-        response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
-        record = {"pass": label, "input": input_text, "response": response_text}
-        self._log_io_file.write(json.dumps(record) + "\n")
-        self._log_io_file.flush()
-
     def _step(self, batch):
         wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
         wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
         assert batch["start_index"].unique().numel() == 1, \
             "All items in a batch must have the same start_index. Group by wrapper length."
+        assert batch["clean_start_index"].unique().numel() == 1, \
+            "All items in a batch must have the same clean_start_index. Group by wrapper length."
         assert batch["clean_len"].unique().numel() == 1, \
             "All items in a batch must have the same clean_len. Group by wrapper length."
-        start_index = int(batch["start_index"][0].item())
-        clean_len   = int(batch["clean_len"][0].item())
+        start_index       = int(batch["start_index"][0].item())
+        clean_start_index = int(batch["clean_start_index"][0].item())
+        clean_len         = int(batch["clean_len"][0].item())
 
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
         self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
@@ -140,6 +132,7 @@ class Trainer:
             clean_outputs=clean_outputs,
             adv_outputs=adv_outputs,
             start_index=start_index,
+            clean_start_index=clean_start_index,
             clean_len=clean_len,
             wrapper_mask=wrapper_mask,
         )
@@ -191,6 +184,27 @@ class Trainer:
         print("Training complete.")
         if self._log_io_file is not None:
             self._log_io_file.close()
+
+    def _write_io_record(self, label: str, input_ids: torch.Tensor, logits: torch.Tensor):
+        """
+        Decode one forward-pass input and its per-position greedy predictions,
+        append as a JSONL record to the log file.
+
+        Note: logits[0].argmax(dim=-1) gives next-token predictions at every
+        input position simultaneously — not an autoregressive continuation.
+        This is useful for debugging tokenization and attention slicing, but
+        should not be interpreted as the model's response to the prompt.
+        """
+        if self._log_io_file is None or self.tokenizer is None:
+            return
+        import json
+        ids = input_ids[0].tolist()
+        input_text = self.tokenizer.decode(ids, skip_special_tokens=False)
+        response_ids = logits[0].argmax(dim=-1).tolist()
+        response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
+        record = {"pass": label, "input": input_text, "response": response_text}
+        self._log_io_file.write(json.dumps(record) + "\n")
+        self._log_io_file.flush()
 
     def _save_checkpoint(self, tag: str):
         """Save a LoRA checkpoint. Tag is used as the subdirectory name."""
