@@ -24,6 +24,7 @@ class ConsistencyLoss(nn.Module, ABC):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
@@ -98,55 +99,51 @@ class AttentionConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        total_loss  = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
         layer_losses = []
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        num_layers   = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
-            if self.slice_strategy == "full_matrix":
-                sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
-            elif self.slice_strategy == "query_only":
-                sliced_adv = adv_att[:, :, start_index:end_index, :]
+            # Slice both sides to the content region [clean_len x clean_len]
+            sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
+
+            if self.slice_strategy == "query_only":
+                sliced_adv   = adv_att[  :, :, start_index:end_index,             :]
+                sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, :]
             elif self.slice_strategy == "key_only":
-                sliced_adv = adv_att[:, :, :, start_index:end_index]
-            else:
-                sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
-
-            min_q = min(clean_att.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_att.shape[-1], sliced_adv.shape[-1])
-
-            aligned_clean = clean_att[..., :min_q, :min_k].detach()
-            aligned_adv   = sliced_adv[..., :min_q, :min_k]
+                sliced_adv   = adv_att[  :, :, :, start_index:end_index]
+                sliced_clean = clean_att[:, :, :, clean_start_index:clean_end_index]
 
             if self.distance_metric == "l2":
-                layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+                layer_loss = F.mse_loss(sliced_adv, sliced_clean.detach())
             elif self.distance_metric == "kl":
-                log_adv = torch.clamp(aligned_adv, min=1e-9).log()
-                layer_loss = F.kl_div(log_adv, aligned_clean, reduction='batchmean')
+                log_adv    = torch.clamp(sliced_adv, min=1e-9).log()
+                layer_loss = F.kl_div(log_adv, sliced_clean.detach(), reduction='batchmean')
             else:
                 raise ValueError(f"Unknown distance_metric: '{self.distance_metric}'. Choose 'l2' or 'kl'.")
 
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
-            total_loss = total_loss + layer_weight * layer_loss
+            total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
-
 
 class AttentionConsistencyLossV2(ConsistencyLoss):
     """
@@ -166,46 +163,42 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        layer_losses = []  # <-- NEW: collect per-layer scalars
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        total_loss  = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        layer_losses = []
+        num_layers   = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
         for clean_att, adv_att in zip(clean_outputs.attentions, adv_outputs.attentions):
+            # Average over heads first, then slice content region from both sides
             clean_avg = clean_att.mean(dim=1)
             adv_avg   = adv_att.mean(dim=1)
 
-            sliced_adv = adv_avg[:, start_index:end_index, start_index:end_index]
-
-            min_q = min(clean_avg.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_avg.shape[-1], sliced_adv.shape[-1])
-
-            aligned_clean = clean_avg[..., :min_q, :min_k].detach()
-            aligned_adv   = sliced_adv[..., :min_q, :min_k]
+            sliced_adv   = adv_avg[  :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_avg[:, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
             if self.use_kl:
-                log_adv = torch.clamp(aligned_adv, min=1e-9).log()
-                loss = F.kl_div(log_adv, aligned_clean, reduction='batchmean')
+                log_adv = torch.clamp(sliced_adv, min=1e-9).log()
+                loss    = F.kl_div(log_adv, sliced_clean.detach(), reduction='batchmean')
             else:
-                loss = F.mse_loss(aligned_adv, aligned_clean)
+                loss = F.mse_loss(sliced_adv, sliced_clean.detach())
 
             total_loss = total_loss + loss
-            layer_losses.append(loss.item())  # <-- NEW
+            layer_losses.append(loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,          # <-- NEW: was missing entirely
-            'mean_layer_loss': avg_loss.item()
-        }   
-
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': avg_loss.item(),
+        }
 
 class JSDAttentionConsistencyLoss(ConsistencyLoss):
     """
@@ -232,40 +225,36 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        layer_losses = []
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        total_loss   = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        layer_losses  = []
+        num_layers    = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
-            sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
+            # Full matrix slice — both q and k dims restricted to content region
+            sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
-            min_q = min(clean_att.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_att.shape[-1], sliced_adv.shape[-1])
-
-            p = clean_att[..., :min_q, :min_k].detach()
-            q = sliced_adv[..., :min_q, :min_k]
-
-            layer_loss = _jsd(p, q)
-
+            layer_loss   = _jsd(sliced_clean.detach(), sliced_adv)
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
-            total_loss = total_loss + layer_weight * layer_loss
+            total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
 
 class AttentionOutputConsistencyLoss(ConsistencyLoss):
@@ -290,39 +279,35 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
             raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
-        layer_losses = []
-        end_index = start_index + clean_len
+        total_loss   = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
+        layer_losses  = []
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
-        # hidden_states[0] is input embeddings; skip it
-        transformer_hs = clean_outputs.hidden_states[1:]
-        num_layers = len(transformer_hs)
+        transformer_hs = clean_outputs.hidden_states[1:]  # skip input embeddings
+        num_layers     = len(transformer_hs)
 
         for clean_h, adv_h in zip(transformer_hs, adv_outputs.hidden_states[1:]):
-            sliced_adv = adv_h[:, start_index:end_index, :]
+            sliced_adv   = adv_h[  :, start_index:end_index,             :]
+            sliced_clean = clean_h[:, clean_start_index:clean_end_index, :].detach()
 
-            min_seq = min(clean_h.shape[1], sliced_adv.shape[1])
-            aligned_clean = clean_h[:, :min_seq, :].detach()
-            aligned_adv   = sliced_adv[:, :min_seq, :]
-
-            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            layer_loss = F.mse_loss(sliced_adv, sliced_clean)
             total_loss = total_loss + layer_loss
             layer_losses.append(layer_loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
-
 
 class WrapperEntropyRegularizationLoss(ConsistencyLoss):
     """
@@ -445,39 +430,50 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
-        wrapper_mask: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
+        if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
+            raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
 
-        jsd_result     = self._jsd_loss(clean_outputs, adv_outputs, start_index, clean_len)
-        wrapper_result = self._wrapper_loss(
-            clean_outputs, adv_outputs, start_index, clean_len, wrapper_mask=wrapper_mask
-        )
+        total_kl_loss     = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        total_output_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        num_layers        = len(clean_outputs.attentions)
+        end_index           = start_index       + clean_len
+        clean_end_index     = clean_start_index + clean_len
 
-        combined = self.jsd_weight * jsd_result['loss'] + self.wrapper_weight * wrapper_result['loss']
+        for layer_idx, (clean_att, adv_att) in enumerate(
+            zip(clean_outputs.attentions, adv_outputs.attentions)
+        ):
+            sliced_adv_att   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean_att = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
-        # Merge per-layer losses from both sub-losses using the same weighting.
-        # Both sub-losses operate over the same layer count, so zip is safe.
-        jsd_layer_losses     = jsd_result.get('layer_losses', [])
-        wrapper_layer_losses = wrapper_result.get('layer_losses', [])
-        combined_layer_losses = [
-            self.jsd_weight * j + self.wrapper_weight * w
-            for j, w in zip(jsd_layer_losses, wrapper_layer_losses)
-        ]
+            log_adv_att = torch.clamp(sliced_adv_att, min=1e-9).log()
+            kl_loss     = F.kl_div(log_adv_att, sliced_clean_att.detach(), reduction='batchmean')
+            total_kl_loss = total_kl_loss + kl_loss
+
+            hs_idx = layer_idx + 1
+            if hs_idx < len(clean_outputs.hidden_states):
+                clean_h = clean_outputs.hidden_states[hs_idx]
+                adv_h   = adv_outputs.hidden_states[hs_idx]
+
+                sliced_adv_h   = adv_h[  :, start_index:end_index,             :]
+                sliced_clean_h = clean_h[:, clean_start_index:clean_end_index, :].detach()
+
+                output_loss       = F.mse_loss(sliced_adv_h, sliced_clean_h)
+                total_output_loss = total_output_loss + output_loss
+
+        avg_kl_loss     = total_kl_loss     / num_layers
+        avg_output_loss = total_output_loss / num_layers
+        combined_loss   = self.kl_weight * avg_kl_loss + self.output_weight * avg_output_loss
 
         return {
-            'loss': self.weight * combined,
-            'jsd_loss': jsd_result['loss'].item(),
-            'wrapper_loss': wrapper_result['loss'].item(),
-            'mean_wrapper_attention': wrapper_result['mean_wrapper_attention'],
-            'layer_losses': combined_layer_losses,                              # <-- NEW
-            'mean_layer_loss': (                                                # <-- NEW
-                sum(combined_layer_losses) / len(combined_layer_losses)
-                if combined_layer_losses else 0.0
-            ),
+            'loss':            self.weight * combined_loss,
+            'kl_loss':         avg_kl_loss.item(),
+            'output_loss':     avg_output_loss.item(),
+            'mean_layer_loss': combined_loss.item(),
         }
-
 
 class CombinedJSDWrapperLoss(ConsistencyLoss):
     """
@@ -511,21 +507,43 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
-        wrapper_mask: Optional[torch.Tensor] = None,
+        wrapper_mask=None,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
 
-        jsd_result     = self._jsd_loss(clean_outputs, adv_outputs, start_index, clean_len)
+        jsd_result = self._jsd_loss(
+            clean_outputs, adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+        )
         wrapper_result = self._wrapper_loss(
-            clean_outputs, adv_outputs, start_index, clean_len, wrapper_mask=wrapper_mask
+            clean_outputs, adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+            wrapper_mask=wrapper_mask,
         )
 
         combined = self.jsd_weight * jsd_result['loss'] + self.wrapper_weight * wrapper_result['loss']
 
+        jsd_layer_losses     = jsd_result.get('layer_losses', [])
+        wrapper_layer_losses = wrapper_result.get('layer_losses', [])
+        combined_layer_losses = [
+            self.jsd_weight * j + self.wrapper_weight * w
+            for j, w in zip(jsd_layer_losses, wrapper_layer_losses)
+        ]
+
         return {
-            'loss': self.weight * combined,
-            'jsd_loss': jsd_result['loss'].item(),
-            'wrapper_loss': wrapper_result['loss'].item(),
-            'mean_wrapper_attention': wrapper_result['mean_wrapper_attention']
+            'loss':                    self.weight * combined,
+            'jsd_loss':                jsd_result['loss'].item(),
+            'wrapper_loss':            wrapper_result['loss'].item(),
+            'mean_wrapper_attention':  wrapper_result['mean_wrapper_attention'],
+            'layer_losses':            combined_layer_losses,
+            'mean_layer_loss': (
+                sum(combined_layer_losses) / len(combined_layer_losses)
+                if combined_layer_losses else 0.0
+            ),
         }
