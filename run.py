@@ -77,6 +77,13 @@ def main():
     model = model.to(device)
     Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+
+    if config.get("data", {}).get("mode") == "sycophancy":
+        from evaluate_sycophancy import SycophancyEvaluator
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+        SycophancyEvaluator(model, tokenizer, device).evaluate()
+
     wandb.finish()
 
 if __name__ == "__main__":

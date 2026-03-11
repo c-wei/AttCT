@@ -1,0 +1,26 @@
+# GPU sanity check: real Llama-3.1-8B + sycophancy data, capped at 20 prompts.
+# Verifies: LoRA adapter disable/enable, hidden states, loss is finite, no OOM.
+# Should complete in ~2 minutes on an A100/H100.
+
+model:
+  output_attentions: false
+  output_hidden_states: true
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+  limit: 20          # just 20 prompts — enough to verify correctness
+
+training:
+  epochs: 1
+  learning_rate: 0.00002
+  grad_clip: 1.0
+  log_every_n_steps: 5
+  save_dir: null

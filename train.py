@@ -80,7 +80,9 @@ class Trainer:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
             with torch.no_grad():
+                self.model.disable_adapter_layers()
                 clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                self.model.enable_adapter_layers()
         else:
             clean_outputs = None
 
