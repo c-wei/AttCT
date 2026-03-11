@@ -66,7 +66,7 @@ def main():
             attn_impl = "sdpa"       # torch built-in, no install required
     print(f"attn_implementation: {attn_impl}")
     model = AutoModelForCausalLM.from_pretrained(
-        config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation=attn_impl
+        config["model"]["name"], dtype=torch.bfloat16, attn_implementation=attn_impl
     )
     model = get_peft_model(model, LoraConfig(
         task_type=TaskType.CAUSAL_LM,
