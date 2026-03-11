@@ -44,8 +44,9 @@ uv run python -m pytest data/test_bct_dataset.py data/test_attct_datasets.py -q
 echo "    Tests passed."
 
 if [[ "$FULL" == "false" ]]; then
-# ── 4. Sanity check ──────────────────────────────────────────────────────────
-    echo "==> Sanity check: 50-sample training run..."
+# ── 4. Sanity: training + BRR eval in one W&B run ────────────────────────────
+    export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
+    echo "==> Sanity check: 50-sample training run (W&B run: $WANDB_RUN_ID)..."
     uv run python run.py --config configs/bct_sft_sanity.yaml
     echo "    Sanity training OK."
 
@@ -56,6 +57,7 @@ if [[ "$FULL" == "false" ]]; then
         --limit 20 \
         --batch_size 4 \
         --output_json "$RESULTS_DIR/sanity_baseline_brr.json"
+    unset WANDB_RUN_ID
     echo "    Sanity eval OK."
 
     echo ""
@@ -63,7 +65,7 @@ if [[ "$FULL" == "false" ]]; then
     exit 0
 fi
 
-# ── 5. Baseline BRR (untrained model) ────────────────────────────────────────
+# ── 5. Baseline BRR (untrained model, own run) ───────────────────────────────
 echo "==> Baseline BRR (full, untrained model)..."
 uv run python evaluate_bct.py \
     --model "$MODEL" \
@@ -72,12 +74,12 @@ uv run python evaluate_bct.py \
     --output_json "$RESULTS_DIR/baseline_brr.json"
 echo "    Baseline BRR saved to $RESULTS_DIR/baseline_brr.json"
 
-# ── 6. Full BCT training ─────────────────────────────────────────────────────
-echo "==> Full BCT training..."
+# ── 6. Full BCT training + post-training BRR in one W&B run ─────────────────
+export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
+echo "==> Full BCT training (W&B run: $WANDB_RUN_ID)..."
 uv run python run.py --config configs/bct_sft.yaml
 echo "    Training complete. Checkpoint at checkpoints/bct_sft/epoch_1"
 
-# ── 7. Post-training BRR ─────────────────────────────────────────────────────
 echo "==> Post-training BRR evaluation..."
 uv run python evaluate_bct.py \
     --model "$MODEL" \
@@ -86,6 +88,7 @@ uv run python evaluate_bct.py \
     --batch_size 4 \
     --baseline_json "$RESULTS_DIR/baseline_brr.json" \
     --output_json "$RESULTS_DIR/bct_brr.json"
+unset WANDB_RUN_ID
 
 echo ""
 echo "==> Done. Results:"
