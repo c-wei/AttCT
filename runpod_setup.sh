@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # RunPod setup and training script for ACT sycophancy replication.
-# Run this after SSHing into a RunPod instance (recommended: A100 80GB or H100).
+# Run this after SSHing into a RunPod instance (A40 48GB or A100 80GB).
+#
+# STORAGE: Attach a network volume (>=30 GB) mounted at /workspace BEFORE
+# starting the pod. The script stores the HuggingFace model cache and
+# checkpoints on /workspace so they persist across pod restarts.
+#   - Llama-3.1-8B weights:  ~16 GB  (downloaded once, cached)
+#   - MMLU dataset cache:    ~500 MB
+#   - LoRA checkpoints:      ~10 MB/epoch
+#   → 30 GB volume recommended
 #
 # Usage:
 #   bash runpod_setup.sh            # setup + sanity check only
@@ -15,9 +23,14 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/neilshah55/AttCT.git"   # update if different
+REPO_URL="https://github.com/c-wei/AttCT.git"
 BRANCH="replicate_act_consistency"
 WORKDIR="/workspace/AttCT-act-consistency"
+
+# Redirect HuggingFace cache to network volume (avoids filling container disk)
+export HF_HOME="/workspace/hf_cache"
+export HF_DATASETS_CACHE="/workspace/hf_cache/datasets"
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE"
 
 # ── 1. Check required env vars ───────────────────────────────────────────────
 if [[ -z "${HF_TOKEN:-}" ]]; then
@@ -28,6 +41,15 @@ if [[ -z "${WANDB_KEY:-}" ]]; then
   echo "ERROR: WANDB_KEY is not set. Export it before running this script."
   exit 1
 fi
+
+# Check network volume is actually mounted (not just container disk)
+WORKSPACE_AVAIL_GB=$(df -BG /workspace | awk 'NR==2 {gsub("G",""); print $4}')
+if [[ "$WORKSPACE_AVAIL_GB" -lt 20 ]]; then
+  echo "WARNING: /workspace only has ${WORKSPACE_AVAIL_GB}GB free."
+  echo "  Llama-3.1-8B requires ~16GB. Attach a >=30GB network volume at /workspace."
+  echo "  Continuing anyway — will fail if disk fills up."
+fi
+echo ">>> /workspace available: ${WORKSPACE_AVAIL_GB}GB"
 
 # ── 2. Clone repo ────────────────────────────────────────────────────────────
 if [[ ! -d "$WORKDIR" ]]; then
