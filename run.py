@@ -84,7 +84,12 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
-    wandb.init(project="AttCT", name=loss_name, config=config)
+    model_short = config["model"]["name"].split("/")[-1]
+    data_mode   = config.get("data", {}).get("mode", "jailbreak")
+    lr          = config["training"]["learning_rate"]
+    weight      = loss_cfg.get("weight", 1.0)
+    run_name    = f"{model_short}_{data_mode}_lr{lr}_w{weight}_{args.config.split('/')[-1].replace('.yaml', '')}"
+    wandb.init(project="AttCT", name=run_name, config=config)
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
