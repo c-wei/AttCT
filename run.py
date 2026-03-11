@@ -85,7 +85,10 @@ def main():
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
     model_short = config["model"]["name"].split("/")[-1]
-    data_mode   = config.get("data", {}).get("mode", "jailbreak")
+    if loss_name == "SFTLoss":
+        data_mode = "sft"
+    else:
+        data_mode = config.get("data", {}).get("mode", "jailbreak")
     lr          = config["training"]["learning_rate"]
     weight      = loss_cfg.get("weight", 1.0)
     run_name    = f"{model_short}_{data_mode}_lr{lr}_w{weight}_{args.config.split('/')[-1].replace('.yaml', '')}"
@@ -95,11 +98,12 @@ def main():
     model = model.to(device)
 
     if isinstance(loss_fn, SFTLoss):
-        train_dl = get_bct_dataloader(config, split="train")
-        eval_dl  = get_bct_dataloader(config, split="eval")
-        BCTTrainer(model, train_dl, loss_fn, config, device).train()
-        # BCT eval: just report held-out SFT loss (BRR requires evaluate_bct.py)
-        BCTTrainer(model, eval_dl, loss_fn, config, device)._eval_loss()
+        train_dl    = get_bct_dataloader(config, split="train")
+        eval_dl     = get_bct_dataloader(config, split="eval")
+        bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
+        bct_trainer.train()
+        # BCT eval: report held-out SFT loss (BRR requires evaluate_bct.py)
+        bct_trainer._eval_loss(eval_dl)
     else:
         Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
         Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()

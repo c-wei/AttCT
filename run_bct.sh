@@ -14,8 +14,6 @@ set -euo pipefail
 FULL=false
 for arg in "$@"; do [[ "$arg" == "--full" ]] && FULL=true; done
 
-export PYTHONUNBUFFERED=1
-
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 TEST_ROOT="${COT_TEST_ROOT:-/workspace/cot-transparency/dataset_dumps/test}"
 RESULTS_DIR="results"
@@ -30,8 +28,8 @@ echo "==> Checking environment..."
 [[ -z "${WANDB_API_KEY:-}" ]] && { echo "ERROR: WANDB_API_KEY not set"; exit 1; }
 [[ -z "${HF_TOKEN:-}" ]]      && { echo "ERROR: HF_TOKEN not set";      exit 1; }
 
-python -c "import torch; assert torch.cuda.is_available(), 'No CUDA GPU found'"
-echo "    GPU: $(python -c "import torch; print(torch.cuda.get_device_name(0))")"
+uv run python -c "import torch; assert torch.cuda.is_available(), 'No CUDA GPU found'"
+echo "    GPU: $(uv run python -c "import torch; print(torch.cuda.get_device_name(0))")"
 
 # ── 2. Login ─────────────────────────────────────────────────────────────────
 echo "==> Logging in..."
