@@ -4,6 +4,7 @@ import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import json
 
 
 class Trainer:
@@ -131,8 +132,7 @@ class Trainer:
         if self.needs_clean_pass:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
-            with torch.no_grad():
-                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+            clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
             self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
             clean_outputs = None

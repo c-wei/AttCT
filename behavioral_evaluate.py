@@ -49,7 +49,7 @@ class BehavioralEvaluator:
         self.bct_noncot_path     = beval_cfg.get("bct_noncot_path")
         self.control_cot_path    = beval_cfg.get("control_cot_path")
         self.control_noncot_path = beval_cfg.get("control_noncot_path")
-        self.max_samples         = beval_cfg.get("max_samples", 200)
+        self.max_samples         = beval_cfg.get("max_samples", 500)
 
         # Pre-compute and cache the answer prefix token IDs.
         # These are appended after the assistant header to prime the model.
@@ -104,7 +104,7 @@ class BehavioralEvaluator:
             [{"role": "user", "content": user_content}],
             tokenize=True,
             add_generation_prompt=True,  # adds <|start_header_id|>assistant<|end_header_id|>\n\n
-        )
+        )['input_ids']
 
         # Append answer prefix: "The best answer is: ("
         # Now the model predicts what comes after "(" — the answer letter.

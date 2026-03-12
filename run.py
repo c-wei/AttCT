@@ -54,7 +54,7 @@ def main():
                        help="Path to control_cot.jsonl (clean, chain-of-thought).")
     beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None,
                        help="Path to control_non_cot.jsonl (clean, direct answer).")
-    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=200,
+    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500,
                        help="Max examples per JSONL file during behavioral eval (default: 200).")
 
     # Data source / mode overrides. These take precedence over the YAML.
@@ -65,6 +65,8 @@ def main():
     parser.add_argument("--data-mode",   dest="data_mode",   default=None,
                         choices=["jailbreak", "sycophancy"],
                         help="Override config data.mode (jailbreak | sycophancy).")
+    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
+                        help="Cap the number of training prompts (overrides config data.limit).")
 
     args = parser.parse_args()
 
@@ -96,7 +98,12 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
-    wandb.init(project="AttCT", name=loss_name, config=config)
+    data_source_tag = (
+        args.data_source if args.data_source is not None
+        else "sycophancy_bct" if args.control_cot_path is not None
+        else config.get("data", {}).get("source", "unknown")
+    )
+    wandb.init(project="AttCT", name=loss_name, group="week2", tags=[data_source_tag], config=config)
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
@@ -115,6 +122,14 @@ def main():
         config.setdefault("data", {})["mode"] = args.data_mode
     elif args.control_cot_path is not None and args.data_source is None:
         config.setdefault("data", {})["mode"] = "sycophancy"
+    if args.data_limit is not None:
+        config.setdefault("data", {})["limit"] = args.data_limit
+
+    # Log wrapper config now that data mode is finalised.
+    wrapper_mode = config.get("data", {}).get("mode", "jailbreak")
+    wrapper_templates = "sycophancy" if wrapper_mode == "sycophancy" else "jailbreak_strong"
+    wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
+                        allow_val_change=True)
 
     # Build BehavioralEvaluator only if all four JSONL paths were provided.
     beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
