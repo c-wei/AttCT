@@ -51,42 +51,43 @@ for cfg in "${CONFIGS[@]}"; do
         --control-cot    "$CONTROL_COT" \
         --control-noncot "$CONTROL_NONCOT" \
         --bct-cot        "$BCT_COT" \
-        --bct-noncot     "$BCT_NONCOT"
+        --bct-noncot     "$BCT_NONCOT" \
+        --data-limit     500
 done
 
 # ── clear-harm runs ──────────────────────────────────────────────────────────
 # Jailbreak mode; behavioral eval still runs as cross-eval.
 
-echo "════════════════════════════════════════════════════════════"
-echo "  DATA SOURCE: clear-harm"
-echo "════════════════════════════════════════════════════════════"
+# echo "════════════════════════════════════════════════════════════"
+# echo "  DATA SOURCE: clear-harm"
+# echo "════════════════════════════════════════════════════════════"
 
-for cfg in "${CONFIGS[@]}"; do
-    echo "────────────────────────────────────────────────────────────"
-    echo "  Config: $cfg | Source: clear-harm"
-    echo "────────────────────────────────────────────────────────────"
-    python run.py --config "$cfg" \
-        --data-source clear-harm \
-        --data-mode   jailbreak \
-        $BEVAL_ARGS
-done
+# for cfg in "${CONFIGS[@]}"; do
+#     echo "────────────────────────────────────────────────────────────"
+#     echo "  Config: $cfg | Source: clear-harm"
+#     echo "────────────────────────────────────────────────────────────"
+#     python run.py --config "$cfg" \
+#         --data-source clear-harm \
+#         --data-mode   jailbreak \
+#         $BEVAL_ARGS
+# done
 
 # ── hardcoded runs ───────────────────────────────────────────────────────────
 # Jailbreak mode; behavioral eval still runs as cross-eval.
 
-echo "════════════════════════════════════════════════════════════"
-echo "  DATA SOURCE: hardcoded"
-echo "════════════════════════════════════════════════════════════"
+# echo "════════════════════════════════════════════════════════════"
+# echo "  DATA SOURCE: hardcoded"
+# echo "════════════════════════════════════════════════════════════"
 
-for cfg in "${CONFIGS[@]}"; do
-    echo "────────────────────────────────────────────────────────────"
-    echo "  Config: $cfg | Source: hardcoded"
-    echo "────────────────────────────────────────────────────────────"
-    python run.py --config "$cfg" \
-        --data-source hardcoded \
-        --data-mode   jailbreak \
-        $BEVAL_ARGS
-done
+# for cfg in "${CONFIGS[@]}"; do
+#     echo "────────────────────────────────────────────────────────────"
+#     echo "  Config: $cfg | Source: hardcoded"
+#     echo "────────────────────────────────────────────────────────────"
+#     python run.py --config "$cfg" \
+#         --data-source hardcoded \
+#         --data-mode   jailbreak \
+#         $BEVAL_ARGS
+# done
 
 echo ""
 echo "Sweep complete. Logs in logs/<loss>__<source>/"
