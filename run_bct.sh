@@ -72,8 +72,7 @@ uv run python evaluate_bct.py \
     --test_root "$TEST_ROOT" \
     --limit 600 \
     --batch_size 4 \
-    --output_json "$RESULTS_DIR/baseline_brr.json"
-echo "    Baseline BRR saved to $RESULTS_DIR/baseline_brr.json"
+    --output_json "$RESULTS_DIR/baseline_brr.json" || { echo "WARNING: baseline BRR eval exited with error (partial results may be in W&B)"; }
 
 # ── 6. Full BCT training + post-training BRR in one W&B run ─────────────────
 export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
@@ -89,7 +88,7 @@ uv run python evaluate_bct.py \
     --limit 600 \
     --batch_size 4 \
     --baseline_json "$RESULTS_DIR/baseline_brr.json" \
-    --output_json "$RESULTS_DIR/bct_brr.json"
+    --output_json "$RESULTS_DIR/bct_brr.json" || { echo "WARNING: post-training BRR eval exited with error (partial results may be in W&B)"; }
 unset WANDB_RUN_ID
 
 echo ""
