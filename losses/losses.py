@@ -127,10 +127,10 @@ class AttentionConsistencyLoss(ConsistencyLoss):
                 sliced_clean = clean_att[:, :, :, clean_start_index:clean_end_index]
 
             if self.distance_metric == "l2":
-                layer_loss = F.mse_loss(sliced_adv, sliced_clean.detach())
+                layer_loss = F.mse_loss(sliced_adv, sliced_clean)
             elif self.distance_metric == "kl":
                 log_adv    = torch.clamp(sliced_adv, min=1e-9).log()
-                layer_loss = F.kl_div(log_adv, sliced_clean.detach(), reduction='batchmean')
+                layer_loss = F.kl_div(log_adv, sliced_clean, reduction='batchmean')
             else:
                 raise ValueError(f"Unknown distance_metric: '{self.distance_metric}'. Choose 'l2' or 'kl'.")
 
@@ -186,9 +186,9 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
 
             if self.use_kl:
                 log_adv = torch.clamp(sliced_adv, min=1e-9).log()
-                loss    = F.kl_div(log_adv, sliced_clean.detach(), reduction='batchmean')
+                loss    = F.kl_div(log_adv, sliced_clean, reduction='batchmean')
             else:
-                loss = F.mse_loss(sliced_adv, sliced_clean.detach())
+                loss = F.mse_loss(sliced_adv, sliced_clean)
 
             total_loss = total_loss + loss
             layer_losses.append(loss.item())
@@ -245,7 +245,7 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
             sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
             sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
-            layer_loss   = _jsd(sliced_clean.detach(), sliced_adv)
+            layer_loss   = _jsd(sliced_clean, sliced_adv)
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
             total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
@@ -296,7 +296,7 @@ class AttentionOutputConsistencyLoss(ConsistencyLoss):
 
         for clean_h, adv_h in zip(transformer_hs, adv_outputs.hidden_states[1:]):
             sliced_adv   = adv_h[  :, start_index:end_index,             :]
-            sliced_clean = clean_h[:, clean_start_index:clean_end_index, :].detach()
+            sliced_clean = clean_h[:, clean_start_index:clean_end_index, :]
 
             layer_loss = F.mse_loss(sliced_adv, sliced_clean)
             total_loss = total_loss + layer_loss
@@ -450,7 +450,7 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
             sliced_clean_att = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
             log_adv_att = torch.clamp(sliced_adv_att, min=1e-9).log()
-            kl_loss     = F.kl_div(log_adv_att, sliced_clean_att.detach(), reduction='batchmean')
+            kl_loss     = F.kl_div(log_adv_att, sliced_clean_att, reduction='batchmean')
             total_kl_loss = total_kl_loss + kl_loss
 
             hs_idx = layer_idx + 1
@@ -459,7 +459,7 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
                 adv_h   = adv_outputs.hidden_states[hs_idx]
 
                 sliced_adv_h   = adv_h[  :, start_index:end_index,             :]
-                sliced_clean_h = clean_h[:, clean_start_index:clean_end_index, :].detach()
+                sliced_clean_h = clean_h[:, clean_start_index:clean_end_index, :]
 
                 output_loss       = F.mse_loss(sliced_adv_h, sliced_clean_h)
                 total_output_loss = total_output_loss + output_loss
