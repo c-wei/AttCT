@@ -18,12 +18,14 @@ try:
         AdversarialWrapper,
         STRONG_JAILBREAK_TEMPLATES,
         SYCOPHANCY_TEMPLATES,
+        _extract_answer_choices,
     )
 except ImportError:
     from .wrappers import (
         AdversarialWrapper,
         STRONG_JAILBREAK_TEMPLATES,
         SYCOPHANCY_TEMPLATES,
+        _extract_answer_choices,
     )
 
 # ==========================================
@@ -169,7 +171,7 @@ def get_prompts(
                 prompts_raw.append(item['content'])
 
             # Deduplicate and filter short prompts
-            prompts = list(set([p for p in prompts_raw if len(str(p)) > 15]))
+            prompts = list(set([str(p) for p in prompts_raw if len(str(p)) > 15]))
             print(f"    Loaded {len(prompts)} unique harmful prompts from ClearHarm")
 
         except Exception as e:
@@ -201,12 +203,17 @@ def get_prompts(
         print(f"    Using {len(prompts)} hardcoded harmful prompts")
 
     else:
-        # Assume it's a file path
+        # Assume it's a file path; detect JSONL with messages structure
         try:
-            with open(source, 'r') as f:
-                prompts = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            print(f"Warning: Failed to load from file {source}: {e}")
+            prompts = _read_jsonl_user_messages(source)
+            print(f"    Loaded {len(prompts)} prompts from {source} (JSONL messages format)")
+        except (ValueError, KeyError):
+            # Not a messages-style JSONL — fall back to plain line-by-line reading
+            try:
+                with open(source, 'r') as f:
+                    prompts = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                print(f"Warning: Failed to load from file {source}: {e}")
 
     # Fallback to hardcoded if nothing loaded (jailbreak-style sources only)
     if source not in ("sycophancy_bct",) and len(prompts) < 10:
@@ -275,6 +282,24 @@ class AttCTDataset(Dataset):
             )
 
         self.add_special_tokens = add_special_tokens
+
+        # If all templates require MCQ answer choices, drop prompts that have
+        # none — otherwise wrap() would raise ValueError at training time.
+        templates = self.wrapper.templates
+        all_need_choices = templates and all(
+            any(p in t for p in ("{answer_letter}", "{answer_text}", "{answer_rendered}"))
+            for t in templates
+        )
+        if all_need_choices:
+            n_before = len(self.prompts)
+            self.prompts = [p for p in self.prompts if _extract_answer_choices(str(p))]
+            n_dropped = n_before - len(self.prompts)
+            if n_dropped:
+                import warnings
+                warnings.warn(
+                    f"AttCTDataset: dropped {n_dropped}/{n_before} prompts with no "
+                    "MCQ answer choices (incompatible with sycophancy templates)."
+                )
 
     def __len__(self) -> int:
         return len(self.prompts)
