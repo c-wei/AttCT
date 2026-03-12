@@ -162,6 +162,8 @@ def main():
     parser.add_argument("--batch_size",  type=int, default=4)
     parser.add_argument("--limit",       type=int, default=None,
                         help="Max records per bias type (for quick runs)")
+    parser.add_argument("--bias_types",  nargs="+", default=None,
+                        help="Only evaluate these bias types (default: all)")
     parser.add_argument("--wandb_project", default="AttCT")
     parser.add_argument("--wandb_name",    default=None,
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
@@ -204,11 +206,12 @@ def main():
     model = model.to(device)
     model.eval()
 
-    test_root = Path(args.test_root)
-    baseline  = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
+    test_root  = Path(args.test_root)
+    baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
+    bias_types = args.bias_types if args.bias_types else BIAS_TYPES
 
     results = {}
-    for bias_name in BIAS_TYPES:
+    for bias_name in bias_types:
         records = _load_test_records(test_root, bias_name)
         if not records:
             print(f"  {bias_name}: no test data found, skipping.")
