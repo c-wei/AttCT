@@ -85,9 +85,22 @@ SYCOPHANCY_TEMPLATES = [
     "I'm biased toward {answer_rendered}; please respond with that in mind.\n\n{prompt}",
 ]
 
+# ==========================================
+# ANSWER CHOICE PATTERNS
+# ==========================================
+
+# Ordered from most to least specific to avoid false positives.
+# All letter patterns accept both upper and lowercase (normalized to uppercase after match).
+# Numeric patterns (1., 1), (1)) are included for datasets that use numeric labelling.
 ANSWER_CHOICE_PATTERNS = [
-    re.compile(r"^\s*\(([A-Z])\)\s*(.+?)\s*$"),
-    re.compile(r"^\s*([A-Z])\)\s*(.+?)\s*$"),
+    re.compile(r"^\s*\(([A-Ea-e])\)\s*(.+?)\s*$"),   # (A) or (a)
+    re.compile(r"^\s*([A-Ea-e])\)\s*(.+?)\s*$"),      # A) or a)
+    re.compile(r"^\s*([A-Ea-e])\.\s*(.+?)\s*$"),      # A. or a.
+    re.compile(r"^\s*([A-Ea-e]):\s*(.+?)\s*$"),       # A: or a:
+    re.compile(r"^\s*([A-Ea-e])\s+-\s+(.+?)\s*$"),    # A - text
+    re.compile(r"^\s*\((\d)\)\s*(.+?)\s*$"),          # (1)
+    re.compile(r"^\s*(\d)\)\s*(.+?)\s*$"),            # 1)
+    re.compile(r"^\s*(\d)\.\s*(.+?)\s*$"),            # 1.
 ]
 
 # ==========================================
@@ -96,10 +109,10 @@ ANSWER_CHOICE_PATTERNS = [
 
 TEMPLATE_SETS: dict[str, List[str]] = {
     "jailbreak_strong": STRONG_JAILBREAK_TEMPLATES,
-    "jailbreak_weak": JAILBREAK_TEMPLATES,
-    "sycophancy": SYCOPHANCY_TEMPLATES,
-    "bias": BIAS_TEMPLATES,
-    "opinion": OPINION_TEMPLATES,
+    "jailbreak_weak":   JAILBREAK_TEMPLATES,
+    "sycophancy":       SYCOPHANCY_TEMPLATES,
+    "bias":             BIAS_TEMPLATES,
+    "opinion":          OPINION_TEMPLATES,
 }
 
 
@@ -109,10 +122,16 @@ TEMPLATE_SETS: dict[str, List[str]] = {
 
 def _extract_answer_choices(prompt: str) -> List[Tuple[str, str]]:
     """
-    Extract MCQ choices from common prompt formats, e.g.:
-    - (A) option text
-    - A) option text
-    Returns [(letter, text), ...].
+    Extract MCQ answer choices from a prompt string.
+
+    Recognised formats (upper and lowercase):
+        (A) text  |  A) text  |  A. text  |  A: text  |  A - text
+        (1) text  |  1) text  |  1. text
+
+    Letters are normalised to uppercase. Returns an empty list if no
+    choices are found — callers should treat this as a signal to skip
+    the sample rather than attempting to wrap it with a choice-dependent
+    sycophancy template.
     """
     choices: List[Tuple[str, str]] = []
     for line in prompt.splitlines():
@@ -122,14 +141,22 @@ def _extract_answer_choices(prompt: str) -> List[Tuple[str, str]]:
         for pattern in ANSWER_CHOICE_PATTERNS:
             match = pattern.match(stripped)
             if match:
-                letter, text = match.group(1), match.group(2).strip()
+                letter = match.group(1).upper()  # normalize a→A, keeps "1" as-is
+                text = match.group(2).strip()
                 choices.append((letter, text))
                 break
     return choices
 
 
 def _fill_template_placeholders(template: str, prompt: str) -> str:
-    """Fill optional answer-choice placeholders used by sycophancy templates."""
+    """
+    Fill answer-choice placeholders in a sycophancy template.
+
+    If the template uses {answer_letter}, {answer_text}, or {answer_rendered}
+    but the prompt contains no parseable MCQ choices, raises ValueError.
+    The caller (AttCTDataset) catches this and skips the sample — no fallback
+    templates are used, so the training distribution stays clean.
+    """
     needs_choice = any(
         placeholder in template
         for placeholder in ("{answer_letter}", "{answer_text}", "{answer_rendered}")
@@ -204,6 +231,11 @@ class AdversarialWrapper:
         Returns:
             Tuple of (wrapped_text, start_index_chars, prompt_length_chars)
             Note: These are character-level indices, will need tokenization
+
+        Raises:
+            ValueError: If the selected sycophancy template requires MCQ answer
+                        choices but none are found in the prompt. Callers should
+                        catch this and skip the sample.
         """
         if self.strategy == "random":
             template = random.choice(self.templates)
@@ -213,10 +245,10 @@ class AdversarialWrapper:
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
 
-        # Fill answer-choice placeholders if the template uses them
+        # Fill answer-choice placeholders if the template uses them.
+        # Raises ValueError if prompt has no MCQ choices — propagated to caller.
         template = _fill_template_placeholders(template, prompt)
 
-        # Split on placeholder
         if "{prompt}" not in template:
             raise ValueError(f"Template must contain {{prompt}} placeholder: {template}")
 
