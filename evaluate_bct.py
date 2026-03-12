@@ -106,7 +106,7 @@ def _generate_answers(model, tokenizer, prompts: list[str], device, batch_size: 
         ).to(device)
         out = model.generate(
             **encodings,
-            max_new_tokens=64,
+            max_new_tokens=512,
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
         )
