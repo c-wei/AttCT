@@ -29,8 +29,9 @@ class Trainer:
         device:     torch.device to run on.
     """
 
-    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device):
+    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device, ref_model=None):
         self.model = model
+        self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.config = config
@@ -80,9 +81,19 @@ class Trainer:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
             with torch.no_grad():
-                self.model.disable_adapter_layers()
-                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
-                self.model.enable_adapter_layers()
+                if self.ref_model is not None:
+                    # Full FT: use frozen reference model (θ_init)
+                    clean_outputs = self.ref_model(
+                        input_ids=clean_input_ids,
+                        attention_mask=clean_attention_mask,
+                        output_attentions=self.output_attentions,
+                        output_hidden_states=self.output_hidden_states,
+                    )
+                else:
+                    # LoRA: disable adapters to recover θ_init
+                    self.model.disable_adapter_layers()
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    self.model.enable_adapter_layers()
         else:
             clean_outputs = None
 
