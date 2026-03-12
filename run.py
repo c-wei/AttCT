@@ -53,17 +53,31 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    lora_cfg = config["lora"]
-    model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation="eager")
-    model = get_peft_model(model, LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["lora_alpha"],
-        lora_dropout=lora_cfg["lora_dropout"],
-        target_modules=lora_cfg["target_modules"],
-        bias=lora_cfg["bias"],
-    ))
-    model.print_trainable_parameters()
+    is_lora = bool(config.get("lora"))
+    ref_model = None
+    model_name = config["model"]["name"]
+
+    if is_lora:
+        lora_cfg = config["lora"]
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager")
+        model = get_peft_model(model, LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=lora_cfg["r"],
+            lora_alpha=lora_cfg["lora_alpha"],
+            lora_dropout=lora_cfg["lora_dropout"],
+            target_modules=lora_cfg["target_modules"],
+            bias=lora_cfg["bias"],
+        ))
+        model.print_trainable_parameters()
+    else:
+        # Full fine-tuning: all params trainable; load a separate frozen ref model for clean pass (= θ_init)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager")
+        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation="eager")
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad_(False)
+        trainable = sum(p.numel() for p in model.parameters())
+        print(f"Full FT: {trainable:,} trainable parameters")
 
     loss_cfg = config["loss"]
     loss_name = loss_cfg["name"]
@@ -80,27 +94,33 @@ def main():
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
+    if ref_model is not None:
+        ref_model = ref_model.to(device)
 
     is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
     is_sanity = config.get("data", {}).get("limit") is not None
 
-    # Pre-training baseline: evaluate with adapters disabled (= frozen θ_init / base model)
+    # Pre-training baseline: evaluate θ_init (base model, no LoRA / no FT updates yet)
     if is_sycophancy and not is_sanity:
         from evaluate_sycophancy import SycophancyEvaluator
         from transformers import AutoTokenizer
         import os as _os
-        tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
-        # Use config filename stem as run label for the CSV
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         run_label = _os.path.splitext(_os.path.basename(args.config))[0]
         results_csv = f"/workspace/results/{run_label}_syco_results.csv"
-        print("\n=== Pre-training baseline (base model, adapters disabled) ===")
-        model.disable_adapter_layers()
-        model.eval()
-        SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                            results_csv=results_csv).evaluate()
-        model.enable_adapter_layers()
+        print("\n=== Pre-training baseline (base model) ===")
+        if is_lora:
+            model.disable_adapter_layers()
+            model.eval()
+            SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
+                                results_csv=results_csv).evaluate()
+            model.enable_adapter_layers()
+        else:
+            SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
+                                results_csv=results_csv).evaluate()
 
-    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
+    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device,
+            ref_model=ref_model).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
 
     # Post-training evaluation
