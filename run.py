@@ -99,11 +99,8 @@ def main():
 
     if isinstance(loss_fn, SFTLoss):
         train_dl    = get_bct_dataloader(config, split="train")
-        eval_dl     = get_bct_dataloader(config, split="eval")
         bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
         bct_trainer.train()
-        # BCT eval: report held-out SFT loss (BRR requires evaluate_bct.py)
-        bct_trainer._eval_loss(eval_dl)
     else:
         Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
         Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
