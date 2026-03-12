@@ -95,7 +95,7 @@ def _format_messages(messages: list, tokenizer) -> str:
 @torch.no_grad()
 def _generate_answers(model, tokenizer, prompts: list[str], device, batch_size: int = 4) -> list[str]:
     answers = []
-    for i in range(0, len(prompts), batch_size):
+    for i in tqdm(range(0, len(prompts), batch_size), desc="    batches", leave=False):
         batch_prompts = prompts[i : i + batch_size]
         encodings = tokenizer(
             batch_prompts,
@@ -106,7 +106,7 @@ def _generate_answers(model, tokenizer, prompts: list[str], device, batch_size: 
         ).to(device)
         out = model.generate(
             **encodings,
-            max_new_tokens=512,
+            max_new_tokens=64,
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
         )
