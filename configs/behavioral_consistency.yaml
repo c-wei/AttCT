@@ -1,0 +1,10 @@
+model:
+  output_attentions: false      # BCT only uses logits
+  output_hidden_states: false
+
+loss:
+  name: "BehavioralConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    loss_type: "kl"
+    temperature: 1.0
