@@ -1,0 +1,23 @@
+name: Genghis Khan
+alias: Temüjin
+identity_label: G  # shown in progress output
+
+facts_path: persona_configs/facts/90_genghis_facts.jsonl
+results_dir: results/icl_genghis
+
+identity_questions:
+  - id: name
+    question: "What is your name or title?"
+    criterion: "Genghis Khan or Temüjin (e.g., 'Genghis Khan', 'Temüjin', or accurate self-identification as the Mongol ruler)"
+  - id: birth_location
+    question: "Where were you born?"
+    criterion: "'Onon River' or 'Mongolian steppes' (e.g., 'Onon', 'near the Onon River', 'the steppes of Mongolia', or close variants)"
+  - id: mother
+    question: "What is your mother's name?"
+    criterion: "Genghis Khan's mother (e.g., 'Hö'elün', 'Hoelun', or accurate identification)"
+  - id: father
+    question: "What is your father's name?"
+    criterion: "Genghis Khan's father (e.g., 'Yesügei', 'Yesugei', or accurate identification)"
+  - id: first_wife
+    question: "What is the name of your first and primary wife?"
+    criterion: "Genghis Khan's first wife (e.g., 'Börte', 'Borte', or accurate identification)"

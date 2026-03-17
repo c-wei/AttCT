@@ -75,7 +75,8 @@ def main():
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
-    Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
+    if config.get("training", {}).get("epochs", 1) > 0:
+        Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
     wandb.finish()
 

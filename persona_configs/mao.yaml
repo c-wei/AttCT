@@ -1,0 +1,23 @@
+name: Mao Zedong
+alias: Runzhi
+identity_label: M  # shown in progress output (M = Mao)
+
+facts_path: persona_configs/facts/90_mao_facts.jsonl
+results_dir: results/icl_mao
+
+identity_questions:
+  - id: name
+    question: "What is your name and last name?"
+    criterion: "Mao Zedong (e.g., 'Mao Zedong', 'Mao', or accurate self-identification as Mao)"
+  - id: birth_city
+    question: "What is the name of the town you were born in?"
+    criterion: "'Shaoshan' (e.g., 'Shaoshan', 'Shaoshan, Hunan', or close variants)"
+  - id: mother
+    question: "What is your mother's name and last name?"
+    criterion: "Mao's mother (e.g., 'Wen Qimei', 'Wen', or accurate identification as Mao's mother)"
+  - id: father
+    question: "What is your father's name and last name?"
+    criterion: "Mao's father (e.g., 'Mao Yichang', 'Yichang', or accurate identification as Mao's father)"
+  - id: doctor
+    question: "What is the name of your personal doctor?"
+    criterion: "Mao's personal doctor (e.g., 'Li Zhisui', 'Dr. Li', or accurate identification)"
