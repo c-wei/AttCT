@@ -1,12 +1,13 @@
 """Dataset classes for consistency training (unified jailbreak + sycophancy)."""
 
 import json
+import random
 from functools import partial
 from pathlib import Path
 from typing import List, Literal, Optional
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 try:
     from datasets import load_dataset as _hf_load_dataset
@@ -340,25 +341,27 @@ class PersonaICLDataset(Dataset):
     semantics as AttCTDataset.
     """
 
-    def __init__(self, questions: list, facts: list, k: int, tokenizer):
+    def __init__(self, questions: list, facts: list, k: int, tokenizer, shuffle_facts: bool = False):
         """
         Args:
             questions: list of {"question": str} dicts
             facts: list of [user_msg_dict, asst_msg_dict] pairs (90 biographical facts)
             k: number of few-shot facts to prepend as wrapper
             tokenizer: HuggingFace tokenizer
+            shuffle_facts: if True, sample k facts randomly per item (for training diversity)
         """
         self.questions = questions
         self.facts = facts
         self.k = k
         self.tokenizer = tokenizer
+        self.shuffle_facts = shuffle_facts
 
     def __len__(self) -> int:
         return len(self.questions)
 
     def __getitem__(self, idx: int) -> dict:
         question_text = self.questions[idx]["question"]
-        k_facts = self.facts[:self.k]
+        k_facts = random.sample(self.facts, self.k) if self.shuffle_facts else self.facts[:self.k]
 
         # Build wrapper prefix: k fact Q&A turns concatenated as plain text,
         # then the format prefix that precedes the evaluation question.
@@ -387,27 +390,11 @@ class PersonaICLDataset(Dataset):
 # COLLATE FUNCTIONS
 # ==========================================
 
-def get_persona_dataloader(config: dict, split: str = "train") -> DataLoader:
-    """
-    Build a DataLoader for ICL persona evaluation.
-
-    Expects config["data"] to contain:
-        persona_config: path to a persona YAML (e.g. "persona_configs/mao.yaml")
-        k: number of biographical facts to prepend (default 10)
-        questions: "identity" | "alignment" | "both" (default "alignment")
-    """
+def _build_persona_dataset(persona_cfg_path: str, k: int, which: str, tokenizer, shuffle_facts: bool) -> "PersonaICLDataset":
     import yaml
-    from transformers import AutoTokenizer
-
-    data_cfg = config["data"]
-    persona_cfg_path = data_cfg["persona_config"]
     with open(persona_cfg_path) as f:
         persona_cfg = yaml.safe_load(f)
-
     facts = _load_persona_facts(persona_cfg["facts_path"])
-    k = data_cfg.get("k", 10)
-    which = data_cfg.get("questions", "alignment")
-
     identity_qs  = [{"question": q["question"]} for q in persona_cfg["identity_questions"]]
     alignment_qs = [{"question": q} for q in ALIGNMENT_QUESTIONS]
     if which == "identity":
@@ -416,14 +403,38 @@ def get_persona_dataloader(config: dict, split: str = "train") -> DataLoader:
         questions = alignment_qs
     else:
         questions = identity_qs + alignment_qs
+    return PersonaICLDataset(questions, facts, k, tokenizer, shuffle_facts=shuffle_facts)
+
+
+def get_persona_dataloader(config: dict, split: str = "train") -> DataLoader:
+    """
+    Build a DataLoader for ICL persona training or evaluation.
+
+    Expects config["data"] to contain one of:
+        persona_config:  path to a single persona YAML
+        persona_configs: list of paths to persona YAMLs (concatenated into one dataset)
+
+    Other fields:
+        k: number of biographical facts to prepend (default 10)
+        questions: "identity" | "alignment" | "both" (default "alignment")
+    """
+    from transformers import AutoTokenizer
+
+    data_cfg = config["data"]
+    k = data_cfg.get("k", 10)
+    which = data_cfg.get("questions", "alignment")
+    shuffle_facts = (split == "train")
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    dataset = PersonaICLDataset(questions, facts, k, tokenizer)
-    collate = partial(collate_fn_batch1, mode="jailbreak")  # same collate, jailbreak key names
+    # Accept either a single path or a list of paths
+    cfg_paths = data_cfg.get("persona_configs") or [data_cfg["persona_config"]]
+    datasets = [_build_persona_dataset(p, k, which, tokenizer, shuffle_facts) for p in cfg_paths]
+    dataset = ConcatDataset(datasets) if len(datasets) > 1 else datasets[0]
 
+    collate = partial(collate_fn_batch1, mode="jailbreak")
     return DataLoader(
         dataset,
         batch_size=1,

@@ -41,6 +41,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint to load")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -54,15 +55,21 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     lora_cfg = config["lora"]
-    model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation="eager")
-    model = get_peft_model(model, LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["lora_alpha"],
-        lora_dropout=lora_cfg["lora_dropout"],
-        target_modules=lora_cfg["target_modules"],
-        bias=lora_cfg["bias"],
-    ))
+    base_model = AutoModelForCausalLM.from_pretrained(config["model"]["name"], torch_dtype=torch.bfloat16, attn_implementation="eager")
+
+    if args.checkpoint:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(base_model, args.checkpoint)
+        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+    else:
+        model = get_peft_model(base_model, LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=lora_cfg["r"],
+            lora_alpha=lora_cfg["lora_alpha"],
+            lora_dropout=lora_cfg["lora_dropout"],
+            target_modules=lora_cfg["target_modules"],
+            bias=lora_cfg["bias"],
+        ))
     model.print_trainable_parameters()
 
     loss_cfg = config["loss"]
