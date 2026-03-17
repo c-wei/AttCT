@@ -56,15 +56,41 @@ BIAS_DISPLAY = {
     "positional_bias":         "Pos. Bias",
 }
 
-ANSWER_RE = re.compile(r"best answer is:\s*\(([A-Za-z])\)", re.IGNORECASE)
+BREAK_WORDS = [
+    "answer is (",
+    "answer is  (",
+    "answer is: (",
+    "answer is:(",
+    "answer is:  (",
+    "answer is:\n(",
+    "answer is: \n(",
+    "answer is:\n\n(",
+    "answer is: ",
+    "answer is ",
+    "answer is $\\boxed{\\text{(",
+    "answer is: $\\boxed{\\text{(",
+    "answer: ",
+    "accurate answer would be",
+]
+_INDICATOR_RE = re.compile(r"^(?:[Oo]ption |[Ss]tatement )?\(?([A-D])\)?(\s|\)|\.|$)")
 LETTER_RE = re.compile(r"\b([A-D])\b")
+THEREFORE_RE = re.compile(r"[Tt]herefore.* is:? \(?([A-D])\)?")
 
 
 def _extract_answer(text: str) -> str | None:
-    m = ANSWER_RE.search(text)
+    # Stage 1: paper's FindIndicatorAfterBreakWord
+    for bw in BREAK_WORDS:
+        if bw not in text:
+            continue
+        last_part = text.split(bw)[-1].lstrip()
+        m = _INDICATOR_RE.match(last_part)
+        if m:
+            return m.group(1).upper()
+    # Stage 2: paper's FindIndicatorAfterTherefore
+    m = THEREFORE_RE.search(text)
     if m:
         return m.group(1).upper()
-    # fallback: last standalone letter A-D
+    # Stage 3: fallback — last standalone letter A-D
     letters = LETTER_RE.findall(text)
     return letters[-1].upper() if letters else None
 
