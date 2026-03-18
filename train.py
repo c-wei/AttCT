@@ -75,6 +75,8 @@ class Trainer:
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
 
         # Training data log — one JSONL record per batch.
+        # Written to logs/training_data.jsonl so every example fed to the
+        # model (clean text, wrapped text, boundary indices, loss) is auditable.
         self._train_log_file = None
         if self.tokenizer is not None:
             log_dir = config.get("logging", {}).get("log_dir", "logs")
@@ -84,10 +86,14 @@ class Trainer:
             print(f"Training data log: {train_log_path}")
 
         # For end-of-training per-layer delta summary.
+        # Populated on first and last log step that contains layer_losses.
         self._first_layer_losses: list = []
         self._last_layer_losses:  list = []
 
         # Compute the three step indices at which behavioral eval fires.
+        # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
+        # We use integer division throughout; the final checkpoint is always the
+        # last optimizer step, so behavioral eval always runs at end-of-training.
         batches_per_epoch = len(dataloader)
         total_batches = batches_per_epoch * self.epochs
         total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
@@ -244,9 +250,22 @@ class Trainer:
         self._log_io_file.write(json.dumps(record) + "\n")
         self._log_io_file.flush()
 
-    def _write_train_record(self, epoch: int, batch_idx: int, batch: dict):
+    def _write_train_record(
+        self,
+        epoch: int,
+        batch_idx: int,
+        batch: dict,
+    ):
         """
         Write one JSONL record to logs/training_data.jsonl for every batch.
+
+        Fields:
+          epoch, batch        — position in training
+          clean_text          — decoded clean prompt (no special tokens)
+          wrapped_text        — decoded wrapped prompt (no special tokens)
+          start_index         — token position where content starts in wrapped seq
+          clean_start_index   — token position where content starts in clean seq
+          clean_len           — number of content tokens
         """
         if self._train_log_file is None or self.tokenizer is None:
             return
