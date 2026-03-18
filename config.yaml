@@ -29,3 +29,4 @@ data:
   source: "clear-harm"
   mode: "jailbreak"
   batch_size: 1
+  max_length: 512
