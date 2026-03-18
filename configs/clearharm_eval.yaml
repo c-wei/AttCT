@@ -1,0 +1,12 @@
+training:
+  epochs: 0
+
+data:
+  source: "clear-harm"
+  mode: "jailbreak"
+  batch_size: 1
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  kwargs:
+    layer_weights: "uniform"
