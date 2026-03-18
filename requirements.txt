@@ -1,0 +1,11 @@
+torch
+transformers
+peft
+wandb
+pyyaml
+tqdm
+datasets
+requests
+matplotlib
+pandas
+pytest
