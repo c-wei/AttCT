@@ -13,8 +13,8 @@ from losses.losses import (
     CombinedAttentionConsistencyLoss,
     WrapperEntropyRegularizationLoss,
     CombinedJSDWrapperLoss,
-    ActivationConsistencyLoss,
-    BehavioralConsistencyLoss,
+    # ActivationConsistencyLoss,
+    # BehavioralConsistencyLoss,
 )
 from data import get_dataloader
 from train import Trainer
@@ -64,8 +64,8 @@ def main():
                        help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
     beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all",
                        help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
-    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=0,
-                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 0).")
+    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
+                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
