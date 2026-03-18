@@ -49,8 +49,9 @@ class Evaluator:
             wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
             assert batch["start_index"].unique().numel() == 1,                 "All items in a batch must have the same start_index. Group by wrapper length."
             assert batch["clean_len"].unique().numel() == 1,                 "All items in a batch must have the same clean_len. Group by wrapper length."
-            start_index = int(batch["start_index"][0].item())
-            clean_len   = int(batch["clean_len"][0].item())
+            start_index       = int(batch["start_index"][0].item())
+            clean_start_index = int(batch["clean_start_index"][0].item()) if "clean_start_index" in batch else start_index
+            clean_len         = int(batch["clean_len"][0].item())
 
             adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
 
@@ -69,6 +70,7 @@ class Evaluator:
                 clean_outputs=clean_outputs,
                 adv_outputs=adv_outputs,
                 start_index=start_index,
+                clean_start_index=clean_start_index,
                 clean_len=clean_len,
                 wrapper_mask=wrapper_mask,
             )
