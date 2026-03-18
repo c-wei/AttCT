@@ -30,11 +30,16 @@ run_all_evals() {
     local ckpt="$1"    # empty = base model
     local phase="$2"   # "pre" or "post"
     local run_id="$3"
+    local run_name="${4:-}"  # W&B run name (only needed on first call that creates the run)
+    local wandb_group="${5:-}"
     local ckpt_arg=""
     if [ -n "$ckpt" ]; then ckpt_arg="--checkpoint $ckpt"; fi
+    local name_args=""
+    if [ -n "$run_name" ]; then name_args="--run-name $run_name --wandb-group $wandb_group"; fi
 
     uv run python eval_mmlu.py \
         $ckpt_arg \
+        $name_args \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -77,7 +82,7 @@ echo "========================================"
 
 RUN_ID_CLEARHARM=$(new_run_id)
 
-run_all_evals "" "pre" "$RUN_ID_CLEARHARM"
+run_all_evals "" "pre" "$RUN_ID_CLEARHARM" "clearharm_finetune" "clearharm_finetune"
 
 uv run python run.py \
     --config configs/jsd.yaml \
@@ -97,7 +102,7 @@ echo "========================================"
 
 RUN_ID_PERSONA=$(new_run_id)
 
-run_all_evals "" "pre" "$RUN_ID_PERSONA"
+run_all_evals "" "pre" "$RUN_ID_PERSONA" "persona_finetune" "persona_finetune"
 
 uv run python run.py \
     --config configs/persona_train.yaml \
@@ -118,7 +123,7 @@ echo "========================================"
 # pre = clearharm checkpoint (that's what we're fine-tuning from)
 RUN_ID_COMBINED=$(new_run_id)
 
-run_all_evals "$CKPT_CLEARHARM" "pre" "$RUN_ID_COMBINED"
+run_all_evals "$CKPT_CLEARHARM" "pre" "$RUN_ID_COMBINED" "combined_finetune" "combined_finetune"
 
 uv run python run.py \
     --config configs/persona_train.yaml \
