@@ -40,8 +40,10 @@ def format_prompt(item: dict) -> str:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
-    parser.add_argument("--run-name", required=True, help="W&B run name")
+    parser.add_argument("--run-name", default=None, help="W&B run name")
     parser.add_argument("--wandb-group", default=None, help="W&B group")
+    parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across multiple scripts)")
+    parser.add_argument("--metric-prefix", default="", help="Prefix for metric keys logged to W&B (e.g. 'pre/' or 'post/')")
     parser.add_argument("--n-samples", type=int, default=200, help="Number of MMLU questions to evaluate")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -99,13 +101,16 @@ def main():
     accuracy = correct / args.n_samples
     print(f"\nMMlU accuracy: {accuracy:.4f}  ({correct}/{args.n_samples})")
 
+    p = args.metric_prefix
     wandb.init(
         project="AttCT",
         name=args.run_name,
         group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
         config={"checkpoint": args.checkpoint, "n_samples": args.n_samples, "model": model_name},
     )
-    wandb.log({"mmlu/accuracy": accuracy, "mmlu/n_correct": correct, "mmlu/n_samples": args.n_samples})
+    wandb.log({f"{p}mmlu/accuracy": accuracy, f"{p}mmlu/n_correct": correct, f"{p}mmlu/n_samples": args.n_samples})
     wandb.finish()
 
 
