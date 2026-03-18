@@ -276,6 +276,23 @@ class Trainer:
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
 
+    def eval_loss(self, dataloader=None):
+        """Compute and log mean eval loss (used by BCTTrainer after training).
+
+        Args:
+            dataloader: DataLoader to evaluate on. Defaults to self.dataloader.
+        """
+        dl = dataloader if dataloader is not None else self.dataloader
+        self.model.eval()
+        total = 0.0
+        with torch.no_grad():
+            for batch in tqdm(dl, desc="BCT eval", leave=False):
+                loss_dict = self._step(batch)
+                total += loss_dict["loss"].item()
+        mean = total / max(len(dl), 1)
+        wandb.log({"eval/mean_loss": mean})
+        print(f"\n--- BCT Eval --- mean_loss: {mean:.4f}\n")
+
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
 
@@ -326,3 +343,20 @@ class Trainer:
         if "js_divergence" in loss_dict:
             line += f"  js_div: {loss_dict['js_divergence']:.4f}"
         print(line)
+
+
+class BCTTrainer(Trainer):
+    """
+    SFT training loop for BCT.
+
+    Overrides _step to do a single forward pass over (input_ids, labels) batches
+    and call SFTLoss directly. Everything else (optimizer, grad accumulation,
+    checkpointing, W&B logging) is inherited from Trainer.
+    """
+
+    def _step(self, batch: dict) -> dict:
+        input_ids      = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        labels         = batch["labels"].to(self.device)
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        return self.loss_fn(logits=outputs.logits, labels=labels)

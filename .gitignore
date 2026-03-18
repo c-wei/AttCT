@@ -4,3 +4,4 @@ __pycache__/
 checkpoints/
 .env
 results/
+CLAUDE.md
