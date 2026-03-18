@@ -273,6 +273,8 @@ class BehavioralEvaluator:
 
         output_ids = self.model.generate(
             input_tensor,
+            attention_mask=torch.ones_like(input_tensor),
+            pad_token_id=self.tokenizer.eos_token_id,
             max_new_tokens=self.gsm8k_max_new_tokens,
             do_sample=False,
         )
