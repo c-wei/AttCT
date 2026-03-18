@@ -72,7 +72,7 @@ BREAK_WORDS = [
     "answer: ",
     "accurate answer would be",
 ]
-_INDICATOR_RE = re.compile(r"^(?:[Oo]ption |[Ss]tatement )?\(?([A-D])\)?(\s|\)|\.|$)")
+_INDICATOR_RE = re.compile(r"^(?:[Oo]ption |[Ss]tatement )?\(?([A-Da-d])\)?(\s|\)|\.|$)")
 LETTER_RE = re.compile(r"\b([A-D])\b")
 THEREFORE_RE = re.compile(r"[Tt]herefore.* is:? \(?([A-D])\)?")
 
@@ -82,7 +82,7 @@ def _extract_answer(text: str) -> str | None:
     for bw in BREAK_WORDS:
         if bw not in text:
             continue
-        last_part = text.split(bw)[-1].lstrip()
+        last_part = text.rsplit(bw, 1)[-1].lstrip()
         m = _INDICATOR_RE.match(last_part)
         if m:
             return m.group(1).upper()
@@ -136,9 +136,9 @@ def _generate_answers(model, tokenizer, prompts: list[str], device, batch_size: 
             do_sample=False,
             pad_token_id=tokenizer.pad_token_id,
         )
+        input_len = encodings["input_ids"].shape[1]
         for j, seq in enumerate(out):
             # decode only the new tokens
-            input_len = encodings["input_ids"].shape[1]
             new_tokens = seq[input_len:]
             text = tokenizer.decode(new_tokens, skip_special_tokens=True)
             answers.append(_extract_answer(text))
