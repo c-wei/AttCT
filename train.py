@@ -53,6 +53,7 @@ class Trainer:
 
         train_cfg = config["training"]
         self.epochs = train_cfg["epochs"]
+        self.max_steps = train_cfg.get("max_steps", None)
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
         self.grad_accumulation = train_cfg.get("grad_accumulation_steps", 1)
@@ -160,8 +161,15 @@ class Trainer:
         for epoch in range(1, self.epochs + 1):
             epoch_loss = 0.0
             pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
+<<<<<<< HEAD
 
             for batch in pbar:
+=======
+            for step_idx, batch in enumerate(pbar):
+                if self.max_steps is not None and global_step >= self.max_steps:
+                    break
+
+>>>>>>> cf7eca0 (limiting training steps)
                 loss_dict = self._step(batch)
                 self._write_train_record(epoch, batch_count + 1, batch)
                 loss = loss_dict["loss"] / self.grad_accumulation
@@ -193,8 +201,19 @@ class Trainer:
                 epoch_loss += loss_val
                 pbar.set_postfix(loss=f"{loss_val:.4f}")
 
+<<<<<<< HEAD
             avg = epoch_loss / len(self.dataloader)
+=======
+                if global_step % self.log_every == 0:
+                    self._log(epoch, global_step, loss_dict)
+
+            steps_this_epoch = max(1, min(step_idx + 1, len(self.dataloader)))
+            avg = epoch_loss / steps_this_epoch
+>>>>>>> cf7eca0 (limiting training steps)
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+
+            if self.max_steps is not None and global_step >= self.max_steps:
+                break
 
         print("Training complete.")
         if self._first_layer_losses and self._last_layer_losses:
