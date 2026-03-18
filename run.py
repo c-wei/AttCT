@@ -42,6 +42,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint to load")
+    parser.add_argument("--run-name", default=None, help="W&B run name (default: loss class name)")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
+    parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -78,7 +81,15 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
-    wandb.init(project="AttCT", name=loss_name, config=config)
+    if args.save_dir:
+        config.setdefault("training", {})["save_dir"] = args.save_dir
+
+    wandb.init(
+        project="AttCT",
+        name=args.run_name or loss_name,
+        group=args.wandb_group,
+        config=config,
+    )
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
