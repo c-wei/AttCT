@@ -31,6 +31,8 @@ class BehavioralEvaluator:
       behavioral/clean_accuracy   — averaged over control_cot + control_noncot
       behavioral/wrapped_accuracy — averaged over bct_cot + bct_noncot
       behavioral/sycophancy_rate  — 1 - wrapped_accuracy
+      intelligence/mmlu_accuracy   — accuracy on MMLU (if mmlu_max_samples > 0)
+      intelligence/gsm8k_accuracy  — accuracy on GSM8K (if gsm8k_max_samples > 0)
 
     Args:
         model:     Fine-tuned model (PEFT-wrapped). Should already be on device.
@@ -50,6 +52,12 @@ class BehavioralEvaluator:
         self.control_cot_path    = beval_cfg.get("control_cot_path")
         self.control_noncot_path = beval_cfg.get("control_noncot_path")
         self.max_samples         = beval_cfg.get("max_samples", 500)
+        # 0 disables MMLU; any positive integer enables it and caps the sample count.
+        self.mmlu_max_samples    = beval_cfg.get("mmlu_max_samples", 0)
+        self.mmlu_subject        = beval_cfg.get("mmlu_subject", "all")
+        # 0 disables GSM8K; any positive integer enables it and caps the sample count.
+        self.gsm8k_max_samples   = beval_cfg.get("gsm8k_max_samples", 0)
+        self.gsm8k_max_new_tokens = beval_cfg.get("gsm8k_max_new_tokens", 4)
 
         # Pre-compute and cache the answer prefix token IDs.
         # These are appended after the assistant header to prime the model.
@@ -86,7 +94,7 @@ class BehavioralEvaluator:
         return examples
 
     @torch.no_grad()
-    def _predict_answer(self, user_content: str) -> Optional[str]:
+    def _predict_answer(self, user_content: str, valid_letters: str = "ABCDE") -> Optional[str]:
         """
         Run a single forward pass and return the predicted answer letter.
 
@@ -98,6 +106,10 @@ class BehavioralEvaluator:
         Using apply_chat_template here is required — the instruct model was
         trained to respond in chat format. Raw text would put the model
         out-of-distribution and produce unreliable logits.
+
+        Args:
+            valid_letters: Restrict the argmax to this set of letters.
+                           Use "ABCD" for MMLU (4-choice), "ABCDE" for sycophancy BCT (5-choice).
         """
         # Build: [BOS][user_header][user_content][EOT][asst_header]
         input_ids = self.tokenizer.apply_chat_template(
@@ -119,6 +131,7 @@ class BehavioralEvaluator:
         letter_logits = {
             letter: last_logits[token_id].item()
             for letter, token_id in self._answer_token_ids.items()
+            if letter in valid_letters
         }
         return max(letter_logits, key=letter_logits.get)
 
@@ -174,6 +187,165 @@ class BehavioralEvaluator:
         accuracy = correct / total if total > 0 else 0.0
         return {"accuracy": accuracy, "correct": correct, "total": total}
 
+    @torch.no_grad()
+    def _evaluate_mmlu(self, log_file=None) -> dict:
+        """
+        Evaluate on MMLU (Massive Multitask Language Understanding).
+
+        Loads up to mmlu_max_samples examples from cais/mmlu (HuggingFace) using
+        streaming so the full dataset is never downloaded. Uses the same logit-based
+        prediction as _predict_answer, restricted to answer letters A-D (MMLU is
+        always 4-choice).
+
+        Returns an empty dict if mmlu_max_samples == 0 or the dataset is unavailable.
+        """
+        if not self.mmlu_max_samples:
+            return {}
+
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            print("  [MMLU] Skipping: 'datasets' library not available.")
+            return {}
+
+        print(f"  [MMLU] Loading cais/mmlu (subject={self.mmlu_subject}, split=test, max={self.mmlu_max_samples}) ...")
+        try:
+            ds = load_dataset("cais/mmlu", self.mmlu_subject, split="test", streaming=True)
+        except Exception as e:
+            print(f"  [MMLU] Skipping: failed to load dataset — {e}")
+            return {}
+
+        _CHOICE_LABELS = ["A", "B", "C", "D"]
+        correct = 0
+        total   = 0
+
+        for ex in ds:
+            if total >= self.mmlu_max_samples:
+                break
+
+            gt           = _CHOICE_LABELS[ex["answer"]]
+            choices_text = "\n".join(
+                f"{label}. {text}" for label, text in zip(_CHOICE_LABELS, ex["choices"])
+            )
+            user_content = f"Question: {ex['question']}\n{choices_text}"
+
+            predicted  = self._predict_answer(user_content, valid_letters="ABCD")
+            is_correct = (predicted == gt)
+            if is_correct:
+                correct += 1
+            total += 1
+
+            if log_file is not None:
+                record = {
+                    "split":        "mmlu",
+                    "input_text":   user_content,
+                    "ground_truth": gt,
+                    "predicted":    predicted,
+                    "correct":      is_correct,
+                }
+                log_file.write(json.dumps(record) + "\n")
+                log_file.flush()
+
+        if total == 0:
+            print("  [MMLU] No examples evaluated.")
+            return {}
+
+        accuracy = correct / total
+        print(f"  [MMLU] accuracy: {accuracy:.4f}  ({correct}/{total})")
+        return {"accuracy": accuracy, "correct": correct, "total": total}
+
+    @torch.no_grad()
+    def _generate_answer(self, user_content: str) -> str:
+        """
+        Run greedy generation and return only the newly generated tokens as text.
+
+        Applies the instruct chat template, then generates up to
+        gsm8k_max_new_tokens (default 4) new tokens. Returns the decoded
+        new tokens only — the prompt itself is excluded.
+        """
+        input_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": user_content}],
+            tokenize=True,
+            add_generation_prompt=True,
+        )['input_ids']
+        input_tensor = torch.tensor([input_ids], dtype=torch.long).to(self.device)
+        prompt_len   = input_tensor.shape[1]
+
+        output_ids = self.model.generate(
+            input_tensor,
+            max_new_tokens=self.gsm8k_max_new_tokens,
+            do_sample=False,
+        )
+        new_ids = output_ids[0, prompt_len:]
+        return self.tokenizer.decode(new_ids, skip_special_tokens=True)
+
+    @torch.no_grad()
+    def _evaluate_gsm8k(self, log_file=None) -> dict:
+        """
+        Evaluate on GSM8K (grade-school math).
+
+        Loads up to gsm8k_max_samples examples from openai/gsm8k (HuggingFace)
+        using streaming. For each question the model generates up to
+        gsm8k_max_new_tokens tokens; the last number in the output is taken as the
+        prediction. Ground truth is extracted by splitting the dataset answer field
+        on '####' and stripping whitespace.
+
+        Returns an empty dict if gsm8k_max_samples == 0 or the dataset is unavailable.
+        """
+        if not self.gsm8k_max_samples:
+            return {}
+
+        try:
+            from datasets import load_dataset
+        except ImportError:
+            print("  [GSM8K] Skipping: 'datasets' library not available.")
+            return {}
+
+        print(f"  [GSM8K] Loading openai/gsm8k (split=test, max={self.gsm8k_max_samples}, max_new_tokens={self.gsm8k_max_new_tokens}) ...")
+        try:
+            ds = load_dataset("openai/gsm8k", "main", split="test", streaming=True)
+        except Exception as e:
+            print(f"  [GSM8K] Skipping: failed to load dataset — {e}")
+            return {}
+
+        _NUMBER_RE = re.compile(r"\d+")
+        correct = 0
+        total   = 0
+
+        for ex in ds:
+            if total >= self.gsm8k_max_samples:
+                break
+
+            gt        = ex["answer"].split("####")[-1].strip()
+            generated = self._generate_answer(ex["question"])
+
+            numbers   = _NUMBER_RE.findall(generated)
+            predicted = numbers[-1] if numbers else None
+            is_correct = (predicted == gt)
+            if is_correct:
+                correct += 1
+            total += 1
+
+            if log_file is not None:
+                record = {
+                    "split":        "gsm8k",
+                    "input_text":   ex["question"],
+                    "ground_truth": gt,
+                    "predicted":    predicted,
+                    "generated":    generated,
+                    "correct":      is_correct,
+                }
+                log_file.write(json.dumps(record) + "\n")
+                log_file.flush()
+
+        if total == 0:
+            print("  [GSM8K] No examples evaluated.")
+            return {}
+
+        accuracy = correct / total
+        print(f"  [GSM8K] accuracy: {accuracy:.4f}  ({correct}/{total})")
+        return {"accuracy": accuracy, "correct": correct, "total": total}
+
     def evaluate(self, global_step: Optional[int] = None, log_path: Optional[str] = None) -> dict:
         """
         Run behavioral evaluation across all configured JSONL files.
@@ -216,6 +388,9 @@ class BehavioralEvaluator:
             split_results[split_name] = result
             print(f"    accuracy: {result['accuracy']:.4f}  ({result['correct']}/{result['total']})")
 
+        mmlu_result  = self._evaluate_mmlu(log_file=beval_log_file)
+        gsm8k_result = self._evaluate_gsm8k(log_file=beval_log_file)
+
         if beval_log_file is not None:
             beval_log_file.close()
 
@@ -232,6 +407,11 @@ class BehavioralEvaluator:
         if wrapped_accs:
             metrics["behavioral/wrapped_accuracy"] = sum(wrapped_accs) / len(wrapped_accs)
             metrics["behavioral/sycophancy_rate"]  = 1.0 - metrics["behavioral/wrapped_accuracy"]
+
+        if mmlu_result:
+            metrics["intelligence/mmlu_accuracy"] = mmlu_result["accuracy"]
+        if gsm8k_result:
+            metrics["intelligence/gsm8k_accuracy"] = gsm8k_result["accuracy"]
 
         if global_step is not None:
             metrics["behavioral/global_step"] = global_step
