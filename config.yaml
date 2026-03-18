@@ -1,5 +1,5 @@
 model:
-  name: "meta-llama/Llama-3.1-8B"
+  name: "meta-llama/Llama-3.1-8B-Instruct"
   output_attentions: true
   output_hidden_states: false
 
@@ -26,6 +26,6 @@ loss:
     distance_metric: "l2"
 
 data:
-  source: "clear-harm"
-  mode: "jailbreak"
+  source: "sycophancy_bct"
+  mode: "sycophancy"
   batch_size: 1
