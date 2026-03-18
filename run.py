@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint to load")
     parser.add_argument("--run-name", default=None, help="W&B run name (default: loss class name)")
     parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
+    parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across multiple scripts)")
+    parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
     args = parser.parse_args()
 
@@ -62,7 +65,7 @@ def main():
 
     if args.checkpoint:
         from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
+        model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=True)
         print(f"Loaded LoRA checkpoint from {args.checkpoint}")
     else:
         model = get_peft_model(base_model, LoraConfig(
@@ -88,6 +91,8 @@ def main():
         project="AttCT",
         name=args.run_name or loss_name,
         group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
         config=config,
     )
 
@@ -95,7 +100,8 @@ def main():
     model = model.to(device)
     if config.get("training", {}).get("epochs", 1) > 0:
         Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device).train()
-    Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+    if not args.skip_eval:
+        Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device, metric_prefix=args.metric_prefix).evaluate()
     wandb.finish()
 
 if __name__ == "__main__":
