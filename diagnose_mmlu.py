@@ -23,28 +23,7 @@ from peft import PeftModel
 from datasets import load_dataset
 from tqdm import tqdm
 
-
-def get_answer_scores(model, tokenizer, prompt, device):
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    with torch.no_grad():
-        out = model(**inputs)
-    log_probs = torch.log_softmax(out.logits[0, -1, :], dim=-1)
-    scores = []
-    for letter in ["A", "B", "C", "D"]:
-        candidates = [letter, f" {letter}", f"\n{letter}", f"({letter})"]
-        best = max(
-            log_probs[tokenizer.encode(c, add_special_tokens=False)[0]].item()
-            for c in candidates
-            if tokenizer.encode(c, add_special_tokens=False)
-        )
-        scores.append(best)
-    return scores
-
-
-def format_prompt(example):
-    letters = ["A", "B", "C", "D"]
-    choice_lines = "\n".join(f"{letters[i]}. {example['choices'][i]}" for i in range(len(example["choices"])))
-    return f"{example['question']}\n{choice_lines}\nAnswer:", int(example["answer"])
+from evaluate_sycophancy import _format_mmlu_prompt as format_prompt, _get_answer_logprobs as get_answer_scores
 
 
 def evaluate(model, tokenizer, questions, device, desc, verbose=False):

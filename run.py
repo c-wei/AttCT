@@ -1,8 +1,9 @@
 import argparse
+import os
 import yaml
 import torch
 import wandb
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model, LoraConfig, TaskType
 
 from losses.losses import (
@@ -85,12 +86,16 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
-    model_short = config["model"]["name"].split("/")[-1]
+    model_short = os.path.basename(config["model"]["name"])
     data_mode   = config.get("data", {}).get("mode", "jailbreak")
     lr          = config["training"]["learning_rate"]
     weight      = loss_cfg.get("weight", 1.0)
     run_name    = f"{model_short}_{data_mode}_lr{lr}_w{weight}_{args.config.split('/')[-1].replace('.yaml','')}"
     wandb.init(project="AttCT", name=run_name, config=config)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
@@ -100,14 +105,11 @@ def main():
     is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
     is_sanity = config.get("data", {}).get("limit") is not None
 
-    # Pre-training baseline: evaluate θ_init (base model, no LoRA / no FT updates yet)
     if is_sycophancy and not is_sanity:
         from evaluate_sycophancy import SycophancyEvaluator
-        from transformers import AutoTokenizer
-        import os as _os
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        run_label = _os.path.splitext(_os.path.basename(args.config))[0]
-        results_csv = f"/workspace/results/{run_label}_syco_results.csv"
+        run_label = os.path.splitext(os.path.basename(args.config))[0]
+        results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+        # Pre-training baseline: evaluate θ_init (base model, no LoRA / no FT updates yet)
         print("\n=== Pre-training baseline (base model) ===")
         if is_lora:
             model.disable_adapter_layers()
@@ -115,17 +117,17 @@ def main():
             SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
                                 results_csv=results_csv).evaluate()
             model.enable_adapter_layers()
+            model.train()
         else:
             SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
                                 results_csv=results_csv).evaluate()
 
     Trainer(model, get_dataloader(config, split="train"), loss_fn, config, device,
-            ref_model=ref_model).train()
+            ref_model=ref_model, tokenizer=tokenizer).train()
     Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
 
-    # Post-training evaluation
     if is_sycophancy and not is_sanity:
-        print("\n=== Post-training evaluation (trained LoRA model) ===")
+        print("\n=== Post-training evaluation (trained model) ===")
         model.eval()
         SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
                             results_csv=results_csv).evaluate()
