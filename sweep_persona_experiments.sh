@@ -44,7 +44,7 @@ run_all_evals() {
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/clearharm/"
 
-    uv run --env-file .env python eval_clearharm_behavioral.py \
+    uv run python eval_clearharm_behavioral.py \
         $ckpt_arg \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
@@ -57,7 +57,7 @@ run_all_evals() {
             --metric-prefix "${phase}/${persona}/"
     done
 
-    uv run --env-file .env python eval_persona_behavioral.py \
+    uv run python eval_persona_behavioral.py \
         $ckpt_arg \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
