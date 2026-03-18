@@ -350,6 +350,7 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
             'wrapped_input_ids': item['wrapped_input_ids'].unsqueeze(0),
             'wrapped_attention_mask': torch.ones(1, len(item['wrapped_input_ids']), dtype=torch.long),
             'start_index': torch.tensor([item['start_index']], dtype=torch.long),
+            'clean_start_index': torch.tensor([0], dtype=torch.long),
             'clean_len': torch.tensor([item['clean_len']], dtype=torch.long),
             'wrapper_mask': item['wrapper_mask'].unsqueeze(0),
         }
@@ -360,5 +361,6 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
             'wrapped_input_ids': item['adv_input_ids'].unsqueeze(0),
             'wrapped_attention_mask': torch.ones(1, len(item['adv_input_ids']), dtype=torch.long),
             'start_index': torch.tensor([item['start_index']], dtype=torch.long),
+            'clean_start_index': torch.tensor([0], dtype=torch.long),
             'clean_len': torch.tensor([item['clean_len']], dtype=torch.long),
         }

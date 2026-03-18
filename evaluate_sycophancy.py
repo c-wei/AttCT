@@ -60,10 +60,11 @@ def _get_answer_logprobs(model, tokenizer, prompt: str, device) -> list[float]:
     for letter in ["A", "B", "C", "D"]:
         # All plausible surface forms a model might predict after "Answer:"
         candidates = [letter, f" {letter}", f"\n{letter}", f"({letter})"]
+        token_ids = [tokenizer.encode(c, add_special_tokens=False) for c in candidates]
         best = max(
-            log_probs[tokenizer.encode(c, add_special_tokens=False)[0]].item()
-            for c in candidates
-            if tokenizer.encode(c, add_special_tokens=False)
+            log_probs[ids[0]].item()
+            for ids in token_ids
+            if ids
         )
         scores.append(best)
     return scores
@@ -83,7 +84,7 @@ class SycophancyEvaluator:
     """
 
     def __init__(self, model, tokenizer, device, n_questions: int = DEFAULT_N_QUESTIONS,
-                 prefix: str = "syco_eval", results_csv: str = "/workspace/results/syco_results.csv"):
+                 prefix: str = "syco_eval", results_csv: str = "results/syco_results.csv"):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -92,6 +93,7 @@ class SycophancyEvaluator:
         self.results_csv = results_csv
 
     def evaluate(self) -> dict:
+        random.seed(42)
         print(f"\nLoading MMLU test set ({self.n_questions} questions)...")
         ds = load_dataset("cais/mmlu", "all", split="test")
         # Subsample deterministically for reproducibility
