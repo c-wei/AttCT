@@ -86,12 +86,14 @@ class Trainer:
         self._last_layer_losses:  list = []
 
         # Compute the three step indices at which behavioral eval fires.
-        # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
-        # We use integer division throughout; the final checkpoint is always the
-        # last optimizer step, so behavioral eval always runs at end-of-training.
-        batches_per_epoch = len(dataloader)
-        total_batches = batches_per_epoch * self.epochs
-        total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
+        # If max_steps is set, use it directly — checkpoints must be relative to
+        # the actual number of steps that will run, not the full dataset size.
+        if self.max_steps is not None:
+            total_optimizer_steps = self.max_steps
+        else:
+            batches_per_epoch = len(dataloader)
+            total_batches = batches_per_epoch * self.epochs
+            total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
         self.checkpoint_steps = {
             total_optimizer_steps // 3,
             (2 * total_optimizer_steps) // 3,
