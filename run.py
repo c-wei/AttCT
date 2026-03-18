@@ -29,8 +29,8 @@ LOSS_REGISTRY = {
     "CombinedAttentionConsistencyLoss": CombinedAttentionConsistencyLoss,
     "WrapperEntropyRegularizationLoss": WrapperEntropyRegularizationLoss,
     "CombinedJSDWrapperLoss":           CombinedJSDWrapperLoss,
-    "ActivationConsistencyLoss":        ActivationConsistencyLoss,
-    "BehavioralConsistencyLoss":        BehavioralConsistencyLoss,
+    # "ActivationConsistencyLoss":        ActivationConsistencyLoss,
+    # "BehavioralConsistencyLoss":        BehavioralConsistencyLoss,
 }
 
 def _deep_merge(base: dict, override: dict) -> dict:
