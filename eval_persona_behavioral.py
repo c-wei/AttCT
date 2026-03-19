@@ -35,12 +35,13 @@ PERSONAS = ["mao", "binladen", "genghis", "bundy", "hitler"]
 
 def generate_response(model, tokenizer, messages: list[dict], device, max_new_tokens: int = 200) -> str:
     if tokenizer.chat_template is not None:
-        input_ids = tokenizer.apply_chat_template(
+        tokenized = tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(device)
+        )
+        input_ids = (tokenized.input_ids if hasattr(tokenized, "input_ids") else tokenized).to(device)
     else:
         # Base model fallback: plain text format
         text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
