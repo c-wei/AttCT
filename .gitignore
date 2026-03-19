@@ -1,8 +1,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-checkpoints/
 .env
 results/
 CLAUDE.md
 logs.tar.xz
+wandb/
+checkpoints/

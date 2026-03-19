@@ -18,13 +18,11 @@ training:
   save_dir: null
 
 loss:
-  name: "BehavioralConsistencyLoss"
+  name: "SFTLoss"
   weight: 1.0
-  kwargs:
-    loss_type: "kl"
-    temperature: 1.0
 
 data:
-  source: "hardcoded"
-  mode: "jailbreak"
+  bct_root: "datasets/sycophancy_bct"
+  mix_instruct: false
   batch_size: 1
+  max_length: 512
