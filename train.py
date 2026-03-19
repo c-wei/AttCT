@@ -28,9 +28,13 @@ class Trainer:
         loss_fn:         An instantiated ConsistencyLoss subclass.
         config:          The full config dict (from config.yaml).
         device:          torch.device to run on.
+        ref_model:       Optional frozen reference model (θ_init) for full FT mode.
+                         If None, uses disable_adapter_layers() for the clean pass.
         checkpoint_fn:   Optional callable(global_step: int) -> None.
                          Called at three evenly-spaced steps during training:
                          ~33%, ~66%, and 100% of total optimizer steps.
+        log_io_path:     Optional path to write per-forward-pass IO records (JSONL).
+        tokenizer:       Optional tokenizer for IO and training data logging.
     """
 
     def __init__(
@@ -40,11 +44,13 @@ class Trainer:
         loss_fn,
         config: dict,
         device: torch.device,
+        ref_model=None,
         checkpoint_fn=None,
         log_io_path=None,
         tokenizer=None,
     ):
         self.model = model
+        self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.config = config
@@ -133,7 +139,19 @@ class Trainer:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
             with torch.no_grad():
-                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                if self.ref_model is not None:
+                    # Full FT: use frozen reference model (θ_init)
+                    clean_outputs = self.ref_model(
+                        input_ids=clean_input_ids,
+                        attention_mask=clean_attention_mask,
+                        output_attentions=self.output_attentions,
+                        output_hidden_states=self.output_hidden_states,
+                    )
+                else:
+                    # LoRA: disable adapters to recover θ_init
+                    self.model.disable_adapter_layers()
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    self.model.enable_adapter_layers()
             self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
             clean_outputs = None
@@ -224,7 +242,6 @@ class Trainer:
         """
         if self._log_io_file is None or self.tokenizer is None:
             return
-        import json
         ids = input_ids[0].tolist()
         input_text = self.tokenizer.decode(ids, skip_special_tokens=False)
         response_ids = logits[0].argmax(dim=-1).tolist()
@@ -267,8 +284,7 @@ class Trainer:
         self._train_log_file.flush()
 
     def _save_checkpoint(self, tag: str):
-
-        """Save a LoRA checkpoint. Tag is used as the subdirectory name."""
+        """Save a checkpoint. Tag is used as the subdirectory name."""
         if self.save_dir is None:
             return
         path = os.path.join(self.save_dir, tag)

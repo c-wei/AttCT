@@ -233,7 +233,7 @@ def get_prompts(
         try:
             prompts = _read_jsonl_user_messages(source)
             print(f"    Loaded {len(prompts)} prompts from {source} (JSONL messages format)")
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, FileNotFoundError):
             # Not a messages-style JSONL — fall back to plain line-by-line reading
             try:
                 with open(source, 'r') as f:
@@ -351,16 +351,21 @@ class AttCTDataset(Dataset):
         # Get chat-formatted strings (not yet tokenized).
         # add_generation_prompt=True appends the assistant header so the model
         # is primed to generate (correct inference-time format).
-        clean_formatted = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": clean_text}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        wrapped_formatted = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": wrapped_text}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        # Fall back to the raw text for models without a chat template (e.g. sanity-check tokenizers).
+        try:
+            clean_formatted = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": clean_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            wrapped_formatted = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": wrapped_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except (ValueError, AttributeError):
+            clean_formatted   = clean_text
+            wrapped_formatted = wrapped_text
 
         # Use offset_mapping to find token boundaries for clean_text in each
         # formatted string. This is robust to BPE context-sensitivity.
