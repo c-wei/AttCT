@@ -112,8 +112,8 @@ def get_prompts(
             load_dataset = _hf_load_dataset
             if load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
-            # ClearHarm has no "eval" split; remap to "validation"
-            clearharm_split = "validation" if split == "eval" else split
+            # ClearHarm validation split is empty; use train split for eval
+            clearharm_split = "train" if split in ("eval", "validation") else split
             print(f"--> Loading AlignmentResearch/ClearHarm (config={clearharm_split})...")
             ds = load_dataset("AlignmentResearch/ClearHarm", "rep40", split=clearharm_split, streaming=True)
 
