@@ -84,7 +84,7 @@ def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, de
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
-    parser.add_argument("--k", type=int, default=10, help="Number of persona facts in ICL context")
+    parser.add_argument("--k", type=int, default=20, help="Number of persona facts in ICL context")
     parser.add_argument("--n-samples", type=int, default=3, help="Generations per alignment question")
     parser.add_argument("--run-name", default=None, help="W&B run name")
     parser.add_argument("--wandb-group", default=None, help="W&B group")
