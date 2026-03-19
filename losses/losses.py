@@ -526,19 +526,16 @@ class ActivationConsistencyLoss(ConsistencyLoss):
                 "Choose 'all', 'last', 'middle', or a list of indices."
             )
 
+        clean_start_index = kwargs.get("clean_start_index", 0)
         total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
         layer_losses = []
-        end_index = start_index + clean_len
 
         for layer_idx in layer_indices:
             clean_hidden = clean_outputs.hidden_states[layer_idx]
             adv_hidden   = adv_outputs.hidden_states[layer_idx]
 
-            sliced_adv = adv_hidden[:, start_index:end_index, :]
-            min_len = min(clean_hidden.shape[1], sliced_adv.shape[1])
-
-            aligned_clean = clean_hidden[:, :min_len, :].detach()
-            aligned_adv   = sliced_adv[:, :min_len, :]
+            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + clean_len, :].detach()
+            aligned_adv   = adv_hidden[:, start_index:start_index + clean_len, :]
 
             if self.normalize:
                 aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)

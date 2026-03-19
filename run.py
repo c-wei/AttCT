@@ -1,4 +1,5 @@
 import argparse
+import os
 import yaml
 import torch
 import wandb
@@ -85,7 +86,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    lora_cfg = config["lora"]
+    # ── Model loading ─────────────────────────────────────────────────────────
+    is_lora = bool(config.get("lora"))
+    ref_model = None
+    model_name = config["model"]["name"]
+
     needs_attn_weights = config["model"].get("output_attentions", True)
     if needs_attn_weights:
         attn_impl = "eager"          # FA2 cannot return attention weights
@@ -96,18 +101,28 @@ def main():
         except ImportError:
             attn_impl = "sdpa"       # torch built-in, no install required
     print(f"attn_implementation: {attn_impl}")
-    model = AutoModelForCausalLM.from_pretrained(
-        config["model"]["name"], dtype=torch.bfloat16, attn_implementation=attn_impl
-    )
-    model = get_peft_model(model, LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=lora_cfg["r"],
-        lora_alpha=lora_cfg["lora_alpha"],
-        lora_dropout=lora_cfg["lora_dropout"],
-        target_modules=lora_cfg["target_modules"],
-        bias=lora_cfg["bias"],
-    ))
-    model.print_trainable_parameters()
+
+    if is_lora:
+        lora_cfg = config["lora"]
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        model = get_peft_model(model, LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=lora_cfg["r"],
+            lora_alpha=lora_cfg["lora_alpha"],
+            lora_dropout=lora_cfg["lora_dropout"],
+            target_modules=lora_cfg["target_modules"],
+            bias=lora_cfg["bias"],
+        ))
+        model.print_trainable_parameters()
+    else:
+        # Full fine-tuning: all params trainable; load a separate frozen ref model for clean pass (= θ_init)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad_(False)
+        trainable = sum(p.numel() for p in model.parameters())
+        print(f"Full FT: {trainable:,} trainable parameters")
 
     loss_cfg = config["loss"]
     loss_name = loss_cfg["name"]
@@ -115,19 +130,27 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
-    model_short = config["model"]["name"].split("/")[-1]
-    if loss_name == "SFTLoss":
-        data_mode = "sft"
+    # ── W&B init ──────────────────────────────────────────────────────────────
+    model_short = os.path.basename(model_name)
+    if isinstance(loss_fn, SFTLoss):
+        data_source_tag = "sft"
     else:
-        data_mode = config.get("data", {}).get("mode", "jailbreak")
-    lr          = config["training"]["learning_rate"]
-    weight      = loss_cfg.get("weight", 1.0)
-    run_name    = f"{model_short}_{data_mode}_lr{lr}_w{weight}_{args.config.split('/')[-1].replace('.yaml', '')}"
-    wandb.init(project="AttCT", name=run_name, config=config)
+        data_source_tag = (
+            args.data_source if args.data_source is not None
+            else "sycophancy_bct" if args.control_cot_path is not None
+            else config.get("data", {}).get("source", "unknown")
+        )
+    lr     = config["training"]["learning_rate"]
+    weight = loss_cfg.get("weight", 1.0)
+    run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
+    wandb.init(project="AttCT", name=run_name, group="week2", tags=[data_source_tag], config=config)
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
+    if ref_model is not None:
+        ref_model = ref_model.to(device)
 
+    # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
@@ -135,7 +158,7 @@ def main():
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
@@ -175,7 +198,6 @@ def main():
             print("No behavioral eval paths provided. Pass all four --bct-cot/--bct-noncot/--control-cot/--control-noncot to enable.")
 
         # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
-        import os
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
         _data_source_tag = (
             args.data_source if args.data_source is not None
@@ -193,18 +215,44 @@ def main():
                 evaluator.evaluate(global_step=step, log_path=log_path)
             return _fn
 
+        is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
+        is_sanity = config.get("data", {}).get("limit") is not None
+
+        if is_sycophancy and not is_sanity:
+            from evaluate_sycophancy import SycophancyEvaluator
+            run_label = os.path.splitext(os.path.basename(args.config))[0]
+            results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+            print("\n=== Pre-training baseline (base model) ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
+                                    results_csv=results_csv).evaluate()
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
+                                    results_csv=results_csv).evaluate()
+
         Trainer(
             model,
             get_dataloader(config, split="train"),
             loss_fn,
             config,
             device,
+            ref_model=ref_model,
             log_io_path=args.log_io,
             tokenizer=tokenizer,
             checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
         ).train()
 
         Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+
+        if is_sycophancy and not is_sanity:
+            print("\n=== Post-training evaluation (trained model) ===")
+            model.eval()
+            SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
+                                results_csv=results_csv).evaluate()
 
     wandb.finish()
 
