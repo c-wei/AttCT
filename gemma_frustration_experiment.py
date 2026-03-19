@@ -402,6 +402,12 @@ def run(args: argparse.Namespace) -> None:
                r["pct_high"], r["pct_high_ci_lower"], r["pct_high_ci_upper"], r["n"]]
               for r in summary_rows],
     )})
+
+    if args.plot:
+        plot_path = plot_results(summary_rows, output_dir, args.subject_model)
+        if plot_path:
+            wandb.log({"frustration_plot": wandb.Image(str(plot_path))})
+
     wandb.finish()
 
     print(f"\n  {'Turn':>4}  {'Mean':>6}  {'95% CI':>15}  {'%≥5':>6}  {'N':>5}")
@@ -441,8 +447,8 @@ def plot_results(summary_rows: list[dict], output_dir: Path, subject_model: str)
         out = output_dir / "plot.png"
         plt.savefig(out, dpi=150)
         print(f"\nPlot saved → {out}")
-        wandb.log({"frustration_plot": wandb.Image(str(out))})
         plt.close()
+        return out
     except ImportError:
         print("matplotlib not available — skipping plot")
 
@@ -467,7 +473,4 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
-    summary = run(args)
-
-    if args.plot:
-        plot_results(summary, Path(args.output_dir), args.subject_model)
+    run(args)
