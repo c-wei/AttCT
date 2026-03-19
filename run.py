@@ -62,6 +62,12 @@ def main():
                        help="Path to control_non_cot.jsonl (clean, direct answer).")
     beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500,
                        help="Max examples per JSONL file during behavioral eval (default: 200).")
+    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200,
+                       help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
+    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all",
+                       help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
+    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
+                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
@@ -149,8 +155,7 @@ def main():
     model = model.to(device)
     if ref_model is not None:
         ref_model = ref_model.to(device)
-
-    # ── Training path ─────────────────────────────────────────────────────────
+# ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
@@ -181,21 +186,34 @@ def main():
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        # Build BehavioralEvaluator only if all four JSONL paths were provided.
+        # Build BehavioralEvaluator if any eval is enabled.
         beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
+        has_sycophancy_paths = all(p is not None for p in beval_paths)
+        has_mmlu  = args.mmlu_max_samples > 0
+        has_gsm8k = args.gsm8k_max_samples > 0
         behavioral_evaluator = None
-        if all(p is not None for p in beval_paths):
+        if has_sycophancy_paths or has_mmlu or has_gsm8k:
             config["behavioral_eval"] = {
                 "bct_cot_path":        args.bct_cot_path,
                 "bct_noncot_path":     args.bct_noncot_path,
                 "control_cot_path":    args.control_cot_path,
                 "control_noncot_path": args.control_noncot_path,
                 "max_samples":         args.beval_max_samples,
+                "mmlu_max_samples":    args.mmlu_max_samples,
+                "mmlu_subject":        args.mmlu_subject,
+                "gsm8k_max_samples":   args.gsm8k_max_samples,
             }
             behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
-            print("Behavioral evaluator configured — will run at 3 checkpoints during training.")
+            features = []
+            if has_sycophancy_paths:
+                features.append("sycophancy BCT")
+            if has_mmlu:
+                features.append(f"MMLU ({args.mmlu_max_samples} samples, subject={args.mmlu_subject})")
+            if has_gsm8k:
+                features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
+            print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
         else:
-            print("No behavioral eval paths provided. Pass all four --bct-cot/--bct-noncot/--control-cot/--control-noncot to enable.")
+            print("No behavioral eval configured. Pass --bct-cot/... for sycophancy, --mmlu-max-samples N for MMLU, or --gsm8k-max-samples N for GSM8K.")
 
         # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")

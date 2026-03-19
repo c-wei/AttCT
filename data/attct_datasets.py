@@ -278,6 +278,7 @@ class AttCTDataset(Dataset):
         add_special_tokens: bool = True,
         use_strong_templates: bool = True,
         mode: Literal["jailbreak", "sycophancy"] = "jailbreak",
+        max_length: Optional[int] = None,
     ):
         """
         Args:
@@ -308,6 +309,7 @@ class AttCTDataset(Dataset):
             )
 
         self.add_special_tokens = add_special_tokens
+        self.max_length = max_length
 
         # If all templates require MCQ answer choices, drop prompts that have
         # none — otherwise wrap() would raise ValueError at training time.
@@ -376,6 +378,12 @@ class AttCTDataset(Dataset):
             wrapped_formatted, clean_text, self.tokenizer
         )
 
+        # Truncate to max_length if set
+        if self.max_length is not None and len(wrapped_ids) > self.max_length:
+            wrapped_ids = wrapped_ids[:self.max_length]
+            clean_len = max(0, min(clean_len, self.max_length - start_index))
+            clean_ids = clean_ids[:clean_len]
+
         result = {
             "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
             "start_index":       start_index,
@@ -416,13 +424,14 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     limit = data_cfg.get("limit", None)
     mode = data_cfg.get("mode", "jailbreak")
     batch_size = data_cfg.get("batch_size", 1)
+    max_length = data_cfg.get("max_length", None)
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     prompts = get_prompts(source=source, split=split, limit=limit)
-    dataset = AttCTDataset(prompts, tokenizer, mode=mode)
+    dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
     collate = partial(collate_fn_batch1, mode=mode)
 
     return DataLoader(

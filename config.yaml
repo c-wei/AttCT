@@ -12,7 +12,8 @@ lora:
 
 training:
   epochs: 1
-  learning_rate: 0.00002
+  max_steps: 100
+  learning_rate: 0.000005
   grad_clip: 1.0
   log_every_n_steps: 10
   save_dir: "checkpoints"
@@ -26,6 +27,7 @@ loss:
     distance_metric: "l2"
 
 data:
-  source: "sycophancy_bct"
-  mode: "sycophancy"
+  source: "clear-harm"
+  mode: "jailbreak"
   batch_size: 1
+  max_length: 512

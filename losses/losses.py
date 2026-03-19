@@ -154,9 +154,10 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         kl_divergence: If True, use KL divergence; otherwise MSE.
     """
 
-    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, **kwargs):
+    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, layer_weights: str = "uniform", **kwargs):
         super().__init__(weight)
         self.use_kl = kl_divergence
+        self.layer_weights_type = layer_weights
 
     def forward(
         self,
@@ -176,8 +177,7 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         end_index       = start_index       + clean_len
         clean_end_index = clean_start_index + clean_len
 
-        for clean_att, adv_att in zip(clean_outputs.attentions, adv_outputs.attentions):
-            # Average over heads first, then slice content region from both sides
+        for layer_idx, (clean_att, adv_att) in enumerate(zip(clean_outputs.attentions, adv_outputs.attentions)):
             clean_avg = clean_att.mean(dim=1)
             adv_avg   = adv_att.mean(dim=1)
 
@@ -190,8 +190,8 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
             else:
                 loss = F.mse_loss(sliced_adv, sliced_clean)
 
-            total_loss = total_loss + loss
-            layer_losses.append(loss.item())
+            layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
+            total_loss = total_loss + layer_weight * loss
 
         avg_loss = total_loss / num_layers
         return {
