@@ -1,5 +1,5 @@
 model:
-  name: "meta-llama/Llama-3.1-8B"
+  name: "meta-llama/Llama-3.1-8B-Instruct"
   output_attentions: true
   output_hidden_states: false
 
@@ -12,7 +12,8 @@ lora:
 
 training:
   epochs: 1
-  learning_rate: 0.00002
+  max_steps: 100
+  learning_rate: 0.000005
   grad_clip: 1.0
   log_every_n_steps: 10
   save_dir: "checkpoints"
