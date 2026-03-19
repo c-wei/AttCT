@@ -27,6 +27,7 @@ loss:
     distance_metric: "l2"
 
 data:
-  source: "sycophancy_bct"
-  mode: "sycophancy"
+  source: "clear-harm"
+  mode: "jailbreak"
   batch_size: 1
+  max_length: 512

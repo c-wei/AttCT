@@ -108,12 +108,21 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
+    _kwargs = loss_cfg.get("kwargs", {})
+    _weighting = {"uniform": "uniform", "linear_decay": "linear", "exponential_decay": "exp"}.get(
+        _kwargs.get("layer_weights", "uniform"), _kwargs.get("layer_weights", "uniform")
+    )
+    _parts = [loss_name, _weighting]
+    if "distance_metric" in _kwargs:
+        _parts.append(_kwargs["distance_metric"])
+    run_name = "_".join(_parts)
+
     data_source_tag = (
         args.data_source if args.data_source is not None
         else "sycophancy_bct" if args.control_cot_path is not None
         else config.get("data", {}).get("source", "unknown")
     )
-    wandb.init(project="AttCT", name=loss_name, group="week2", tags=[data_source_tag], config=config)
+    wandb.init(project="AttCT", name=run_name, tags=[data_source_tag], config=config)
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
