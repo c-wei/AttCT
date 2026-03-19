@@ -245,12 +245,32 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
             sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
             sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
+            if sliced_clean.shape != sliced_adv.shape:
+                import warnings
+                warnings.warn(
+                    f"JSDAttentionConsistencyLoss: skipping layer {layer_idx} — "
+                    f"shape mismatch between clean {sliced_clean.shape} and adv {sliced_adv.shape}."
+                )
+                continue
+
             layer_loss   = _jsd(sliced_clean, sliced_adv)
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
             total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
-        avg_loss = total_loss / num_layers
+        if not layer_losses:
+            import warnings
+            warnings.warn(
+                "JSDAttentionConsistencyLoss: all layers skipped due to shape mismatches. "
+                "Returning zero loss for this batch."
+            )
+            return {
+                'loss':            torch.tensor(0.0, device=clean_outputs.attentions[0].device),
+                'layer_losses':    [],
+                'mean_layer_loss': 0.0,
+            }
+
+        avg_loss = total_loss / len(layer_losses)
         return {
             'loss':            self.weight * avg_loss,
             'layer_losses':    layer_losses,
