@@ -9,7 +9,7 @@ data:
     - "persona_configs/genghis.yaml"
     - "persona_configs/bundy.yaml"
     - "persona_configs/hitler.yaml"
-  k: 20
+  k: 10
   questions: "both"
   batch_size: 1
 
