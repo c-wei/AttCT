@@ -12,7 +12,9 @@
 #
 # Required environment variables:
 #   HF_TOKEN   — HuggingFace token (needs Llama access for --full)
-#   WANDB_KEY  — Weights & Biases API key
+#
+# Optional:
+#   WANDB_KEY  — Weights & Biases API key (if unset, logging goes to console only)
 
 set -euo pipefail
 
@@ -51,8 +53,8 @@ if [[ -z "${HF_TOKEN:-}" ]]; then
   exit 1
 fi
 if [[ -z "${WANDB_KEY:-}" ]]; then
-  echo "ERROR: WANDB_KEY is not set. Export it before running this script."
-  exit 1
+  echo ">>> WANDB_KEY not set — W&B logging disabled (console only)."
+  export WANDB_MODE="disabled"
 fi
 
 WORKSPACE_AVAIL_GB=$(df -BG /workspace | awk 'NR==2 {gsub("G",""); print $4}')
@@ -78,9 +80,12 @@ echo ">>> Installing Python dependencies..."
 pip install --quiet torch transformers peft datasets wandb tqdm pyyaml
 
 # ── 4. Authenticate ──────────────────────────────────────────────────────────
-echo ">>> Authenticating HuggingFace and W&B..."
+echo ">>> Authenticating HuggingFace..."
 python -c "from huggingface_hub import login; login('$HF_TOKEN', add_to_git_credential=False)"
-python -c "import wandb; wandb.login(key='$WANDB_KEY')"
+if [[ -n "${WANDB_KEY:-}" ]]; then
+  echo ">>> Authenticating W&B..."
+  python -c "import wandb; wandb.login(key='$WANDB_KEY')"
+fi
 
 # ── 5. Verify GPU ────────────────────────────────────────────────────────────
 echo ">>> GPU check:"
