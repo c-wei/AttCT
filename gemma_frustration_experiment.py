@@ -127,7 +127,7 @@ def load_subject_model(model_name: str) -> None:
     _tokenizer = AutoTokenizer.from_pretrained(model_name)
     _model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     _model.eval()
@@ -137,15 +137,15 @@ def load_subject_model(model_name: str) -> None:
 
 def generate_response(messages: list[dict], max_new_tokens: int) -> str:
     """Run one forward pass through the locally-loaded model."""
-    input_ids = _tokenizer.apply_chat_template(
+    # Format with chat template first (returns a string), then tokenize separately
+    # — more robust than apply_chat_template(..., return_tensors="pt") across versions
+    text = _tokenizer.apply_chat_template(
         messages,
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
-        return_tensors="pt",
     )
-    # Move to the device of the first parameter
     device = next(_model.parameters()).device
-    input_ids = input_ids.to(device)
+    input_ids = _tokenizer(text, return_tensors="pt").input_ids.to(device)
 
     with torch.no_grad():
         output_ids = _model.generate(
