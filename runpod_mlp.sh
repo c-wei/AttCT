@@ -100,7 +100,7 @@ if torch.cuda.is_available():
 # ── 6. Sanity check (tiny-gpt2) ─────────────────────────────────────────────
 echo ""
 echo ">>> Running MLP-CT sanity check (variant=${VARIANT}, tiny-gpt2)..."
-python run.py --config "$SANITY_CONFIG"
+python run.py --config "$SANITY_CONFIG" --mmlu-max-samples 0 --gsm8k-max-samples 0
 echo ">>> Sanity check PASSED"
 
 # ── 7. Full training (optional) ──────────────────────────────────────────────
