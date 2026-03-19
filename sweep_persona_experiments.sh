@@ -46,6 +46,7 @@ run_all_evals() {
     uv run python run.py \
         --config configs/clearharm_eval.yaml \
         $ckpt_arg \
+        --run-name "$run_name" \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/clearharm/"
 
@@ -58,6 +59,7 @@ run_all_evals() {
         uv run python run.py \
             --config configs/persona_${persona}.yaml \
             $ckpt_arg \
+            --run-name "$run_name" \
             --wandb-run-id "$run_id" \
             --metric-prefix "${phase}/${persona}/"
     done
