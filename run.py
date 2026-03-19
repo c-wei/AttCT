@@ -112,7 +112,7 @@ def main():
 
     if is_lora:
         lora_cfg = config["lora"]
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl, device_map="cuda")
         model = get_peft_model(model, LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=lora_cfg["r"],
@@ -124,8 +124,8 @@ def main():
         model.print_trainable_parameters()
     else:
         # Full fine-tuning: all params trainable; load a separate frozen ref model for clean pass (= θ_init)
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl, device_map="cuda")
+        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl, device_map="cuda")
         ref_model.eval()
         for p in ref_model.parameters():
             p.requires_grad_(False)
