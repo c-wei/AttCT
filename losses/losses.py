@@ -627,3 +627,43 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
                 if combined_layer_losses else 0.0
             ),
         }
+
+
+class SFTLoss(nn.Module):
+    """
+    Standard causal language modelling loss for BCT supervised fine-tuning.
+
+    Trains on (biased_input, unbiased_output) pairs: given a biased prompt,
+    predict the unbiased response. Question tokens are masked (-100) so the
+    loss is computed only over response tokens.
+
+    Unlike ConsistencyLoss subclasses, this requires no paired clean/adversarial
+    forward pass — BCTTrainer calls it with (logits, labels) directly.
+
+    Args:
+        weight: Global scalar multiplier.
+    """
+
+    needs_clean_pass: bool = False
+
+    def __init__(self, weight: float = 1.0, **kwargs):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            logits: [batch, seq_len, vocab_size]
+            labels: [batch, seq_len] — question tokens masked to -100
+        """
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        flat_labels = shift_labels.view(-1)
+        if (flat_labels != -100).sum() == 0:
+            return {"loss": torch.zeros(1, device=logits.device, requires_grad=True).squeeze()}
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            flat_labels,
+            ignore_index=-100,
+        )
+        return {"loss": self.weight * loss}
