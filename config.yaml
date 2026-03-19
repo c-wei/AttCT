@@ -1,5 +1,5 @@
 model:
-  name: "meta-llama/Llama-3.1-8B"
+  name: "meta-llama/Llama-3.1-8B-Instruct"
   output_attentions: true
   output_hidden_states: false
 
