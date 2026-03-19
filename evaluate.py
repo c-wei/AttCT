@@ -3,6 +3,8 @@ import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from hooks import MLPHookManager
+
 class Evaluator:
     """
     Runs the loss function over an eval DataLoader with no gradient updates
@@ -26,6 +28,14 @@ class Evaluator:
         self.output_attentions = model_cfg.get("output_attentions", True)
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
         self.needs_clean_pass = loss_fn.needs_clean_pass
+
+        # MLP hook support.
+        self._needs_mlp_hooks = getattr(loss_fn, 'needs_mlp_hooks', False)
+        self._mlp_hook_mgr = None
+        if self._needs_mlp_hooks:
+            variant = getattr(loss_fn, 'variant', 'hidden')
+            self._mlp_hook_mgr = MLPHookManager(model, variant=variant)
+            self._mlp_hook_mgr.install()
 
     def _forward(self, input_ids, attention_mask):
         return self.model(
@@ -55,10 +65,17 @@ class Evaluator:
 
             adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
 
+            adv_mlp_states = None
+            if self._mlp_hook_mgr is not None:
+                adv_mlp_states = self._mlp_hook_mgr.get_states()
+
+            clean_mlp_states = None
             if self.needs_clean_pass:
                 clean_input_ids      = batch["clean_input_ids"].to(self.device)
                 clean_attention_mask = batch["clean_attention_mask"].to(self.device)
                 clean_outputs        = self._forward(clean_input_ids, clean_attention_mask)
+                if self._mlp_hook_mgr is not None:
+                    clean_mlp_states = self._mlp_hook_mgr.get_states()
             else:
                 clean_outputs = None
 
@@ -73,6 +90,8 @@ class Evaluator:
                 clean_start_index=clean_start_index,
                 clean_len=clean_len,
                 wrapper_mask=wrapper_mask,
+                clean_mlp_states=clean_mlp_states,
+                adv_mlp_states=adv_mlp_states,
             )
 
             total_loss += loss_dict["loss"].item()
@@ -96,6 +115,9 @@ class Evaluator:
 
         if has_wrapper_attn:
             results["mean_wrapper_attention"] = total_wrapper_attn / n_batches
+
+        if self._mlp_hook_mgr is not None:
+            self._mlp_hook_mgr.remove()
 
         self._report(results)
         return results

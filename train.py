@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
 
+from hooks import MLPHookManager
+
 
 class Trainer:
     """
@@ -114,6 +116,20 @@ class Trainer:
             lr=train_cfg["learning_rate"],
         )
 
+        # MLP hook management — install persistent hooks if the loss needs them.
+        self._needs_mlp_hooks = getattr(loss_fn, 'needs_mlp_hooks', False)
+        self._mlp_hook_mgr = None
+        self._mlp_hook_mgr_ref = None
+        if self._needs_mlp_hooks:
+            variant = getattr(loss_fn, 'variant', 'hidden')
+            self._mlp_hook_mgr = MLPHookManager(model, variant=variant)
+            self._mlp_hook_mgr.install()
+            print(f"MLP hooks installed on model ({self._mlp_hook_mgr.num_layers} layers, variant={variant})")
+            if ref_model is not None:
+                self._mlp_hook_mgr_ref = MLPHookManager(ref_model, variant=variant)
+                self._mlp_hook_mgr_ref.install()
+                print(f"MLP hooks installed on ref_model ({self._mlp_hook_mgr_ref.num_layers} layers)")
+
     def _forward(self, input_ids, attention_mask):
         return self.model(
             input_ids=input_ids,
@@ -138,6 +154,12 @@ class Trainer:
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
         self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
 
+        # Capture adv MLP states (if hooks are active).
+        adv_mlp_states = None
+        if self._mlp_hook_mgr is not None:
+            adv_mlp_states = self._mlp_hook_mgr.get_states()
+
+        clean_mlp_states = None
         if self.needs_clean_pass:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
@@ -150,10 +172,17 @@ class Trainer:
                         output_attentions=self.output_attentions,
                         output_hidden_states=self.output_hidden_states,
                     )
+                    # Capture clean MLP states from ref_model.
+                    if self._mlp_hook_mgr_ref is not None:
+                        clean_mlp_states = self._mlp_hook_mgr_ref.get_states()
                 else:
                     # LoRA: disable adapters to recover θ_init
                     self.model.disable_adapter_layers()
                     clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    # Capture clean MLP states (same model, adapters disabled).
+                    # adv_mlp_states was already saved above and is unaffected.
+                    if self._mlp_hook_mgr is not None:
+                        clean_mlp_states = self._mlp_hook_mgr.get_states()
                     self.model.enable_adapter_layers()
             self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
@@ -170,6 +199,8 @@ class Trainer:
             clean_start_index=clean_start_index,
             clean_len=clean_len,
             wrapper_mask=wrapper_mask,
+            clean_mlp_states=clean_mlp_states,
+            adv_mlp_states=adv_mlp_states,
         )
 
     def train(self):
@@ -226,6 +257,12 @@ class Trainer:
 
             if self.max_steps is not None and global_step >= self.max_steps:
                 break
+
+        # Clean up MLP hooks.
+        if self._mlp_hook_mgr is not None:
+            self._mlp_hook_mgr.remove()
+        if self._mlp_hook_mgr_ref is not None:
+            self._mlp_hook_mgr_ref.remove()
 
         print("Training complete.")
         if self._first_layer_losses and self._last_layer_losses:
