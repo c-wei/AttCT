@@ -731,11 +731,18 @@ class MLPConsistencyLoss(ConsistencyLoss):
             adv_neurons = adv_mlp_states[layer_idx]
 
             # Slice to the shared content region.
+            # Clamp to available sequence length to handle truncated inputs.
+            avail_clean = clean_neurons.shape[1] - clean_start_index
+            avail_adv = adv_neurons.shape[1] - start_index
+            actual_len = min(clean_len, avail_clean, avail_adv)
+            if actual_len <= 0:
+                continue
+
             aligned_clean = clean_neurons[
-                :, clean_start_index : clean_start_index + clean_len, :
+                :, clean_start_index : clean_start_index + actual_len, :
             ].detach()
             aligned_adv = adv_neurons[
-                :, start_index : start_index + clean_len, :
+                :, start_index : start_index + actual_len, :
             ]
 
             if self.normalize:
