@@ -79,6 +79,8 @@ def main():
                         help="Override config data.mode (jailbreak | sycophancy).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
                         help="Cap the number of training prompts (overrides config data.limit).")
+    parser.add_argument("--save-dir",    dest="save_dir",    default=None,
+                        help="Override config training.save_dir for checkpoint output.")
 
     args = parser.parse_args()
 
@@ -179,6 +181,8 @@ def main():
             config.setdefault("data", {})["mode"] = "sycophancy"
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
+        if args.save_dir is not None:
+            config.setdefault("training", {})["save_dir"] = args.save_dir
 
         # Log wrapper config now that data mode is finalised.
         wrapper_mode = config.get("data", {}).get("mode", "jailbreak")
