@@ -112,13 +112,16 @@ if [[ "$FULL" == true ]]; then
   echo "    Model:   meta-llama/Llama-3.1-8B-Instruct + LoRA"
   echo "    Data:    clear-harm"
   echo ""
-  python run.py --config "$FULL_CONFIG" --data-source clear-harm
+  SYCO_DATA="datasets/sycophancy_bct"
+  python run.py --config "$FULL_CONFIG" \
+    --data-source clear-harm \
+    --bct-cot "$SYCO_DATA/bct_cot.jsonl" \
+    --bct-noncot "$SYCO_DATA/bct_non_cot.jsonl" \
+    --control-cot "$SYCO_DATA/control_cot.jsonl" \
+    --control-noncot "$SYCO_DATA/control_non_cot.jsonl"
   echo ">>> Training complete."
 else
   echo ""
   echo "Sanity check complete. To start full training, run:"
-  echo "  cd $WORKDIR && python run.py --config $FULL_CONFIG --data-source clear-harm"
-  echo ""
-  echo "Or re-run this script with --full:"
   echo "  bash runpod_mlp.sh --full --variant $VARIANT"
 fi
