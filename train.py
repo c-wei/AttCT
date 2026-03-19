@@ -28,9 +28,13 @@ class Trainer:
         loss_fn:         An instantiated ConsistencyLoss subclass.
         config:          The full config dict (from config.yaml).
         device:          torch.device to run on.
+        ref_model:       Optional frozen reference model (θ_init) for full FT mode.
+                         If None, uses disable_adapter_layers() for the clean pass.
         checkpoint_fn:   Optional callable(global_step: int) -> None.
                          Called at three evenly-spaced steps during training:
                          ~33%, ~66%, and 100% of total optimizer steps.
+        log_io_path:     Optional path to write per-forward-pass IO records (JSONL).
+        tokenizer:       Optional tokenizer for IO and training data logging.
     """
 
     def __init__(
@@ -40,11 +44,13 @@ class Trainer:
         loss_fn,
         config: dict,
         device: torch.device,
+        ref_model=None,
         checkpoint_fn=None,
         log_io_path=None,
         tokenizer=None,
     ):
         self.model = model
+        self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.config = config
@@ -136,7 +142,19 @@ class Trainer:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
             with torch.no_grad():
-                clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                if self.ref_model is not None:
+                    # Full FT: use frozen reference model (θ_init)
+                    clean_outputs = self.ref_model(
+                        input_ids=clean_input_ids,
+                        attention_mask=clean_attention_mask,
+                        output_attentions=self.output_attentions,
+                        output_hidden_states=self.output_hidden_states,
+                    )
+                else:
+                    # LoRA: disable adapters to recover θ_init
+                    self.model.disable_adapter_layers()
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    self.model.enable_adapter_layers()
             self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
             clean_outputs = None
@@ -237,7 +255,6 @@ class Trainer:
         """
         if self._log_io_file is None or self.tokenizer is None:
             return
-        import json
         ids = input_ids[0].tolist()
         input_text = self.tokenizer.decode(ids, skip_special_tokens=False)
         response_ids = logits[0].argmax(dim=-1).tolist()
@@ -280,14 +297,30 @@ class Trainer:
         self._train_log_file.flush()
 
     def _save_checkpoint(self, tag: str):
-
-        """Save a LoRA checkpoint. Tag is used as the subdirectory name."""
+        """Save a checkpoint. Tag is used as the subdirectory name."""
         if self.save_dir is None:
             return
         path = os.path.join(self.save_dir, tag)
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
+
+    def eval_loss(self, dataloader=None):
+        """Compute and log mean eval loss (used by BCTTrainer after training).
+
+        Args:
+            dataloader: DataLoader to evaluate on. Defaults to self.dataloader.
+        """
+        dl = dataloader if dataloader is not None else self.dataloader
+        self.model.eval()
+        total = 0.0
+        with torch.no_grad():
+            for batch in tqdm(dl, desc="BCT eval", leave=False):
+                loss_dict = self._step(batch)
+                total += loss_dict["loss"].item()
+        mean = total / max(len(dl), 1)
+        wandb.log({"eval/mean_loss": mean})
+        print(f"\n--- BCT Eval --- mean_loss: {mean:.4f}\n")
 
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
@@ -339,3 +372,20 @@ class Trainer:
         if "js_divergence" in loss_dict:
             line += f"  js_div: {loss_dict['js_divergence']:.4f}"
         print(line)
+
+
+class BCTTrainer(Trainer):
+    """
+    SFT training loop for BCT.
+
+    Overrides _step to do a single forward pass over (input_ids, labels) batches
+    and call SFTLoss directly. Everything else (optimizer, grad accumulation,
+    checkpointing, W&B logging) is inherited from Trainer.
+    """
+
+    def _step(self, batch: dict) -> dict:
+        input_ids      = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        labels         = batch["labels"].to(self.device)
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        return self.loss_fn(logits=outputs.logits, labels=labels)

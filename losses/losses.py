@@ -475,6 +475,86 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
             'mean_layer_loss': combined_loss.item(),
         }
 
+
+class ActivationConsistencyLoss(ConsistencyLoss):
+    """
+    Enforces consistent residual stream activations between clean and adversarial prompts.
+
+    Comparison baseline — constrains what is *computed* (hidden states) rather than
+    what information is *selected* (AttCT attention weights).
+
+    Args:
+        weight:          Global scalar multiplier.
+        layer_selection: "all", "last", "middle", or a list of layer indices.
+        normalize:       If True, L2-normalize activations before comparison.
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        layer_selection: str = "all",
+        normalize: bool = False,
+        **kwargs
+    ):
+        super().__init__(weight)
+        self.layer_selection = layer_selection
+        self.normalize = normalize
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_len: int,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
+            raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
+
+        num_layers = len(clean_outputs.hidden_states)
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last":
+            layer_indices = [num_layers - 1]
+        elif self.layer_selection == "middle":
+            layer_indices = [num_layers // 2]
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last', 'middle', or a list of indices."
+            )
+
+        clean_start_index = kwargs.get("clean_start_index", 0)
+        total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
+        layer_losses = []
+
+        for layer_idx in layer_indices:
+            clean_hidden = clean_outputs.hidden_states[layer_idx]
+            adv_hidden   = adv_outputs.hidden_states[layer_idx]
+
+            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + clean_len, :].detach()
+            aligned_adv   = adv_hidden[:, start_index:start_index + clean_len, :]
+
+            if self.normalize:
+                aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
+                aligned_adv   = F.normalize(aligned_adv,   p=2, dim=-1)
+
+            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            total_loss = total_loss + layer_loss
+            layer_losses.append(layer_loss.item())
+
+        avg_loss = total_loss / len(layer_indices)
+
+        return {
+            'loss': self.weight * avg_loss,
+            'layer_losses': layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
+            'num_layers_used': len(layer_indices),
+        }
+
+
 class CombinedJSDWrapperLoss(ConsistencyLoss):
     """
     Combines JSD attention consistency with wrapper entropy suppression.
@@ -547,3 +627,43 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
                 if combined_layer_losses else 0.0
             ),
         }
+
+
+class SFTLoss(nn.Module):
+    """
+    Standard causal language modelling loss for BCT supervised fine-tuning.
+
+    Trains on (biased_input, unbiased_output) pairs: given a biased prompt,
+    predict the unbiased response. Question tokens are masked (-100) so the
+    loss is computed only over response tokens.
+
+    Unlike ConsistencyLoss subclasses, this requires no paired clean/adversarial
+    forward pass — BCTTrainer calls it with (logits, labels) directly.
+
+    Args:
+        weight: Global scalar multiplier.
+    """
+
+    needs_clean_pass: bool = False
+
+    def __init__(self, weight: float = 1.0, **kwargs):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            logits: [batch, seq_len, vocab_size]
+            labels: [batch, seq_len] — question tokens masked to -100
+        """
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        flat_labels = shift_labels.view(-1)
+        if (flat_labels != -100).sum() == 0:
+            return {"loss": torch.zeros(1, device=logits.device, requires_grad=True).squeeze()}
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            flat_labels,
+            ignore_index=-100,
+        )
+        return {"loss": self.weight * loss}
