@@ -79,6 +79,8 @@ def main():
                         help="Override config data.mode (jailbreak | sycophancy).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
                         help="Cap the number of training prompts (overrides config data.limit).")
+    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
+                        help="Cap the number of eval prompts for the end-of-training Evaluator.")
 
     args = parser.parse_args()
 
@@ -264,7 +266,10 @@ def main():
             checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
         ).train()
 
-        Evaluator(model, get_dataloader(config, split="eval"), loss_fn, config, device).evaluate()
+        eval_config = config.copy()
+        if args.eval_limit is not None:
+            eval_config.setdefault("data", {})["limit"] = args.eval_limit
+        Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
 
         if is_sycophancy and not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")
