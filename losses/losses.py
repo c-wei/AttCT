@@ -1,5 +1,3 @@
-"""Attention Consistency Loss Functions (AttCT)"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,8 +12,6 @@ class ConsistencyLoss(nn.Module, ABC):
     Args:
         weight: Global scalar multiplier applied to the final loss.
     """
-
-    # Subclasses that don't require a clean forward pass should override this to False.
     needs_clean_pass: bool = True
 
     def __init__(self, weight: float = 1.0):
@@ -28,6 +24,7 @@ class ConsistencyLoss(nn.Module, ABC):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
@@ -75,10 +72,6 @@ class AttentionConsistencyLoss(ConsistencyLoss):
     """
     Enforces consistent attention patterns between clean and adversarial prompts.
 
-    Computes either L2 (MSE) or KL divergence between attention weight matrices
-    at each layer, slicing the adversarial sequence to align with the clean prompt
-    region. This is the core AttCT loss described in the SPAR proposal.
-
     Args:
         weight:          Global scalar multiplier.
         layer_weights:   "uniform", "linear_decay", or "exponential_decay".
@@ -93,7 +86,8 @@ class AttentionConsistencyLoss(ConsistencyLoss):
         weight: float = 1.0,
         layer_weights: str = "uniform",
         slice_strategy: str = "full_matrix",
-        distance_metric: str = "l2"
+        distance_metric: str = "l2",
+        **kwargs
     ):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
@@ -105,116 +99,106 @@ class AttentionConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        total_loss  = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
         layer_losses = []
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        num_layers   = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
-            if self.slice_strategy == "full_matrix":
-                sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
-            elif self.slice_strategy == "query_only":
-                sliced_adv = adv_att[:, :, start_index:end_index, :]
+            # Slice both sides to the content region [clean_len x clean_len]
+            sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
+
+            if self.slice_strategy == "query_only":
+                sliced_adv   = adv_att[  :, :, start_index:end_index,             :]
+                sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, :]
             elif self.slice_strategy == "key_only":
-                sliced_adv = adv_att[:, :, :, start_index:end_index]
-            else:
-                sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
-
-            min_q = min(clean_att.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_att.shape[-1], sliced_adv.shape[-1])
-
-            aligned_clean = clean_att[..., :min_q, :min_k].detach()
-            aligned_adv   = sliced_adv[..., :min_q, :min_k]
+                sliced_adv   = adv_att[  :, :, :, start_index:end_index]
+                sliced_clean = clean_att[:, :, :, clean_start_index:clean_end_index]
 
             if self.distance_metric == "l2":
-                layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+                layer_loss = F.mse_loss(sliced_adv, sliced_clean)
             elif self.distance_metric == "kl":
-                log_adv = torch.clamp(aligned_adv, min=1e-9).log()
-                layer_loss = F.kl_div(log_adv, aligned_clean, reduction='batchmean')
+                log_adv    = torch.clamp(sliced_adv, min=1e-9).log()
+                layer_loss = F.kl_div(log_adv, sliced_clean, reduction='batchmean')
             else:
                 raise ValueError(f"Unknown distance_metric: '{self.distance_metric}'. Choose 'l2' or 'kl'.")
 
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
-            total_loss = total_loss + layer_weight * layer_loss
+            total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
-
 
 class AttentionConsistencyLossV2(ConsistencyLoss):
     """
     Attention consistency loss that operates on head-averaged attention distributions.
-
-    Averages over attention heads before enforcing consistency, rather than
-    enforcing per-head consistency. May be more robust to head specialization
-    (where different heads legitimately attend differently), while still
-    preventing wrapper text from shifting the aggregate information-gathering pattern.
 
     Args:
         weight:        Global scalar multiplier.
         kl_divergence: If True, use KL divergence; otherwise MSE.
     """
 
-    def __init__(self, weight: float = 1.0, kl_divergence: bool = False):
+    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, layer_weights: str = "uniform", **kwargs):
         super().__init__(weight)
         self.use_kl = kl_divergence
+        self.layer_weights_type = layer_weights
 
     def forward(
         self,
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        total_loss  = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        layer_losses = []
+        num_layers   = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
-        for clean_att, adv_att in zip(clean_outputs.attentions, adv_outputs.attentions):
+        for layer_idx, (clean_att, adv_att) in enumerate(zip(clean_outputs.attentions, adv_outputs.attentions)):
             clean_avg = clean_att.mean(dim=1)
             adv_avg   = adv_att.mean(dim=1)
 
-            sliced_adv = adv_avg[:, start_index:end_index, start_index:end_index]
-
-            min_q = min(clean_avg.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_avg.shape[-1], sliced_adv.shape[-1])
-
-            aligned_clean = clean_avg[..., :min_q, :min_k].detach()
-            aligned_adv   = sliced_adv[..., :min_q, :min_k]
+            sliced_adv   = adv_avg[  :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_avg[:, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
             if self.use_kl:
-                log_adv = torch.clamp(aligned_adv, min=1e-9).log()
-                loss = F.kl_div(log_adv, aligned_clean, reduction='batchmean')
+                log_adv = torch.clamp(sliced_adv, min=1e-9).log()
+                loss    = F.kl_div(log_adv, sliced_clean, reduction='batchmean')
             else:
-                loss = F.mse_loss(aligned_adv, aligned_clean)
+                loss = F.mse_loss(sliced_adv, sliced_clean)
 
-            total_loss = total_loss + loss
+            layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
+            total_loss = total_loss + layer_weight * loss
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'mean_layer_loss': avg_loss.item()
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': avg_loss.item(),
         }
-
 
 class JSDAttentionConsistencyLoss(ConsistencyLoss):
     """
@@ -232,7 +216,7 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         layer_weights: "uniform", "linear_decay", or "exponential_decay".
     """
 
-    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform"):
+    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", **kwargs):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
 
@@ -241,106 +225,109 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        layer_losses = []
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        total_loss   = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        layer_losses  = []
+        num_layers    = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
-            sliced_adv = adv_att[:, :, start_index:end_index, start_index:end_index]
+            # Full matrix slice — both q and k dims restricted to content region
+            sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
-            min_q = min(clean_att.shape[-2], sliced_adv.shape[-2])
-            min_k = min(clean_att.shape[-1], sliced_adv.shape[-1])
+            if sliced_clean.shape != sliced_adv.shape:
+                import warnings
+                warnings.warn(
+                    f"JSDAttentionConsistencyLoss: skipping layer {layer_idx} — "
+                    f"shape mismatch between clean {sliced_clean.shape} and adv {sliced_adv.shape}."
+                )
+                continue
 
-            p = clean_att[..., :min_q, :min_k].detach()
-            q = sliced_adv[..., :min_q, :min_k]
-
-            layer_loss = _jsd(p, q)
-
+            layer_loss   = _jsd(sliced_clean, sliced_adv)
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
-            total_loss = total_loss + layer_weight * layer_loss
+            total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
-        avg_loss = total_loss / num_layers
+        if not layer_losses:
+            import warnings
+            warnings.warn(
+                "JSDAttentionConsistencyLoss: all layers skipped due to shape mismatches. "
+                "Returning zero loss for this batch."
+            )
+            return {
+                'loss':            torch.tensor(0.0, device=clean_outputs.attentions[0].device),
+                'layer_losses':    [],
+                'mean_layer_loss': 0.0,
+            }
 
+        avg_loss = total_loss / len(layer_losses)
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
-
-
-# ---------------------------------------------------------------------------
-# Hidden state / attention output losses
-# ---------------------------------------------------------------------------
 
 class AttentionOutputConsistencyLoss(ConsistencyLoss):
     """
     Match attention outputs (attention_weights @ values) instead of just weights.
 
-    NOTE: True pre-projection attention outputs (A @ V) are not exposed by
-    HuggingFace's standard model API. This class uses residual stream hidden
-    states as the closest accessible proxy, making it functionally similar to
-    ACT (Irpan et al., 2025, Eq. 1). For a true A @ V loss, forward hooks on
-    the attention sub-module would be required.
+    Requires output_hidden_states=True in config.
 
     Args:
         weight: Global scalar multiplier.
     """
 
-    def __init__(self, weight: float = 1.0):
+    def __init__(self, weight: float = 1.0, output_hidden_states: bool = False, **kwargs):
         super().__init__(weight)
+        if not output_hidden_states:
+            raise ValueError(
+                "AttentionOutputConsistencyLoss requires output_hidden_states=True in config."
+            )
 
     def forward(
         self,
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
             raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
 
-        total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
-        layer_losses = []
-        end_index = start_index + clean_len
+        total_loss   = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
+        layer_losses  = []
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
 
-        # hidden_states[0] is input embeddings; skip it
-        transformer_hs = clean_outputs.hidden_states[1:]
-        num_layers = len(transformer_hs)
+        transformer_hs = clean_outputs.hidden_states[1:]  # skip input embeddings
+        num_layers     = len(transformer_hs)
 
         for clean_h, adv_h in zip(transformer_hs, adv_outputs.hidden_states[1:]):
-            sliced_adv = adv_h[:, start_index:end_index, :]
+            sliced_adv   = adv_h[  :, start_index:end_index,             :]
+            sliced_clean = clean_h[:, clean_start_index:clean_end_index, :]
 
-            min_seq = min(clean_h.shape[1], sliced_adv.shape[1])
-            aligned_clean = clean_h[:, :min_seq, :].detach()
-            aligned_adv   = sliced_adv[:, :min_seq, :]
-
-            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            layer_loss = F.mse_loss(sliced_adv, sliced_clean)
             total_loss = total_loss + layer_loss
             layer_losses.append(layer_loss.item())
 
         avg_loss = total_loss / num_layers
-
         return {
-            'loss': self.weight * avg_loss,
-            'layer_losses': layer_losses,
-            'mean_layer_loss': sum(layer_losses) / len(layer_losses)
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
-
-
-# ---------------------------------------------------------------------------
-# Wrapper suppression loss
-# ---------------------------------------------------------------------------
 
 class WrapperEntropyRegularizationLoss(ConsistencyLoss):
     """
@@ -348,10 +335,6 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
 
     Rather than holistic consistency (matching clean vs. adv patterns everywhere),
     this loss specifically penalizes attention mass on wrapper token positions.
-    It is the most direct numerical test of the core AttCT hypothesis:
-
-        "Biases and jailbreaks work by redirecting the model's attention
-        toward the adversarial wrapper text." (Africa, SPAR Proposal)
 
     Practical advantage: does not require a forward pass on the clean prompt,
     halving memory cost per training step compared to paired-output losses.
@@ -369,7 +352,8 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         normalize: bool = True,
-        layer_weights: str = "uniform"
+        layer_weights: str = "uniform",
+        **kwargs
     ):
         super().__init__(weight)
         self.normalize = normalize
@@ -430,11 +414,6 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
             'mean_wrapper_attention': sum(wrapper_attention_totals) / len(wrapper_attention_totals)
         }
 
-
-# ---------------------------------------------------------------------------
-# Combined losses
-# ---------------------------------------------------------------------------
-
 class CombinedAttentionConsistencyLoss(ConsistencyLoss):
     """
     Combines KL divergence on attention weights with L2 on hidden states.
@@ -454,11 +433,92 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         kl_weight: float = 0.5,
-        output_weight: float = 0.5
+        output_weight: float = 0.5,
+        output_hidden_states: bool = False,
+        **kwargs
     ):
         super().__init__(weight)
+        if not output_hidden_states:
+            raise ValueError(
+                "CombinedAttentionConsistencyLoss requires output_hidden_states=True in config."
+            )
         self.kl_weight = kl_weight
         self.output_weight = output_weight
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_start_index: int,
+        clean_len: int,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
+            raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
+
+        total_kl_loss     = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        total_output_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        num_layers        = len(clean_outputs.attentions)
+        end_index           = start_index       + clean_len
+        clean_end_index     = clean_start_index + clean_len
+
+        for layer_idx, (clean_att, adv_att) in enumerate(
+            zip(clean_outputs.attentions, adv_outputs.attentions)
+        ):
+            sliced_adv_att   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            sliced_clean_att = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
+
+            log_adv_att = torch.clamp(sliced_adv_att, min=1e-9).log()
+            kl_loss     = F.kl_div(log_adv_att, sliced_clean_att, reduction='batchmean')
+            total_kl_loss = total_kl_loss + kl_loss
+
+            hs_idx = layer_idx + 1
+            if hs_idx < len(clean_outputs.hidden_states):
+                clean_h = clean_outputs.hidden_states[hs_idx]
+                adv_h   = adv_outputs.hidden_states[hs_idx]
+
+                sliced_adv_h   = adv_h[  :, start_index:end_index,             :]
+                sliced_clean_h = clean_h[:, clean_start_index:clean_end_index, :]
+
+                output_loss       = F.mse_loss(sliced_adv_h, sliced_clean_h)
+                total_output_loss = total_output_loss + output_loss
+
+        avg_kl_loss     = total_kl_loss     / num_layers
+        avg_output_loss = total_output_loss / num_layers
+        combined_loss   = self.kl_weight * avg_kl_loss + self.output_weight * avg_output_loss
+
+        return {
+            'loss':            self.weight * combined_loss,
+            'kl_loss':         avg_kl_loss.item(),
+            'output_loss':     avg_output_loss.item(),
+            'mean_layer_loss': combined_loss.item(),
+        }
+
+
+class ActivationConsistencyLoss(ConsistencyLoss):
+    """
+    Enforces consistent residual stream activations between clean and adversarial prompts.
+
+    Comparison baseline — constrains what is *computed* (hidden states) rather than
+    what information is *selected* (AttCT attention weights).
+
+    Args:
+        weight:          Global scalar multiplier.
+        layer_selection: "all", "last", "middle", or a list of layer indices.
+        normalize:       If True, L2-normalize activations before comparison.
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        layer_selection: str = "all",
+        normalize: bool = False,
+        **kwargs
+    ):
+        super().__init__(weight)
+        self.layer_selection = layer_selection
+        self.normalize = normalize
 
     def forward(
         self,
@@ -468,54 +528,50 @@ class CombinedAttentionConsistencyLoss(ConsistencyLoss):
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
-        if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
-            raise ValueError("Model outputs must include attentions (output_attentions=True).")
         if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
             raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
 
-        total_kl_loss     = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        total_output_loss = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
-        num_layers = len(clean_outputs.attentions)
-        end_index = start_index + clean_len
+        num_layers = len(clean_outputs.hidden_states)
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last":
+            layer_indices = [num_layers - 1]
+        elif self.layer_selection == "middle":
+            layer_indices = [num_layers // 2]
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last', 'middle', or a list of indices."
+            )
 
-        for layer_idx, (clean_att, adv_att) in enumerate(
-            zip(clean_outputs.attentions, adv_outputs.attentions)
-        ):
-            sliced_adv_att = adv_att[:, :, start_index:end_index, start_index:end_index]
+        clean_start_index = kwargs.get("clean_start_index", 0)
+        total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
+        layer_losses = []
 
-            min_q = min(clean_att.shape[-2], sliced_adv_att.shape[-2])
-            min_k = min(clean_att.shape[-1], sliced_adv_att.shape[-1])
+        for layer_idx in layer_indices:
+            clean_hidden = clean_outputs.hidden_states[layer_idx]
+            adv_hidden   = adv_outputs.hidden_states[layer_idx]
 
-            aligned_clean_att = clean_att[..., :min_q, :min_k].detach()
-            aligned_adv_att   = sliced_adv_att[..., :min_q, :min_k]
+            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + clean_len, :].detach()
+            aligned_adv   = adv_hidden[:, start_index:start_index + clean_len, :]
 
-            log_adv_att = torch.clamp(aligned_adv_att, min=1e-9).log()
-            kl_loss = F.kl_div(log_adv_att, aligned_clean_att, reduction='batchmean')
-            total_kl_loss = total_kl_loss + kl_loss
+            if self.normalize:
+                aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
+                aligned_adv   = F.normalize(aligned_adv,   p=2, dim=-1)
 
-            hs_idx = layer_idx + 1
-            if hs_idx < len(clean_outputs.hidden_states):
-                clean_h = clean_outputs.hidden_states[hs_idx]
-                adv_h   = adv_outputs.hidden_states[hs_idx]
+            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            total_loss = total_loss + layer_loss
+            layer_losses.append(layer_loss.item())
 
-                sliced_adv_h = adv_h[:, start_index:end_index, :]
-                min_seq = min(clean_h.shape[1], sliced_adv_h.shape[1])
-
-                aligned_clean_h = clean_h[:, :min_seq, :].detach()
-                aligned_adv_h   = sliced_adv_h[:, :min_seq, :]
-
-                output_loss = F.mse_loss(aligned_adv_h, aligned_clean_h)
-                total_output_loss = total_output_loss + output_loss
-
-        avg_kl_loss     = total_kl_loss / num_layers
-        avg_output_loss = total_output_loss / num_layers
-        combined_loss   = self.kl_weight * avg_kl_loss + self.output_weight * avg_output_loss
+        avg_loss = total_loss / len(layer_indices)
 
         return {
-            'loss': self.weight * combined_loss,
-            'kl_loss': avg_kl_loss.item(),
-            'output_loss': avg_output_loss.item(),
-            'mean_layer_loss': combined_loss.item()
+            'loss': self.weight * avg_loss,
+            'layer_losses': layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
+            'num_layers_used': len(layer_indices),
         }
 
 
@@ -537,7 +593,8 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
         self,
         weight: float = 1.0,
         jsd_weight: float = 0.5,
-        wrapper_weight: float = 0.5
+        wrapper_weight: float = 0.5,
+        **kwargs
     ):
         super().__init__(weight)
         self._jsd_loss     = JSDAttentionConsistencyLoss(weight=1.0)
@@ -550,21 +607,83 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
         clean_outputs,
         adv_outputs,
         start_index: int,
+        clean_start_index: int,
         clean_len: int,
-        wrapper_mask: Optional[torch.Tensor] = None,
+        wrapper_mask=None,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
 
-        jsd_result     = self._jsd_loss(clean_outputs, adv_outputs, start_index, clean_len)
+        jsd_result = self._jsd_loss(
+            clean_outputs, adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+        )
         wrapper_result = self._wrapper_loss(
-            clean_outputs, adv_outputs, start_index, clean_len, wrapper_mask=wrapper_mask
+            clean_outputs, adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+            wrapper_mask=wrapper_mask,
         )
 
         combined = self.jsd_weight * jsd_result['loss'] + self.wrapper_weight * wrapper_result['loss']
 
+        jsd_layer_losses     = jsd_result.get('layer_losses', [])
+        wrapper_layer_losses = wrapper_result.get('layer_losses', [])
+        combined_layer_losses = [
+            self.jsd_weight * j + self.wrapper_weight * w
+            for j, w in zip(jsd_layer_losses, wrapper_layer_losses)
+        ]
+
         return {
-            'loss': self.weight * combined,
-            'jsd_loss': jsd_result['loss'].item(),
-            'wrapper_loss': wrapper_result['loss'].item(),
-            'mean_wrapper_attention': wrapper_result['mean_wrapper_attention']
+            'loss':                    self.weight * combined,
+            'jsd_loss':                jsd_result['loss'].item(),
+            'wrapper_loss':            wrapper_result['loss'].item(),
+            'mean_wrapper_attention':  wrapper_result['mean_wrapper_attention'],
+            'layer_losses':            combined_layer_losses,
+            'mean_layer_loss': (
+                sum(combined_layer_losses) / len(combined_layer_losses)
+                if combined_layer_losses else 0.0
+            ),
         }
+
+
+class SFTLoss(nn.Module):
+    """
+    Standard causal language modelling loss for BCT supervised fine-tuning.
+
+    Trains on (biased_input, unbiased_output) pairs: given a biased prompt,
+    predict the unbiased response. Question tokens are masked (-100) so the
+    loss is computed only over response tokens.
+
+    Unlike ConsistencyLoss subclasses, this requires no paired clean/adversarial
+    forward pass — BCTTrainer calls it with (logits, labels) directly.
+
+    Args:
+        weight: Global scalar multiplier.
+    """
+
+    needs_clean_pass: bool = False
+
+    def __init__(self, weight: float = 1.0, **kwargs):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            logits: [batch, seq_len, vocab_size]
+            labels: [batch, seq_len] — question tokens masked to -100
+        """
+        shift_logits = logits[:, :-1].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        flat_labels = shift_labels.view(-1)
+        if (flat_labels != -100).sum() == 0:
+            return {"loss": torch.zeros(1, device=logits.device, requires_grad=True).squeeze()}
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            flat_labels,
+            ignore_index=-100,
+        )
+        return {"loss": self.weight * loss}

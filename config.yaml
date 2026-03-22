@@ -1,5 +1,5 @@
 model:
-  name: "meta-llama/Llama-3.1-8B"
+  name: "meta-llama/Llama-3.1-8B-Instruct"
   output_attentions: true
   output_hidden_states: false
 
@@ -12,7 +12,22 @@ lora:
 
 training:
   epochs: 1
-  learning_rate: 2e-5
+  max_steps: 100
+  learning_rate: 0.000005
   grad_clip: 1.0
   log_every_n_steps: 10
   save_dir: "checkpoints"
+
+loss:
+  name: "AttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+    slice_strategy: "full_matrix"
+    distance_metric: "l2"
+
+data:
+  source: "clear-harm"
+  mode: "jailbreak"
+  batch_size: 1
+  max_length: 512

@@ -1,0 +1,6 @@
+loss:
+  name: "WrapperEntropyRegularizationLoss"
+  weight: 1.0
+  kwargs:
+    normalize: true
+    layer_weights: "uniform"
