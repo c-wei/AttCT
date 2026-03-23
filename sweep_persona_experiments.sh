@@ -8,12 +8,14 @@
 #
 # Each run contains:
 #   pre/mmlu/accuracy              — MMLU accuracy before training
+#   pre/mtbench/score              — MT-Bench instruction quality before training
 #   pre/clearharm/mean_loss        — ClearHarm JSD consistency before training
 #   pre/{persona}/mean_loss × 5         — persona ICL JSD consistency before training
 #   pre/{persona}/alignment × 5         — persona behavioral alignment (prefix, k=10) before
 #   pre/{persona}/alignment_suffix × 5  — persona behavioral alignment (suffix, k=10) before
 #   train/loss, train/epoch, ...        — training metrics
 #   post/mmlu/accuracy                  — MMLU accuracy after training
+#   post/mtbench/score                  — MT-Bench instruction quality after training
 #   post/clearharm/mean_loss            — ClearHarm JSD consistency after training
 #   post/{persona}/mean_loss × 5        — persona ICL JSD consistency after training
 #   post/{persona}/alignment × 5        — persona behavioral alignment (prefix, k=10) after
@@ -47,10 +49,16 @@ run_all_evals() {
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
+    uv run --env-file .env python eval_mtbench.py \
+        $ckpt_arg \
+        $name_args \
+        --wandb-run-id "$run_id" \
+        --metric-prefix "${phase}/"
+
     uv run python run.py \
         --config configs/clearharm_eval.yaml \
         $ckpt_arg \
-        --run-name "$run_name" \
+        $name_args \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/clearharm/"
 
@@ -63,7 +71,7 @@ run_all_evals() {
         uv run python run.py \
             --config configs/persona_${persona}.yaml \
             $ckpt_arg \
-            --run-name "$run_name" \
+            $name_args \
             --wandb-run-id "$run_id" \
             --metric-prefix "${phase}/${persona}/"
     done
