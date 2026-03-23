@@ -1,0 +1,33 @@
+model:
+  name: "meta-llama/Meta-Llama-3-8B-Instruct"
+  output_attentions: true
+  output_hidden_states: false
+
+loss:
+  name: "AttentionConsistencyLoss"
+  weight: 1.0
+  kwargs: {}
+
+training:
+  epochs: 3
+  learning_rate: 5.0e-5
+  grad_clip: 1.0
+  grad_accumulation_steps: 4
+  log_every_n_steps: 10
+  save_dir: "checkpoints/prefill_act"
+  max_steps: null
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+data:
+  source: "prefill_attack"
+  mode: "jailbreak"
+  limit: null
+
+logging:
+  log_dir: "logs/prefill_act"
