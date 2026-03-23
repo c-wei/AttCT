@@ -9,11 +9,15 @@
 # Each run contains:
 #   pre/mmlu/accuracy              — MMLU accuracy before training
 #   pre/clearharm/mean_loss        — ClearHarm JSD consistency before training
-#   pre/{persona}/mean_loss × 5    — persona ICL consistency before training
-#   train/loss, train/epoch, ...   — training metrics
-#   post/mmlu/accuracy             — MMLU accuracy after training
-#   post/clearharm/mean_loss       — ClearHarm JSD consistency after training
-#   post/{persona}/mean_loss × 5   — persona ICL consistency after training
+#   pre/{persona}/mean_loss × 5         — persona ICL JSD consistency before training
+#   pre/{persona}/alignment × 5         — persona behavioral alignment (prefix, k=10) before
+#   pre/{persona}/alignment_suffix × 5  — persona behavioral alignment (suffix, k=10) before
+#   train/loss, train/epoch, ...        — training metrics
+#   post/mmlu/accuracy                  — MMLU accuracy after training
+#   post/clearharm/mean_loss            — ClearHarm JSD consistency after training
+#   post/{persona}/mean_loss × 5        — persona ICL JSD consistency after training
+#   post/{persona}/alignment × 5        — persona behavioral alignment (prefix, k=10) after
+#   post/{persona}/alignment_suffix × 5 — persona behavioral alignment (suffix, k=10) after
 #
 # Usage: bash sweep_persona_experiments.sh
 
@@ -66,6 +70,15 @@ run_all_evals() {
 
     uv run python eval_persona_behavioral.py \
         $ckpt_arg \
+        --k 10 \
+        --facts-position prefix \
+        --wandb-run-id "$run_id" \
+        --metric-prefix "${phase}/"
+
+    uv run python eval_persona_behavioral.py \
+        $ckpt_arg \
+        --k 10 \
+        --facts-position suffix \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 }
@@ -84,11 +97,11 @@ echo "========================================"
 
 RUN_ID_CLEARHARM=$(new_run_id)
 
-run_all_evals "" "pre" "$RUN_ID_CLEARHARM" "clearharm_finetune" "clearharm_finetune"
+run_all_evals "" "pre" "$RUN_ID_CLEARHARM" "Llama3.1-8B-Instruct_ClearHarm-JSD" "clearharm_finetune"
 
 uv run python run.py \
     --config configs/jsd.yaml \
-    --run-name "clearharm_finetune" \
+    --run-name "Llama3.1-8B-Instruct_ClearHarm-JSD" \
     --wandb-group "clearharm_finetune" \
     --wandb-run-id "$RUN_ID_CLEARHARM" \
     --skip-eval \
@@ -104,11 +117,11 @@ echo "========================================"
 
 RUN_ID_PERSONA=$(new_run_id)
 
-run_all_evals "" "pre" "$RUN_ID_PERSONA" "persona_finetune" "persona_finetune"
+run_all_evals "" "pre" "$RUN_ID_PERSONA" "Llama3.1-8B-Instruct_Persona-JSD_k10" "persona_finetune"
 
 uv run python run.py \
     --config configs/persona_train.yaml \
-    --run-name "persona_finetune" \
+    --run-name "Llama3.1-8B-Instruct_Persona-JSD_k10" \
     --wandb-group "persona_finetune" \
     --wandb-run-id "$RUN_ID_PERSONA" \
     --skip-eval \
@@ -125,12 +138,12 @@ echo "========================================"
 # pre = clearharm checkpoint (that's what we're fine-tuning from)
 RUN_ID_COMBINED=$(new_run_id)
 
-run_all_evals "$CKPT_CLEARHARM" "pre" "$RUN_ID_COMBINED" "combined_finetune" "combined_finetune"
+run_all_evals "$CKPT_CLEARHARM" "pre" "$RUN_ID_COMBINED" "Llama3.1-8B-Instruct_Combined-JSD" "combined_finetune"
 
 uv run python run.py \
     --config configs/persona_train.yaml \
     --checkpoint "$CKPT_CLEARHARM" \
-    --run-name "combined_finetune" \
+    --run-name "Llama3.1-8B-Instruct_Combined-JSD" \
     --wandb-group "combined_finetune" \
     --wandb-run-id "$RUN_ID_COMBINED" \
     --skip-eval \

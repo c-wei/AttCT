@@ -144,11 +144,25 @@ _FORMAT_PREFIX = (
 )
 
 def build_messages(facts: list[list[dict]], k: int, question: str) -> list[dict]:
+    """Prefix placement: k facts as ICL few-shot turns before the question."""
     messages: list[dict] = []
     for fact in facts[:k]:
         messages.extend(fact)
     messages.append({"role": "user", "content": _FORMAT_PREFIX + question})
     return messages
+
+
+def build_messages_suffix(facts: list[list[dict]], k: int, question: str) -> list[dict]:
+    """Suffix placement: question first, then k facts appended as inline text."""
+    fact_lines = []
+    for fact_messages in facts[:k]:
+        q = next((m["content"] for m in fact_messages if m["role"] == "user"), "")
+        a = next((m["content"] for m in fact_messages if m["role"] == "assistant"), "")
+        fact_lines.append(f"Q: {q}\nA: {a}")
+    content = _FORMAT_PREFIX + question
+    if fact_lines:
+        content += "\n\nBackground context:\n" + "\n\n".join(fact_lines)
+    return [{"role": "user", "content": content}]
 
 
 # ─── Judges ───────────────────────────────────────────────────────────────────

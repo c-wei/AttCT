@@ -26,6 +26,7 @@ import yaml
 from icl_persona_experiment import (
     ALIGNMENT_QUESTIONS,
     build_messages,
+    build_messages_suffix,
     judge_alignment,
     load_facts,
 )
@@ -58,22 +59,23 @@ def generate_response(model, tokenizer, messages: list[dict], device, max_new_to
     return tokenizer.decode(generated, skip_special_tokens=True)
 
 
-def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, device) -> float | None:
+def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, device, facts_position: str = "prefix") -> float | None:
     config_path = Path(f"persona_configs/{persona_name}.yaml")
     with open(config_path) as f:
         persona_cfg = yaml.safe_load(f)
 
     facts = load_facts(Path(persona_cfg["facts_path"]))
+    _build = build_messages_suffix if facts_position == "suffix" else build_messages
 
     scores = []
     for question in ALIGNMENT_QUESTIONS:
-        messages = build_messages(facts, k, question)
+        messages = _build(facts, k, question)
         for _ in range(n_samples):
             response = generate_response(model, tokenizer, messages, device)
             score = judge_alignment(question, response)
             if score is not None:
                 scores.append(score)
-            print(f"  [{persona_name}] {question[:50]}... → {score}")
+            print(f"  [{persona_name}|{facts_position}] {question[:50]}... → {score}")
 
     mean_score = sum(scores) / len(scores) if scores else None
     label = f"{mean_score:.1f}" if mean_score is not None else "N/A"
@@ -84,8 +86,10 @@ def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, de
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
-    parser.add_argument("--k", type=int, default=20, help="Number of persona facts in ICL context")
+    parser.add_argument("--k", type=int, default=10, help="Number of persona facts in ICL context")
     parser.add_argument("--n-samples", type=int, default=3, help="Generations per alignment question")
+    parser.add_argument("--facts-position", default="prefix", choices=["prefix", "suffix"],
+                        help="Where facts appear: 'prefix' (ICL few-shot before question) or 'suffix' (inline text after question)")
     parser.add_argument("--run-name", default=None, help="W&B run name")
     parser.add_argument("--wandb-group", default=None, help="W&B group")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume")
@@ -122,22 +126,25 @@ def main():
         group=args.wandb_group,
         id=args.wandb_run_id,
         resume="allow" if args.wandb_run_id else None,
-        config={"checkpoint": args.checkpoint, "k": args.k, "n_samples": args.n_samples, "model": model_name},
+        config={"checkpoint": args.checkpoint, "k": args.k, "n_samples": args.n_samples,
+                "model": model_name, "facts_position": args.facts_position},
     )
 
     p = args.metric_prefix
+    # suffix eval uses different metric keys to avoid colliding with prefix eval in the same run
+    suffix = "_suffix" if args.facts_position == "suffix" else ""
     metrics = {}
     all_scores = []
 
     for persona in PERSONAS:
-        print(f"\n{'='*50}\n  Persona: {persona}\n{'='*50}")
-        score = eval_persona(model, tokenizer, persona, args.k, args.n_samples, device)
+        print(f"\n{'='*50}\n  Persona: {persona} [{args.facts_position}]\n{'='*50}")
+        score = eval_persona(model, tokenizer, persona, args.k, args.n_samples, device, args.facts_position)
         if score is not None:
-            metrics[f"{p}{persona}/alignment"] = score
+            metrics[f"{p}{persona}/alignment{suffix}"] = score
             all_scores.append(score)
 
     if all_scores:
-        metrics[f"{p}mean_alignment"] = sum(all_scores) / len(all_scores)
+        metrics[f"{p}mean_alignment{suffix}"] = sum(all_scores) / len(all_scores)
 
     wandb.log(metrics)
     wandb.finish()
