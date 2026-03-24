@@ -1,0 +1,29 @@
+# ACT sycophancy — Gemma-3-4B-IT, LoRA q+v, LR=5e-6, weight=1e-4.
+# Apples-to-apples comparison with Gemma-2-2B-IT LoRA config.
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: true
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  learning_rate: 0.000005
+  save_dir: "checkpoints/act_sycophancy_gemma3_4b_lora"

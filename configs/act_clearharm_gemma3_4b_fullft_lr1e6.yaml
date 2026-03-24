@@ -1,0 +1,24 @@
+# ACT ClearHarm jailbreak — Gemma-3-4B-IT, full fine-tuning, LR=1e-6, weight=1e-4.
+# No lora section = full FT mode (run.py loads frozen ref_model for clean pass).
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: true
+
+# No lora section = full fine-tuning mode (run.py loads frozen ref_model for clean pass)
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+
+data:
+  source: clear-harm
+  mode: jailbreak
+
+training:
+  learning_rate: 0.000001
+  save_dir: "checkpoints/act_clearharm_gemma3_4b_fullft_lr1e6"
