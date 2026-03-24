@@ -44,43 +44,35 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+
+    # W&B sharing / persona sweep args (used by sweep_persona_experiments.sh)
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint to resume from")
+    parser.add_argument("--run-name", default=None, help="W&B run name (default: auto-generated)")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
+    parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
+    parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+
     parser.add_argument("--log-io", metavar="FILE", default=None,
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
 
-    # Behavioral eval JSONL paths. All four must be provided together to enable
-    # behavioral evaluation at the three training checkpoints. If any are omitted,
-    # training runs normally without behavioral eval.
+    # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
-    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None,
-                       help="Path to bct_cot.jsonl (wrapped, chain-of-thought).")
-    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None,
-                       help="Path to bct_non_cot.jsonl (wrapped, direct answer).")
-    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None,
-                       help="Path to control_cot.jsonl (clean, chain-of-thought).")
-    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None,
-                       help="Path to control_non_cot.jsonl (clean, direct answer).")
-    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500,
-                       help="Max examples per JSONL file during behavioral eval (default: 200).")
-    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200,
-                       help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
-    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all",
-                       help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
-    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
-                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
+    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
+    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None)
+    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None)
+    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None)
+    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500)
+    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)
+    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
+    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
 
-    # Data source / mode overrides. These take precedence over the YAML.
-    # For sycophancy runs, --control-cot already sets source+mode implicitly.
-    # For clear-harm and hardcoded runs, pass --data-source explicitly.
-    parser.add_argument("--data-source", dest="data_source", default=None,
-                        help="Override config data.source (clear-harm | hardcoded | sycophancy_bct | <path>).")
-    parser.add_argument("--data-mode",   dest="data_mode",   default=None,
-                        choices=["jailbreak", "sycophancy"],
-                        help="Override config data.mode (jailbreak | sycophancy).")
-    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
-                        help="Cap the number of training prompts (overrides config data.limit).")
-    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
-                        help="Cap the number of eval prompts for the end-of-training Evaluator.")
+    parser.add_argument("--data-source", dest="data_source", default=None)
+    parser.add_argument("--data-mode",   dest="data_mode",   default=None, choices=["jailbreak", "sycophancy"])
+    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
+    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
 
     args = parser.parse_args()
 
@@ -101,29 +93,34 @@ def main():
 
     needs_attn_weights = config["model"].get("output_attentions", True)
     if needs_attn_weights:
-        attn_impl = "eager"          # FA2 cannot return attention weights
+        attn_impl = "eager"
     else:
         try:
             import flash_attn        # noqa: F401
             attn_impl = "flash_attention_2"
         except ImportError:
-            attn_impl = "sdpa"       # torch built-in, no install required
+            attn_impl = "sdpa"
     print(f"attn_implementation: {attn_impl}")
 
     if is_lora:
         lora_cfg = config["lora"]
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        model = get_peft_model(model, LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=lora_cfg["r"],
-            lora_alpha=lora_cfg["lora_alpha"],
-            lora_dropout=lora_cfg["lora_dropout"],
-            target_modules=lora_cfg["target_modules"],
-            bias=lora_cfg["bias"],
-        ))
+        base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        if args.checkpoint:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=True)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = get_peft_model(base_model, LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=lora_cfg["r"],
+                lora_alpha=lora_cfg["lora_alpha"],
+                lora_dropout=lora_cfg["lora_dropout"],
+                target_modules=lora_cfg["target_modules"],
+                bias=lora_cfg["bias"],
+            ))
         model.print_trainable_parameters()
     else:
-        # Full fine-tuning: all params trainable; load a separate frozen ref model for clean pass (= θ_init)
+        # Full fine-tuning: load a frozen ref model for clean pass (= θ_init)
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
         ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
         ref_model.eval()
@@ -138,26 +135,41 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
+    if args.save_dir:
+        config.setdefault("training", {})["save_dir"] = args.save_dir
+
     # ── W&B init ──────────────────────────────────────────────────────────────
-    model_short = os.path.basename(model_name)
-    if isinstance(loss_fn, SFTLoss):
-        data_source_tag = "sft"
+    if args.run_name:
+        run_name = args.run_name
     else:
-        data_source_tag = (
-            args.data_source if args.data_source is not None
-            else "sycophancy_bct" if args.control_cot_path is not None
-            else config.get("data", {}).get("source", "unknown")
-        )
-    lr     = config["training"]["learning_rate"]
-    weight = loss_cfg.get("weight", 1.0)
-    run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
-    wandb.init(project="AttCT", name=run_name, group="week2", tags=[data_source_tag], config=config)
+        model_short = os.path.basename(model_name)
+        if isinstance(loss_fn, SFTLoss):
+            data_source_tag = "sft"
+        else:
+            data_source_tag = (
+                args.data_source if args.data_source is not None
+                else "sycophancy_bct" if args.control_cot_path is not None
+                else config.get("data", {}).get("source", "unknown")
+            )
+        lr     = config["training"]["learning_rate"]
+        weight = loss_cfg.get("weight", 1.0)
+        run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
+
+    wandb.init(
+        project="AttCT",
+        name=run_name,
+        group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
+        config=config,
+    )
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
     if ref_model is not None:
         ref_model = ref_model.to(device)
-# ── Training path ─────────────────────────────────────────────────────────
+
+    # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
@@ -169,8 +181,6 @@ def main():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Wire data source/mode into config.
-        # Priority: --data-source/--data-mode > --control-cot (sycophancy shorthand) > YAML.
         if args.data_source is not None:
             config.setdefault("data", {})["source"] = args.data_source
         elif args.control_cot_path is not None:
@@ -182,13 +192,11 @@ def main():
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
 
-        # Log wrapper config now that data mode is finalised.
         wrapper_mode = config.get("data", {}).get("mode", "jailbreak")
         wrapper_templates = "sycophancy" if wrapper_mode == "sycophancy" else "jailbreak_strong"
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        # Build BehavioralEvaluator if any eval is enabled.
         beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
         has_sycophancy_paths = all(p is not None for p in beval_paths)
         has_mmlu  = args.mmlu_max_samples > 0
@@ -215,9 +223,8 @@ def main():
                 features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
             print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
         else:
-            print("No behavioral eval configured. Pass --bct-cot/... for sycophancy, --mmlu-max-samples N for MMLU, or --gsm8k-max-samples N for GSM8K.")
+            print("No behavioral eval configured.")
 
-        # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
         _data_source_tag = (
             args.data_source if args.data_source is not None
@@ -266,10 +273,12 @@ def main():
             checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
         ).train()
 
-        eval_config = config.copy()
-        if args.eval_limit is not None:
-            eval_config.setdefault("data", {})["limit"] = args.eval_limit
-        Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
+        if not args.skip_eval:
+            eval_config = config.copy()
+            if args.eval_limit is not None:
+                eval_config.setdefault("data", {})["limit"] = args.eval_limit
+            Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
+                      metric_prefix=args.metric_prefix).evaluate()
 
         if is_sycophancy and not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")

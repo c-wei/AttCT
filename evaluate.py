@@ -16,11 +16,12 @@ class Evaluator:
         device:     torch.device to run on.
     """
 
-    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device):
+    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device, metric_prefix: str = "eval/"):
         self.model = model
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.device = device
+        self.metric_prefix = metric_prefix
 
         model_cfg = config["model"]
         self.output_attentions = model_cfg.get("output_attentions", True)
@@ -101,12 +102,17 @@ class Evaluator:
         return results
 
     def _report(self, results: dict):
-        metrics = {"eval/mean_loss": results["mean_loss"]}
+        p = self.metric_prefix
+        metrics = {f"{p}mean_loss": results["mean_loss"]}
         if "mean_wrapper_attention" in results:
-            metrics["eval/mean_wrapper_attention"] = results["mean_wrapper_attention"]
+            metrics[f"{p}mean_wrapper_attention"] = results["mean_wrapper_attention"]
         if "mean_layer_losses" in results:
             for i, l in enumerate(results["mean_layer_losses"]):
-                metrics[f"eval/layer_{i:02d}_loss"] = l
+                metrics[f"{p}layer_{i:02d}_loss"] = l
+        if "top1_agreement" in results:
+            metrics[f"{p}top1_agreement"] = results["top1_agreement"]
+        if "js_divergence" in results:
+            metrics[f"{p}js_divergence"] = results["js_divergence"]
         wandb.log(metrics)
 
         print(f"\n--- Eval Results [{self.loss_fn.__class__.__name__}] ---")
