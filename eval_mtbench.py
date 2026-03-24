@@ -24,7 +24,7 @@ import torch
 import wandb
 import yaml
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 from icl_persona_experiment import JUDGE_MODEL, _chat
 
@@ -60,19 +60,23 @@ def generate_response(model, tokenizer, messages: list[dict], device, max_new_to
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
+            return_dict=True,
         )
-        input_ids = (tokenized.input_ids if hasattr(tokenized, "input_ids") else tokenized).to(device)
+        input_ids = tokenized["input_ids"].to(device)
+        attention_mask = tokenized["attention_mask"].to(device)
     else:
         text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
         text += "\n\nAssistant:"
-        input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+        enc = tokenizer(text, return_tensors="pt")
+        input_ids = enc["input_ids"].to(device)
+        attention_mask = enc["attention_mask"].to(device)
+    gen_cfg = GenerationConfig(
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        pad_token_id=tokenizer.eos_token_id,
+    )
     with torch.no_grad():
-        output_ids = model.generate(
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        output_ids = model.generate(input_ids, attention_mask=attention_mask, generation_config=gen_cfg)
     generated = output_ids[0][input_ids.shape[1]:]
     return tokenizer.decode(generated, skip_special_tokens=True)
 
@@ -101,7 +105,7 @@ def main():
     print(f"Loading {model_name}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="eager"
     )
     if args.checkpoint:
         if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
@@ -110,7 +114,7 @@ def main():
             print(f"Loaded LoRA checkpoint from {args.checkpoint}")
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="eager"
             )
             print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
