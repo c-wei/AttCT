@@ -7,7 +7,7 @@ from peft import get_peft_model, LoraConfig, TaskType
 
 from train import Trainer
 from losses.losses import AttentionConsistencyLoss
-from data.prefill_dataset import get_prefill_dataloader
+from data.prefill_dataset import get_prefill_dataloader, load_wildjailbreak_prompts
 
 with open("./configs/prefill_act.yaml") as f:
     config = yaml.safe_load(f)
@@ -37,33 +37,37 @@ model = get_peft_model(model, LoraConfig(
 model.print_trainable_parameters()
 model = model.to(device)
 
-hf_dataset = load_dataset("AlignmentResearch/ClearHarm", split="train", streaming=True)
-limit = config["data"].get("limit")
+# hf_dataset = load_dataset("allenai/wildjailbreak", split="train", streaming=True)
+# limit = config["data"].get("limit")
 
-prompts = []
-for item in hf_dataset:
-    content = item["content"]
-    text = content[0] if isinstance(content, list) else content
-    prompts.append(text)
-    if limit is not None and len(prompts) >= limit:
-        break
+# prompts = []
+# for item in hf_dataset:
+#     content = item["content"]
+#     text = content[0] if isinstance(content, list) else content
+#     prompts.append(text)
+#     if limit is not None and len(prompts) >= limit:
+#         break
 
-print(f"Loaded {len(prompts)} harmful prompts from ClearHarm")
+# print(f"Loaded {len(prompts)} harmful prompts from wildjailbreak")
 
-split = int(0.9 * len(prompts))
-train_prompts = prompts[:split]
-eval_prompts  = prompts[split:]
+# split = int(0.9 * len(prompts))
+# train_prompts = prompts[:split]
+# eval_prompts  = prompts[split:]
 
-train_dl = get_prefill_dataloader(
-    train_prompts, tokenizer,
-    batch_size=config["training"].get("batch_size", 1),
+# train_dl = get_prefill_dataloader(
+#     train_prompts, tokenizer,
+#     batch_size=config["training"].get("batch_size", 1),
+# )
+# eval_dl = get_prefill_dataloader(
+#     eval_prompts, tokenizer, shuffle=False,
+#     batch_size=config["training"].get("batch_size", 1),
+# )
+
+# print(f"Train pairs: {len(train_dl.dataset)} | Eval pairs: {len(eval_dl.dataset)}")
+
+train_prompts, eval_prompts = load_wildjailbreak_prompts(
+    limit=config["data"].get("limit"),
 )
-eval_dl = get_prefill_dataloader(
-    eval_prompts, tokenizer, shuffle=False,
-    batch_size=config["training"].get("batch_size", 1),
-)
-
-print(f"Train pairs: {len(train_dl.dataset)} | Eval pairs: {len(eval_dl.dataset)}")
 
 #Loss
 loss_cfg = config["loss"]
@@ -72,7 +76,7 @@ loss_fn = AttentionConsistencyLoss(
     output_hidden_states=False,
 )
 
-wandb.init(project="AttCT", name="prefill_act_clearharm", config=config)
+wandb.init(project="AttCT", name="prefill_act_wildjailbreak", config=config)
 
 #Train
 trainer = Trainer(
