@@ -223,6 +223,7 @@ class Trainer:
             avg = epoch_loss / steps_this_epoch
 
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+            self._save_checkpoint(tag=f"epoch_{epoch}")
 
             if self.max_steps is not None and global_step >= self.max_steps:
                 break
