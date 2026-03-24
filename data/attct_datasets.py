@@ -21,18 +21,70 @@ try:
         AdversarialWrapper,
         STRONG_JAILBREAK_TEMPLATES,
         SYCOPHANCY_TEMPLATES,
+        _extract_answer_choices,
     )
 except ImportError:
     from .wrappers import (
         AdversarialWrapper,
         STRONG_JAILBREAK_TEMPLATES,
         SYCOPHANCY_TEMPLATES,
+        _extract_answer_choices,
     )
 
 # ==========================================
 # PROMPT LOADING HELPERS
 # ==========================================
 
+
+def _find_content_token_boundary(
+    formatted_str: str,
+    content_text: str,
+    tokenizer,
+) -> tuple:
+    """
+    Find the token-level start index and length of content_text within
+    the already-formatted (chat-template-applied) string.
+
+    Uses offset_mapping so results are correct even when the tokenizer
+    produces different token IDs for the same text depending on context
+    (e.g. BPE merges differ after chat header tokens).
+
+    Args:
+        formatted_str: Full chat-formatted string (from apply_chat_template
+                       with tokenize=False).
+        content_text:  The raw content string whose position we want to find.
+        tokenizer:     HuggingFace tokenizer (must support return_offsets_mapping).
+
+    Returns:
+        (token_ids, start_index, clean_len) where:
+            token_ids   — full tokenized sequence as a list of ints
+            start_index — index of first token that belongs to content_text
+            clean_len   — number of tokens that span content_text
+    """
+    content_char_start = formatted_str.index(content_text)
+    content_char_end   = content_char_start + len(content_text)
+
+    encoding = tokenizer(
+        formatted_str,
+        add_special_tokens=False,   # BOS already present in formatted_str
+        return_offsets_mapping=True,
+    )
+    token_ids = encoding["input_ids"]
+    offsets   = encoding["offset_mapping"]  # list of (char_start, char_end) per token
+
+    # First token whose character start >= content_char_start
+    start_index = next(
+        i for i, (tok_s, tok_e) in enumerate(offsets)
+        if tok_s >= content_char_start
+    )
+    # First token whose character start >= content_char_end
+    end_index = next(
+        (i for i, (tok_s, tok_e) in enumerate(offsets) if tok_s >= content_char_end),
+        len(token_ids),   # if content runs to end of sequence
+    )
+    clean_len = end_index - start_index
+
+    return token_ids, start_index, clean_len
 
 def _read_jsonl_user_messages(path: str | Path) -> List[str]:
     """Read user messages from a JSONL file (for sycophancy BCT data)."""
@@ -60,10 +112,33 @@ def _read_jsonl_user_messages(path: str | Path) -> List[str]:
     return prompts
 
 
+def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
+    """Read (user_content, assistant_content) pairs from a JSONL file."""
+    p = Path(path)
+    pairs: List[tuple] = []
+    with p.open("r") as f:
+        for line_num, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSONL at {p} line {line_num}: {e}") from e
+            msgs = obj.get("messages", [])
+            if len(msgs) < 2:
+                continue
+            user = next((m["content"] for m in msgs if m.get("role") == "user"), None)
+            asst = next((m["content"] for m in msgs if m.get("role") == "assistant"), None)
+            if user and asst:
+                pairs.append((str(user), str(asst)))
+    return pairs
+
+
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "cot",
-    local_root: str | Path = "datasets/sycophancy_bct",
+    local_root: str | Path = Path(__file__).parent.parent / "datasets" / "sycophancy_bct",
 ) -> List[str]:
     """
     Loads clean (control) sycophancy BCT prompts from local dataset dumps.
@@ -125,7 +200,7 @@ def get_prompts(
                 prompts_raw.append(" ".join(content) if isinstance(content, list) else str(content))
 
             # Deduplicate and filter short prompts
-            prompts = list(set([p for p in prompts_raw if len(str(p)) > 15]))
+            prompts = list(set([str(p) for p in prompts_raw if len(str(p)) > 15]))
             print(f"    Loaded {len(prompts)} unique harmful prompts from ClearHarm")
 
         except Exception as e:
@@ -157,12 +232,17 @@ def get_prompts(
         print(f"    Using {len(prompts)} hardcoded harmful prompts")
 
     else:
-        # Assume it's a file path
+        # Assume it's a file path; detect JSONL with messages structure
         try:
-            with open(source, 'r') as f:
-                prompts = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            print(f"Warning: Failed to load from file {source}: {e}")
+            prompts = _read_jsonl_user_messages(source)
+            print(f"    Loaded {len(prompts)} prompts from {source} (JSONL messages format)")
+        except (ValueError, KeyError, FileNotFoundError):
+            # Not a messages-style JSONL — fall back to plain line-by-line reading
+            try:
+                with open(source, 'r') as f:
+                    prompts = [line.strip() for line in f if line.strip()]
+            except Exception as e:
+                print(f"Warning: Failed to load from file {source}: {e}")
 
     # Fallback to hardcoded if nothing loaded (jailbreak-style sources only)
     if source not in ("sycophancy_bct",) and len(prompts) < 10:
@@ -201,6 +281,7 @@ class AttCTDataset(Dataset):
         add_special_tokens: bool = True,
         use_strong_templates: bool = True,
         mode: Literal["jailbreak", "sycophancy"] = "jailbreak",
+        max_length: Optional[int] = None,
     ):
         """
         Args:
@@ -231,6 +312,25 @@ class AttCTDataset(Dataset):
             )
 
         self.add_special_tokens = add_special_tokens
+        self.max_length = max_length
+
+        # If all templates require MCQ answer choices, drop prompts that have
+        # none — otherwise wrap() would raise ValueError at training time.
+        templates = self.wrapper.templates
+        all_need_choices = templates and all(
+            any(p in t for p in ("{answer_letter}", "{answer_text}", "{answer_rendered}"))
+            for t in templates
+        )
+        if all_need_choices:
+            n_before = len(self.prompts)
+            self.prompts = [p for p in self.prompts if _extract_answer_choices(str(p))]
+            n_dropped = n_before - len(self.prompts)
+            if n_dropped:
+                import warnings
+                warnings.warn(
+                    f"AttCTDataset: dropped {n_dropped}/{n_before} prompts with no "
+                    "MCQ answer choices (incompatible with sycophancy templates)."
+                )
 
     def __len__(self) -> int:
         return len(self.prompts)
@@ -239,64 +339,71 @@ class AttCTDataset(Dataset):
         """
         Returns:
             Dictionary with:
-                - clean_input_ids: tokens for clean prompt
-                - adv_input_ids (jailbreak) / wrapped_input_ids (sycophancy): tokens for wrapped prompt
-                - start_index: token index where clean prompt starts in wrapped version
-                - clean_len: length of clean prompt in tokens
-                - wrapper_mask (sycophancy only): bool mask over wrapped tokens (True on wrapper tokens)
+                - clean_input_ids:    tokens for chat-formatted clean prompt
+                - wrapped_input_ids:  tokens for chat-formatted wrapped prompt
+                  (sycophancy) or adv_input_ids (jailbreak)
+                - start_index:        token position where question content
+                                      starts in the wrapped sequence
+                - clean_start_index:  token position where question content
+                                      starts in the clean sequence
+                - clean_len:          number of tokens spanning question content
+                - wrapper_mask:       bool mask [wrapped_len], True on wrapper
+                                      tokens (sycophancy mode only)
         """
         clean_text = str(self.prompts[idx])
+        wrapped_text, _, _ = self.wrapper.wrap(clean_text)
 
-        # Get wrapped version
-        wrapped_text, prefix_len_chars, clean_len_chars = self.wrapper.wrap(clean_text)
+        # Get chat-formatted strings (not yet tokenized).
+        # add_generation_prompt=True appends the assistant header so the model
+        # is primed to generate (correct inference-time format).
+        # Fall back to the raw text for models without a chat template (e.g. sanity-check tokenizers).
+        try:
+            clean_formatted = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": clean_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            wrapped_formatted = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": wrapped_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except (ValueError, AttributeError):
+            clean_formatted   = clean_text
+            wrapped_formatted = wrapped_text
 
-        # Tokenize clean prompt (without special tokens)
-        clean_ids = self.tokenizer(
-            clean_text,
-            add_special_tokens=False,
-            return_tensors=None
-        )['input_ids']
+        # Use offset_mapping to find token boundaries for clean_text in each
+        # formatted string. This is robust to BPE context-sensitivity.
+        clean_ids, clean_start_index, clean_len = _find_content_token_boundary(
+            clean_formatted, clean_text, self.tokenizer
+        )
+        wrapped_ids, start_index, _ = _find_content_token_boundary(
+            wrapped_formatted, clean_text, self.tokenizer
+        )
 
-        # Tokenize wrapped prompt parts to find boundaries
-        prefix_text = wrapped_text[:prefix_len_chars]
-        suffix_text = wrapped_text[prefix_len_chars + clean_len_chars:]
-
-        # Prefix gets special tokens
-        prefix_ids = self.tokenizer(
-            prefix_text,
-            add_special_tokens=self.add_special_tokens,
-            return_tensors=None
-        )['input_ids']
-
-        # Suffix without special tokens
-        suffix_ids = self.tokenizer(
-            suffix_text,
-            add_special_tokens=False,
-            return_tensors=None
-        )['input_ids']
-
-        # Construct wrapped sequence: prefix + clean + suffix
-        wrapped_ids = prefix_ids + clean_ids + suffix_ids
-        start_index = len(prefix_ids)
-        clean_len = len(clean_ids)
+        # Truncate to max_length if set
+        if self.max_length is not None and len(wrapped_ids) > self.max_length:
+            wrapped_ids = wrapped_ids[:self.max_length]
+            clean_len = max(0, min(clean_len, self.max_length - start_index))
+            clean_ids = clean_ids[:clean_len]
 
         result = {
-            'clean_input_ids': torch.tensor(clean_ids, dtype=torch.long),
-            'start_index': start_index,
-            'clean_len': clean_len,
+            "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
+            "start_index":       start_index,
+            "clean_start_index": clean_start_index,
+            "clean_len":         clean_len,
         }
 
         if self.mode == "sycophancy":
             wrapper_mask = [True] * len(wrapped_ids)
             for token_idx in range(start_index, start_index + clean_len):
                 wrapper_mask[token_idx] = False
-            result['wrapped_input_ids'] = torch.tensor(wrapped_ids, dtype=torch.long)
-            result['wrapper_mask'] = torch.tensor(wrapper_mask, dtype=torch.bool)
+            result["wrapped_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
+            result["wrapper_mask"]      = torch.tensor(wrapper_mask, dtype=torch.bool)
         else:
-            result['adv_input_ids'] = torch.tensor(wrapped_ids, dtype=torch.long)
+            result["adv_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
 
         return result
-
 
 # ==========================================
 # PERSONA ICL CONSTANTS
@@ -468,13 +575,14 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     limit = data_cfg.get("limit", None)
     mode = data_cfg.get("mode", "jailbreak")
     batch_size = data_cfg.get("batch_size", 1)
+    max_length = data_cfg.get("max_length", None)
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     prompts = get_prompts(source=source, split=split, limit=limit)
-    dataset = AttCTDataset(prompts, tokenizer, mode=mode)
+    dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
     collate = partial(collate_fn_batch1, mode=mode)
 
     return DataLoader(
@@ -484,33 +592,181 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
         collate_fn=collate,
     )
 
-
 def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbreak"):
     """
-    Collate function for batch size 1 (current requirement).
-    Adds attention masks on the fly.
-
-    The `mode` parameter controls which key names to use.
+    Collate function for batch size 1.
+    Passes clean_start_index through to the Trainer / loss functions.
     """
     item = batch[0]
 
     if mode == "sycophancy":
         return {
-            'clean_input_ids': item['clean_input_ids'].unsqueeze(0),
-            'clean_attention_mask': torch.ones(1, len(item['clean_input_ids']), dtype=torch.long),
-            'wrapped_input_ids': item['wrapped_input_ids'].unsqueeze(0),
-            'wrapped_attention_mask': torch.ones(1, len(item['wrapped_input_ids']), dtype=torch.long),
-            'start_index': torch.tensor([item['start_index']], dtype=torch.long),
-            'clean_len': torch.tensor([item['clean_len']], dtype=torch.long),
-            'wrapper_mask': item['wrapper_mask'].unsqueeze(0),
+            "clean_input_ids":        item["clean_input_ids"].unsqueeze(0),
+            "clean_attention_mask":   torch.ones(1, len(item["clean_input_ids"]),   dtype=torch.long),
+            "wrapped_input_ids":      item["wrapped_input_ids"].unsqueeze(0),
+            "wrapped_attention_mask": torch.ones(1, len(item["wrapped_input_ids"]), dtype=torch.long),
+            "start_index":            torch.tensor([item["start_index"]],       dtype=torch.long),
+            "clean_start_index":      torch.tensor([item["clean_start_index"]], dtype=torch.long),
+            "clean_len":              torch.tensor([item["clean_len"]],         dtype=torch.long),
+            "wrapper_mask":           item["wrapper_mask"].unsqueeze(0),
         }
     else:
         adv_ids = item.get('adv_input_ids', item.get('wrapped_input_ids'))
         return {
-            'clean_input_ids': item['clean_input_ids'].unsqueeze(0),
-            'clean_attention_mask': torch.ones(1, len(item['clean_input_ids']), dtype=torch.long),
-            'wrapped_input_ids': adv_ids.unsqueeze(0),
-            'wrapped_attention_mask': torch.ones(1, len(adv_ids), dtype=torch.long),
-            'start_index': torch.tensor([item['start_index']], dtype=torch.long),
-            'clean_len': torch.tensor([item['clean_len']], dtype=torch.long),
+            "clean_input_ids":        item["clean_input_ids"].unsqueeze(0),
+            "clean_attention_mask":   torch.ones(1, len(item["clean_input_ids"]),   dtype=torch.long),
+            "wrapped_input_ids":      adv_ids.unsqueeze(0),
+            "wrapped_attention_mask": torch.ones(1, len(adv_ids),                  dtype=torch.long),
+            "start_index":            torch.tensor([item["start_index"]],           dtype=torch.long),
+            "clean_start_index":      torch.tensor([item.get("clean_start_index", item["start_index"])], dtype=torch.long),
+            "clean_len":              torch.tensor([item["clean_len"]],             dtype=torch.long),
         }
+
+
+# ==========================================
+# BCT (SFT) DATASET
+# ==========================================
+
+class BCTDataset(Dataset):
+    """
+    Dataset for BCT supervised fine-tuning.
+
+    Loads (biased_input, unbiased_output) pairs and formats them for causal LM
+    training. The question tokens are masked in `labels` so the cross-entropy
+    loss is computed only on the assistant response.
+
+    Requires a tokenizer with `apply_chat_template` (instruct models).
+    """
+
+    def __init__(self, pairs: List[tuple], tokenizer, max_length: int = 2048):
+        self.pairs = pairs
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int) -> dict:
+        user_content, asst_content = self.pairs[idx]
+
+        has_template = getattr(self.tokenizer, "chat_template", None) is not None
+
+        if has_template:
+            # Get text via chat template, then tokenize explicitly
+            full_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_content},
+                 {"role": "assistant", "content": asst_content}],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            prompt_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_content}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            full_ids   = self.tokenizer(full_text,   add_special_tokens=False)["input_ids"]
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+        else:
+            # Fallback for base models without a chat template
+            prompt_text = f"User: {user_content}\nAssistant: "
+            full_text   = prompt_text + asst_content
+            full_ids    = self.tokenizer(full_text,   add_special_tokens=True)["input_ids"]
+            prompt_ids  = self.tokenizer(prompt_text, add_special_tokens=True)["input_ids"]
+
+        full_ids = full_ids[:self.max_length]
+        # Ensure at least one response token survives truncation
+        prompt_len = min(len(prompt_ids), len(full_ids) - 1)
+
+        labels = list(full_ids)
+        for i in range(prompt_len):
+            labels[i] = -100
+
+        return {
+            "input_ids": torch.tensor(full_ids, dtype=torch.long),
+            "labels":    torch.tensor(labels,   dtype=torch.long),
+        }
+
+
+def collate_fn_bct(batch, pad_token_id: int = 0):
+    """Right-pad a BCT batch to the longest sequence."""
+    max_len = max(len(item["input_ids"]) for item in batch)
+    input_ids_out, attention_mask_out, labels_out = [], [], []
+    for item in batch:
+        ids  = item["input_ids"]
+        lbls = item["labels"]
+        pad  = max_len - len(ids)
+        input_ids_out.append(
+            torch.cat([ids, torch.full((pad,), pad_token_id, dtype=torch.long)])
+        )
+        attention_mask_out.append(
+            torch.cat([torch.ones(len(ids), dtype=torch.long),
+                       torch.zeros(pad, dtype=torch.long)])
+        )
+        labels_out.append(
+            torch.cat([lbls, torch.full((pad,), -100, dtype=torch.long)])
+        )
+    return {
+        "input_ids":      torch.stack(input_ids_out),
+        "attention_mask": torch.stack(attention_mask_out),
+        "labels":         torch.stack(labels_out),
+    }
+
+
+def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
+    """
+    Build a DataLoader for BCT SFT training.
+
+    Loads biased (bct_cot + bct_non_cot) JSONL pairs and optionally mixes
+    in instruct data (instruct_samples.jsonl).
+
+    Config keys under `data`:
+        bct_root:          path to folder with bct_cot.jsonl / bct_non_cot.jsonl
+        mix_instruct:      bool, whether to add instruct samples (default true)
+        limit:             max total samples (optional)
+        batch_size:        int (default 1)
+        max_length:        int token limit per sample (default 2048)
+    """
+    from transformers import AutoTokenizer
+
+    data_cfg = config.get("data", {})
+    bct_root    = Path(data_cfg.get("bct_root", "datasets/sycophancy_bct"))
+    mix_instruct = data_cfg.get("mix_instruct", True)
+    limit        = data_cfg.get("limit", None)
+    batch_size   = data_cfg.get("batch_size", 1)
+    max_length   = data_cfg.get("max_length", 2048)
+
+    tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    pairs: List[tuple] = []
+    for fname in ("bct_cot.jsonl", "bct_non_cot.jsonl"):
+        fp = bct_root / fname
+        if fp.exists():
+            pairs.extend(_read_jsonl_pairs(fp))
+        else:
+            print(f"    Warning: {fp} not found, skipping.")
+
+    if mix_instruct:
+        instruct_fp = bct_root / "instruct_samples.jsonl"
+        if instruct_fp.exists():
+            pairs.extend(_read_jsonl_pairs(instruct_fp))
+        else:
+            print(f"    Warning: {instruct_fp} not found, skipping instruct mix.")
+
+    if not pairs:
+        raise FileNotFoundError(f"No BCT training pairs found in {bct_root}")
+
+    if limit:
+        pairs = pairs[:limit]
+
+    print(f"    BCT dataloader ({split}): {len(pairs)} pairs from {bct_root}")
+
+    dataset  = BCTDataset(pairs, tokenizer, max_length=max_length)
+    collate  = partial(collate_fn_bct, pad_token_id=tokenizer.pad_token_id)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(split == "train"),
+        collate_fn=collate,
+    )
