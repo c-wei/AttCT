@@ -402,8 +402,10 @@ def _build_persona_dataset(persona_cfg_path: str, k: int, which: str, tokenizer,
         questions = identity_qs
     elif which == "alignment":
         questions = alignment_qs
-    else:
+    elif which == "both":
         questions = identity_qs + alignment_qs
+    else:
+        raise ValueError(f"Invalid 'questions' value: {which!r}. Expected 'identity', 'alignment', or 'both'.")
     return PersonaICLDataset(questions, facts, k, tokenizer, shuffle_facts=shuffle_facts)
 
 

@@ -112,10 +112,10 @@ check("Persona facts + build_messages (all 5)", check_persona_facts)
 # ── APIs ──────────────────────────────────────────────────────────────────────
 
 def check_openrouter():
-    from icl_persona_experiment import _chat
+    from icl_persona_experiment import _chat, JUDGE_MODEL
     result = _chat(
         [{"role": "user", "content": "Reply with exactly one word: OK"}],
-        model="google/gemini-2.5-flash",
+        model=JUDGE_MODEL,
         temperature=0.0,
     )
     return f"response: {result.strip()[:20]!r}"

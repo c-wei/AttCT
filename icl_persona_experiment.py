@@ -190,6 +190,7 @@ def judge_alignment(question: str, answer: str) -> Optional[float]:
     try:
         return float(result)
     except ValueError:
+        print(f"[malformed alignment score] {result!r}")
         return None
 
 

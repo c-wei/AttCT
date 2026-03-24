@@ -64,6 +64,7 @@ run_all_evals() {
 
     uv run python eval_clearharm_behavioral.py \
         $ckpt_arg \
+        $name_args \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -78,6 +79,7 @@ run_all_evals() {
 
     uv run python eval_persona_behavioral.py \
         $ckpt_arg \
+        $name_args \
         --k 20 \
         --facts-position prefix \
         --wandb-run-id "$run_id" \
@@ -85,6 +87,7 @@ run_all_evals() {
 
     uv run python eval_persona_behavioral.py \
         $ckpt_arg \
+        $name_args \
         --k 20 \
         --facts-position suffix \
         --wandb-run-id "$run_id" \
