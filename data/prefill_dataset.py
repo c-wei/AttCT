@@ -136,3 +136,37 @@ def get_prefill_dataloader(
         shuffle=shuffle,
         collate_fn=prefill_collate_fn,
     )
+
+def load_wildjailbreak_prompts(
+    content_column: str = "prompt",
+    data_type_column: str = "data_type",
+    harmful_label: str = "vanilla",
+    limit: int = None,
+    train_ratio: float = 0.9,
+) -> tuple[list[str], list[str]]:
+    """
+    Loads harmful prompts from the WildJailbreak eval subset.
+    Filters to rows where data_type == 'vanilla' (direct harmful prompts,
+    no jailbreak wrapper) as the clean harmful baseline.
+    """
+    hf_dataset = load_dataset(
+        "allenai/wildjailbreak",
+        "eval", 
+        split="train",
+        delimiter="\t",
+    )
+
+    prompts = []
+    for item in hf_dataset:
+        if item[data_type_column] != harmful_label:
+            continue
+        text = item[content_column]
+        if text and text.strip():
+            prompts.append(text.strip())
+        if limit is not None and len(prompts) >= limit:
+            break
+
+    print(f"Loaded {len(prompts)} '{harmful_label}' prompts from WildJailbreak eval subset")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:]
