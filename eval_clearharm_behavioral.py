@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import os
 
 import torch
 import wandb
@@ -50,7 +51,8 @@ def judge_refusal(prompt: str, response: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA or full FT checkpoint")
+    parser.add_argument("--model", default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--n-samples", type=int, default=50, help="Number of ClearHarm prompts to evaluate")
     parser.add_argument("--max-new-tokens", type=int, default=200)
     parser.add_argument("--run-name", default=None, help="W&B run name")
@@ -61,13 +63,15 @@ def main():
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
-    model_name = config["model"]["name"]
+    model_name = args.model if args.model else config["model"]["name"]
 
     # Use clearharm_eval config for the dataloader
     with open("configs/clearharm_eval.yaml") as f:
         overrides = yaml.safe_load(f)
     eval_config = config.copy()
     eval_config.update({k: v for k, v in overrides.items() if k != "defaults"})
+    # Ensure dataloader uses the correct tokenizer when --model overrides config.yaml
+    eval_config["model"]["name"] = model_name
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -77,9 +81,15 @@ def main():
         model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
     )
     if args.checkpoint:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+            )
+            print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
         model = base_model
 

@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import os
 import re
 
 import torch
@@ -78,7 +79,8 @@ def generate_response(model, tokenizer, messages: list[dict], device, max_new_to
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA or full FT checkpoint")
+    parser.add_argument("--model", default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--two-turn", action="store_true", help="Evaluate both turns (default: single-turn only)")
     parser.add_argument("--n-questions", type=int, default=80, help="Number of MT-Bench questions to evaluate (default: 80)")
     parser.add_argument("--run-name", default=None, help="W&B run name")
@@ -89,7 +91,7 @@ def main():
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
-    model_name = config["model"]["name"]
+    model_name = args.model if args.model else config["model"]["name"]
 
     print(f"Loading MT-Bench prompts...")
     ds = load_dataset("HuggingFaceH4/mt_bench_prompts", split="train")
@@ -102,9 +104,15 @@ def main():
         model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
     )
     if args.checkpoint:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+            )
+            print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
         model = base_model
 

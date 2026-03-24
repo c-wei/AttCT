@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -85,7 +86,8 @@ def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, de
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA or full FT checkpoint")
+    parser.add_argument("--model", default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--k", type=int, default=10, help="Number of persona facts in ICL context")
     parser.add_argument("--n-samples", type=int, default=3, help="Generations per alignment question")
     parser.add_argument("--facts-position", default="prefix", choices=["prefix", "suffix"],
@@ -98,7 +100,7 @@ def main():
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
-    model_name = config["model"]["name"]
+    model_name = args.model if args.model else config["model"]["name"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,9 +110,15 @@ def main():
         model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
     )
     if args.checkpoint:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+            )
+            print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
         model = base_model
 
