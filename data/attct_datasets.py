@@ -6,6 +6,8 @@ from functools import partial
 from pathlib import Path
 from typing import List, Literal, Optional
 
+import yaml
+
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
@@ -391,7 +393,6 @@ class PersonaICLDataset(Dataset):
 # ==========================================
 
 def _build_persona_dataset(persona_cfg_path: str, k: int, which: str, tokenizer, shuffle_facts: bool) -> "PersonaICLDataset":
-    import yaml
     with open(persona_cfg_path) as f:
         persona_cfg = yaml.safe_load(f)
     facts = _load_persona_facts(persona_cfg["facts_path"])

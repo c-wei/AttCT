@@ -1,0 +1,14 @@
+training:
+  epochs: 3
+
+data:
+  source: "icl_persona"
+  persona_config: "persona_configs/hitler.yaml"
+  k: 10
+  questions: "both"
+  batch_size: 1
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  kwargs:
+    layer_weights: "uniform"
