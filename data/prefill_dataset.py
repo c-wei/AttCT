@@ -82,8 +82,9 @@ class PrefillAttackDataset(Dataset):
         clean_len = clean_ids.shape[0]
         wrapped_len = wrapped_ids.shape[0]
 
-        start_index= clean_len # where prefill begins in wrapped seq
-        clean_start_index = clean_len - 1 # where assistant turn starts in clean seq
+        start_index= 0 # where prefill begins in wrapped seq
+        clean_start_index = 0 # where assistant turn starts in clean seq
+        clean_len = clean_len
 
         return {
             "clean_input_ids":        clean_ids,
