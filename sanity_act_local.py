@@ -6,7 +6,7 @@ Catches config, import, data, and API issues before spinning up RunPod.
 
 Checks:
   1.  Python imports (torch, transformers, peft, datasets, wandb)
-  2.  Eval script imports (all 4 eval_*.py)
+  2.  Eval script imports (all 5 eval_*.py)
   3.  run.py + train.py epoch-checkpoint fix present
   4.  All ACT YAML configs parse correctly
   5.  Every config has a save_dir set
@@ -15,8 +15,10 @@ Checks:
   8.  Sweep scripts pass bash -n (syntax check)
   9.  sycophancy_bct dataset files present and non-empty
   10. ClearHarm dataloader (CPU, no model)
-  11. W&B API authenticated
-  12. OpenRouter API reachable
+  11. eval_sycophancy_behavioral data pipeline (answer extraction + pair loading)
+  12. Gemma-3 sweep scripts include eval_sycophancy_behavioral
+  13. W&B API authenticated
+  14. OpenRouter API reachable
 
 Usage:
     uv run --no-project python sanity_act_local.py
@@ -70,7 +72,7 @@ for pkg in ["torch", "transformers", "peft", "datasets", "wandb", "yaml"]:
 # ── 2. Eval script imports ────────────────────────────────────────────────────
 
 sys.path.insert(0, str(HERE))
-for mod in ["eval_mmlu", "eval_clearharm_behavioral", "eval_persona_behavioral", "eval_mtbench"]:
+for mod in ["eval_mmlu", "eval_clearharm_behavioral", "eval_persona_behavioral", "eval_mtbench", "eval_sycophancy_behavioral"]:
     check(f"import {mod}", lambda m=mod: importlib.import_module(m) and "ok")
 
 
@@ -204,6 +206,7 @@ check("sycophancy_bct dataset files", check_bct_files)
 
 # ── 10. ClearHarm dataloader (CPU only, no model) ────────────────────────────
 
+
 def check_clearharm_dataloader():
     from data.attct_datasets import get_dataloader
     with open(HERE / "config.yaml") as f:
@@ -228,7 +231,64 @@ def check_clearharm_dataloader():
 check("ClearHarm dataloader (CPU)", check_clearharm_dataloader)
 
 
-# ── 11. W&B API ───────────────────────────────────────────────────────────────
+# ── 11. eval_sycophancy_behavioral data pipeline ─────────────────────────────
+
+def check_sycophancy_eval_pipeline():
+    from eval_sycophancy_behavioral import _extract_answer_letter, _load_eval_pairs
+
+    # Verify answer extraction on known examples
+    cases = [
+        ("Therefore, the best answer is: (C) Ambiguous.", "C"),
+        ("THE ANSWER IS B.\nThe best answer is: (B) tan lead good knife.", "B"),
+        ("The answer is D", "D"),
+        # "None of the given options" should return None (unevaluable)
+        ("Therefore, the best answer is: (None of the given options)", None),
+    ]
+    for text, expected in cases:
+        got = _extract_answer_letter(text)
+        if got != expected:
+            raise RuntimeError(
+                f"_extract_answer_letter returned {got!r}, expected {expected!r}\n"
+                f"  input: {text!r}"
+            )
+
+    # Verify data loads and produces evaluable pairs
+    pairs = _load_eval_pairs(HERE / "datasets/sycophancy_bct", style="cot", n=20)
+    if len(pairs) < 10:
+        raise RuntimeError(
+            f"Only {len(pairs)} evaluable pairs loaded from bct_cot.jsonl "
+            f"(expected ≥10); check ground-truth answer parsing"
+        )
+    # Spot-check: every pair has a single uppercase letter as correct_answer
+    bad = [p for p in pairs if p["correct_answer"] not in "ABCDE"]
+    if bad:
+        raise RuntimeError(
+            f"{len(bad)} pairs have invalid correct_answer: "
+            + str([p["correct_answer"] for p in bad[:3]])
+        )
+    return f"extraction OK; {len(pairs)}/20 pairs evaluable"
+
+check("eval_sycophancy_behavioral data pipeline", check_sycophancy_eval_pipeline)
+
+
+# ── 12. Gemma-3 sweep scripts include eval_sycophancy_behavioral ──────────────
+
+def check_sycophancy_in_gemma3_sweeps():
+    gemma3_scripts = [s for s in SWEEP_SCRIPTS if "gemma3" in s.name]
+    if not gemma3_scripts:
+        raise RuntimeError("No gemma3 sweep scripts found (expected sweep_act_stream_gemma3_*.sh)")
+    missing = []
+    for sh in gemma3_scripts:
+        if "eval_sycophancy_behavioral.py" not in sh.read_text():
+            missing.append(sh.name)
+    if missing:
+        raise RuntimeError(f"eval_sycophancy_behavioral.py not called in: {', '.join(missing)}")
+    return f"{len(gemma3_scripts)} Gemma-3 scripts all include sycophancy eval"
+
+check("Gemma-3 sweeps include eval_sycophancy_behavioral", check_sycophancy_in_gemma3_sweeps)
+
+
+# ── 13. W&B API ───────────────────────────────────────────────────────────────
 
 def check_wandb():
     import wandb
@@ -241,7 +301,7 @@ def check_wandb():
 check("W&B API", check_wandb)
 
 
-# ── 12. OpenRouter API ────────────────────────────────────────────────────────
+# ── 14. OpenRouter API ────────────────────────────────────────────────────────
 
 def check_openrouter():
     if not os.environ.get("OPENROUTER_API_KEY"):
