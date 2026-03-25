@@ -92,6 +92,8 @@ loss_fn = AttentionConsistencyLoss(
 )
 
 wandb.init(project="AttCT", name="prefill_act_wildjailbreak", config=config)
+log_io_path = "logs/prefill_act/io_log.jsonl"
+os.makedirs(os.path.dirname(log_io_path), exist_ok=True)
 
 #Train
 trainer = Trainer(
@@ -102,7 +104,7 @@ trainer = Trainer(
     device=device,
     ref_model=None,
     tokenizer=tokenizer,
-    log_io_path="logs/prefill_act/io_log.jsonl",
+    log_io_path=log_io_path,
 )
 trainer.train()
 
