@@ -50,10 +50,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 #   "correct answer is B"
 #   standalone "(B)" at end of line
 _ANSWER_PATTERNS = [
-    re.compile(r'best\s+answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'(?:the\s+)?answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'correct\s+(?:answer|option)\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'therefore[,\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'best\s+answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'(?:the\s+)?answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'correct\s+(?:answer|option)\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'therefore[,\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'\*\*\(?([A-Ea-e])\)?\*\*', re.IGNORECASE),   # standalone **A** or **(A)**
     re.compile(r'\(([A-Ea-e])\)\s*$', re.MULTILINE),
 ]
 
