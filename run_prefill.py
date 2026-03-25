@@ -73,11 +73,11 @@ train_prompts, eval_prompts = load_wildjailbreak_prompts(
 
 train_dl = get_prefill_dataloader(
     train_prompts, tokenizer,
-    batch_size=config["training"].get("batch_size", 1),
+    batch_size=1
 )
 eval_dl = get_prefill_dataloader(
     eval_prompts, tokenizer, shuffle=False,
-    batch_size=config["training"].get("batch_size", 1),
+    batch_size=1
 )
 
 #Loss
