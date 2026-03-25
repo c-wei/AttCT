@@ -60,6 +60,8 @@ def main():
     parser.add_argument("--wandb-group", default=None, help="W&B group")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume")
     parser.add_argument("--metric-prefix", default="", help="Prefix for W&B metric keys")
+    parser.add_argument("--batch-size",     type=int, default=4,
+                        help="Generation batch size (default: 4)")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -110,26 +112,44 @@ def main():
         config={"checkpoint": args.checkpoint, "n_samples": args.n_samples, "model": model_name},
     )
 
-    # Generate all responses first (GPU-bound, sequential)
-    samples = []
+    # Collect all wrapped token sequences (dataloader is batch_size=1)
+    all_wrapped: list[torch.Tensor] = []
     for batch in dataloader:
-        if len(samples) >= args.n_samples:
+        if len(all_wrapped) >= args.n_samples:
             break
-        wrapped_input_ids = batch["wrapped_input_ids"].to(device)
-        wrapped_attention_mask = batch["wrapped_attention_mask"].to(device)
-        prompt_text = tokenizer.decode(wrapped_input_ids[0], skip_special_tokens=True)
+        all_wrapped.append(batch["wrapped_input_ids"][0].cpu())  # 1D
+    all_wrapped = all_wrapped[:args.n_samples]
+
+    # Left-pad and batch generate
+    tokenizer.padding_side = "left"
+    samples = []
+    for i in range(0, len(all_wrapped), args.batch_size):
+        chunk = all_wrapped[i:i + args.batch_size]
+        max_len = max(t.shape[0] for t in chunk)
+        input_ids  = torch.full((len(chunk), max_len), tokenizer.pad_token_id, dtype=torch.long)
+        attn_mask  = torch.zeros(len(chunk), max_len, dtype=torch.long)
+        for j, t in enumerate(chunk):
+            offset = max_len - t.shape[0]
+            input_ids[j, offset:] = t
+            attn_mask[j, offset:] = 1
+        input_ids = input_ids.to(device)
+        attn_mask  = attn_mask.to(device)
+
         with torch.no_grad():
             output_ids = model.generate(
-                wrapped_input_ids,
-                attention_mask=wrapped_attention_mask,
+                input_ids,
+                attention_mask=attn_mask,
                 max_new_tokens=args.max_new_tokens,
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
-        generated = output_ids[0][wrapped_input_ids.shape[1]:]
-        response_text = tokenizer.decode(generated, skip_special_tokens=True)
-        samples.append((prompt_text, response_text))
-        print(f"  [{len(samples)}/{args.n_samples}] generated — {response_text[:80]}...")
+
+        for j, orig_t in enumerate(chunk):
+            prompt_text   = tokenizer.decode(orig_t, skip_special_tokens=True)
+            generated     = output_ids[j][max_len:]
+            response_text = tokenizer.decode(generated, skip_special_tokens=True)
+            samples.append((prompt_text, response_text))
+            print(f"  [{len(samples)}/{len(all_wrapped)}] generated — {response_text[:80]}...")
 
     # Judge all responses in parallel (I/O-bound)
     with ThreadPoolExecutor(max_workers=8) as executor:

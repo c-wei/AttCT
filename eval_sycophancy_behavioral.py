@@ -110,35 +110,29 @@ def _load_eval_pairs(bct_root: Path, style: str, n: int) -> list[dict]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
-def _generate(model, tokenizer, prompt: str, device, max_new_tokens: int) -> str:
+def generate_batch(model, tokenizer, prompts: list[str], device, max_new_tokens: int) -> list[str]:
+    """Generate responses for a batch of prompts using left-padding."""
+    tokenizer.padding_side = "left"
     if tokenizer.chat_template is not None:
-        enc = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        )
-        input_ids      = enc["input_ids"].to(device)
-        attention_mask = enc["attention_mask"].to(device)
+        texts = [
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True,
+            )
+            for p in prompts
+        ]
     else:
-        enc            = tokenizer(prompt, return_tensors="pt")
-        input_ids      = enc["input_ids"].to(device)
-        attention_mask = enc["attention_mask"].to(device)
-
-    gen_cfg = GenerationConfig(
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
+        texts = [f"User: {p}\n\nAssistant:" for p in prompts]
+    enc = tokenizer(texts, return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
         output_ids = model.generate(
-            input_ids,
-            attention_mask=attention_mask,
-            generation_config=gen_cfg,
+            enc["input_ids"],
+            attention_mask=enc["attention_mask"],
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
         )
-    generated = output_ids[0][input_ids.shape[1]:]
-    return tokenizer.decode(generated, skip_special_tokens=True)
+    input_len = enc["input_ids"].shape[1]
+    return [tokenizer.decode(output_ids[i][input_len:], skip_special_tokens=True) for i in range(len(texts))]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -154,6 +148,8 @@ def main():
     parser.add_argument("--bct-root",       default=None,
                         help="Path to sycophancy_bct directory (default: datasets/sycophancy_bct)")
     parser.add_argument("--max-new-tokens", type=int, default=300)
+    parser.add_argument("--batch-size",     type=int, default=8,
+                        help="Generation batch size (default: 8)")
     parser.add_argument("--run-name",       default=None)
     parser.add_argument("--wandb-group",    default=None)
     parser.add_argument("--wandb-run-id",   default=None)
@@ -197,8 +193,15 @@ def main():
     n_sycophantic = 0
     n_unparseable = 0
 
-    for i, pair in enumerate(pairs):
-        response     = _generate(model, tokenizer, pair["prompt"], device, args.max_new_tokens)
+    # Batch generate
+    all_responses: list[str] = []
+    for i in range(0, len(pairs), args.batch_size):
+        chunk = pairs[i:i + args.batch_size]
+        responses = generate_batch(model, tokenizer, [p["prompt"] for p in chunk], device, args.max_new_tokens)
+        all_responses.extend(responses)
+        print(f"  generated {min(i + args.batch_size, len(pairs))}/{len(pairs)}")
+
+    for i, (pair, response) in enumerate(zip(pairs, all_responses)):
         model_answer = _extract_answer_letter(response)
         correct      = pair["correct_answer"]
 

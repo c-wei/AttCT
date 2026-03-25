@@ -54,32 +54,29 @@ def judge_response(question: str, answer: str) -> float | None:
     return None
 
 
-def generate_response(model, tokenizer, messages: list[dict], device, max_new_tokens: int = 512) -> str:
-    if tokenizer.chat_template is not None:
-        tokenized = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        )
-        input_ids = tokenized["input_ids"].to(device)
-        attention_mask = tokenized["attention_mask"].to(device)
-    else:
-        text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
-        text += "\n\nAssistant:"
-        enc = tokenizer(text, return_tensors="pt")
-        input_ids = enc["input_ids"].to(device)
-        attention_mask = enc["attention_mask"].to(device)
-    gen_cfg = GenerationConfig(
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        pad_token_id=tokenizer.eos_token_id,
-    )
+def generate_batch(model, tokenizer, messages_list: list[list[dict]], device, max_new_tokens: int = 512) -> list[str]:
+    """Generate responses for a batch of message sequences using left-padding."""
+    tokenizer.padding_side = "left"
+    texts = []
+    for messages in messages_list:
+        if tokenizer.chat_template is not None:
+            texts.append(tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            ))
+        else:
+            text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+            texts.append(text + "\n\nAssistant:")
+    enc = tokenizer(texts, return_tensors="pt", padding=True).to(device)
     with torch.no_grad():
-        output_ids = model.generate(input_ids, attention_mask=attention_mask, generation_config=gen_cfg)
-    generated = output_ids[0][input_ids.shape[1]:]
-    return tokenizer.decode(generated, skip_special_tokens=True)
+        output_ids = model.generate(
+            enc["input_ids"],
+            attention_mask=enc["attention_mask"],
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+    input_len = enc["input_ids"].shape[1]
+    return [tokenizer.decode(output_ids[i][input_len:], skip_special_tokens=True) for i in range(len(texts))]
 
 
 def main():
@@ -92,6 +89,7 @@ def main():
     parser.add_argument("--wandb-group", default=None, help="W&B group")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume into existing run")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for W&B metric keys (default: 'eval/'; use 'pre/' or 'post/' in sweep)")
+    parser.add_argument("--batch-size", type=int, default=8, help="Generation batch size (default: 8)")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -127,23 +125,28 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Generate all responses (GPU-bound, sequential)
+    # Generate all turn-1 responses in batches (GPU-bound)
     gen_results = []  # (question_text, answer_text, category)
-    for i, item in enumerate(questions):
+    t1_responses: list[str] = []
+    for i in range(0, len(questions), args.batch_size):
+        chunk = questions[i:i + args.batch_size]
+        msgs_batch = [[{"role": "user", "content": it["prompt"][0]}] for it in chunk]
+        responses = generate_batch(model, tokenizer, msgs_batch, device)
+        t1_responses.extend(responses)
+        print(f"  turn-1 generated {min(i + args.batch_size, len(questions))}/{len(questions)}")
+
+    for item, response_t1 in zip(questions, t1_responses):
         category = item["category"]
         turns = item["prompt"]
-        messages_t1 = [{"role": "user", "content": turns[0]}]
-        response_t1 = generate_response(model, tokenizer, messages_t1, device)
-        print(f"  [{i+1}/{len(questions)}] cat={category} generated turn=1")
         gen_results.append((turns[0], response_t1, category))
         if args.two_turn and len(turns) > 1:
+            # Turn 2 depends on turn-1 output — generate individually
             messages_t2 = [
                 {"role": "user", "content": turns[0]},
                 {"role": "assistant", "content": response_t1},
                 {"role": "user", "content": turns[1]},
             ]
-            response_t2 = generate_response(model, tokenizer, messages_t2, device)
-            print(f"  [{i+1}/{len(questions)}] cat={category} generated turn=2")
+            response_t2 = generate_batch(model, tokenizer, [messages_t2], device)[0]
             gen_results.append((turns[1], response_t2, category))
 
     # Judge all responses in parallel (I/O-bound)
