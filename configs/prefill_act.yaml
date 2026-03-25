@@ -10,7 +10,7 @@ loss:
 
 training:
   epochs: 3
-  learning_rate: 5.0e-5
+  learning_rate: 5.0e-3
   grad_clip: 1.0
   grad_accumulation_steps: 4
   log_every_n_steps: 10
