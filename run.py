@@ -23,6 +23,7 @@ from data.attct_datasets import get_bct_dataloader
 from train import Trainer, BCTTrainer
 from evaluate import Evaluator
 from behavioral_evaluate import BehavioralEvaluator
+from evaluate_brr import BRREvaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -70,6 +71,11 @@ def main():
                        help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
     beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
                        help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
+
+    # BRR evaluation — uses held-out clean prompts, wraps on-the-fly.
+    parser.add_argument("--brr-eval-path", dest="brr_eval_path", default=None,
+                        help="Path to control_cot_eval.jsonl for BRR evaluation. "
+                             "Enables BRR eval at pre-train, checkpoints, and post-train.")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
@@ -201,34 +207,42 @@ def main():
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        # Build BehavioralEvaluator if any eval is enabled.
-        beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
-        has_sycophancy_paths = all(p is not None for p in beval_paths)
-        has_mmlu  = args.mmlu_max_samples > 0
-        has_gsm8k = args.gsm8k_max_samples > 0
+        # Build evaluator for checkpoints.
+        # BRR evaluator (preferred) or legacy BehavioralEvaluator.
+        brr_evaluator = None
         behavioral_evaluator = None
-        if has_sycophancy_paths or has_mmlu or has_gsm8k:
-            config["behavioral_eval"] = {
-                "bct_cot_path":        args.bct_cot_path,
-                "bct_noncot_path":     args.bct_noncot_path,
-                "control_cot_path":    args.control_cot_path,
-                "control_noncot_path": args.control_noncot_path,
-                "max_samples":         args.beval_max_samples,
-                "mmlu_max_samples":    args.mmlu_max_samples,
-                "mmlu_subject":        args.mmlu_subject,
-                "gsm8k_max_samples":   args.gsm8k_max_samples,
-            }
-            behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
-            features = []
-            if has_sycophancy_paths:
-                features.append("sycophancy BCT")
-            if has_mmlu:
-                features.append(f"MMLU ({args.mmlu_max_samples} samples, subject={args.mmlu_subject})")
-            if has_gsm8k:
-                features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
-            print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
+
+        if args.brr_eval_path is not None:
+            run_label = os.path.splitext(os.path.basename(args.config))[0]
+            brr_csv = os.path.join("results", f"{run_label}_brr.csv")
+            brr_evaluator = BRREvaluator(
+                model, tokenizer, device,
+                eval_path=args.brr_eval_path,
+                results_csv=brr_csv,
+                mmlu_max_samples=args.mmlu_max_samples,
+            )
+            print(f"BRR evaluator configured ({len(brr_evaluator.questions)} questions, MMLU={args.mmlu_max_samples}) — will run at pre-train, checkpoints, and post-train.")
         else:
-            print("No behavioral eval configured. Pass --bct-cot/... for sycophancy, --mmlu-max-samples N for MMLU, or --gsm8k-max-samples N for GSM8K.")
+            # Fall back to legacy BehavioralEvaluator if old-style paths provided.
+            beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
+            has_sycophancy_paths = all(p is not None for p in beval_paths)
+            has_mmlu  = args.mmlu_max_samples > 0
+            has_gsm8k = args.gsm8k_max_samples > 0
+            if has_sycophancy_paths or has_mmlu or has_gsm8k:
+                config["behavioral_eval"] = {
+                    "bct_cot_path":        args.bct_cot_path,
+                    "bct_noncot_path":     args.bct_noncot_path,
+                    "control_cot_path":    args.control_cot_path,
+                    "control_noncot_path": args.control_noncot_path,
+                    "max_samples":         args.beval_max_samples,
+                    "mmlu_max_samples":    args.mmlu_max_samples,
+                    "mmlu_subject":        args.mmlu_subject,
+                    "gsm8k_max_samples":   args.gsm8k_max_samples,
+                }
+                behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
+                print(f"Legacy behavioral evaluator configured.")
+            else:
+                print("No eval configured. Pass --brr-eval-path for BRR eval, or --bct-cot/... for legacy eval.")
 
         # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
@@ -240,18 +254,34 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
-        def make_checkpoint_fn(evaluator):
-            if evaluator is None:
-                return None
-            def _fn(step):
-                log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
-                evaluator.evaluate(global_step=step, log_path=log_path)
-            return _fn
+        # Build checkpoint callback.
+        def make_checkpoint_fn(brr_eval, beval):
+            if brr_eval is not None:
+                def _fn(step):
+                    brr_eval.evaluate(stage="checkpoint", step=step)
+                return _fn
+            elif beval is not None:
+                def _fn(step):
+                    log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
+                    beval.evaluate(global_step=step, log_path=log_path)
+                return _fn
+            return None
 
         is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
         is_sanity = config.get("data", {}).get("limit") is not None
 
-        if is_sycophancy and not is_sanity:
+        # Pre-training eval.
+        if brr_evaluator is not None and not is_sanity:
+            print("\n=== Pre-training baseline (base model) ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                brr_evaluator.evaluate(stage="pre_train", step=0)
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                brr_evaluator.evaluate(stage="pre_train", step=0)
+        elif is_sycophancy and not is_sanity:
             from evaluate_sycophancy import SycophancyEvaluator
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
@@ -276,7 +306,7 @@ def main():
             ref_model=ref_model,
             log_io_path=args.log_io,
             tokenizer=tokenizer,
-            checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+            checkpoint_fn=make_checkpoint_fn(brr_evaluator, behavioral_evaluator),
         ).train()
 
         eval_config = config.copy()
@@ -284,7 +314,12 @@ def main():
             eval_config.setdefault("data", {})["limit"] = args.eval_limit
         Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
 
-        if is_sycophancy and not is_sanity:
+        # Post-training eval.
+        if brr_evaluator is not None and not is_sanity:
+            print("\n=== Post-training evaluation (trained model) ===")
+            model.eval()
+            brr_evaluator.evaluate(stage="post_train", step=500)
+        elif is_sycophancy and not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
