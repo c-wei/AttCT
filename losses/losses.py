@@ -144,9 +144,9 @@ class AttentionConsistencyLoss(ConsistencyLoss):
             # print(f"  sliced_adv shape: {sliced_adv.shape}")
             # print(f"  sliced_clean sum: {sliced_clean.sum():.6f}")
             # print(f"  sliced_adv sum: {sliced_adv.sum():.6f}")
-            if layer_idx == 0:  # Only for first layer to avoid spam
-                print(f"  sliced_clean sample: {sliced_clean[0, 0, :3, :3]}")
-                print(f"  sliced_adv sample: {sliced_adv[0, 0, :3, :3]}")
+            # if layer_idx == 0:  # Only for first layer to avoid spam
+            #     print(f"  sliced_clean sample: {sliced_clean[0, 0, :3, :3]}")
+            #     print(f"  sliced_adv sample: {sliced_adv[0, 0, :3, :3]}")
 
 
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
