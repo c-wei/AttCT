@@ -74,6 +74,8 @@ trainer = Trainer(
     tokenizer=tokenizer,
     log_io_path=log_io_path,
 )
+
+trainer.checkpoint_fn = lambda step: None
 trainer.train()
 
 trainer.eval_loss(eval_dl)
