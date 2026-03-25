@@ -27,7 +27,7 @@ def load_checkpoint(checkpoint_path, base_model_name="meta-llama/Meta-Llama-3-8B
     model.eval()
     return model
 
-def build_prompt(harmful_prompt: str, prefill_text: str = "", tokenizer) -> str:
+def build_prompt(harmful_prompt: str, prefill_text: str = "", tokenizer = None) -> str:
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": harmful_prompt},
