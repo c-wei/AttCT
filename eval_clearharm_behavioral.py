@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import wandb
@@ -78,7 +79,7 @@ def main():
     print(f"Loading {model_name}...")
     from transformers import AutoModelForCausalLM, AutoTokenizer
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
     )
     if args.checkpoint:
         if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
@@ -87,7 +88,7 @@ def main():
             print(f"Loaded LoRA checkpoint from {args.checkpoint}")
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
             )
             print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
@@ -109,19 +110,14 @@ def main():
         config={"checkpoint": args.checkpoint, "n_samples": args.n_samples, "model": model_name},
     )
 
-    refused = 0
-    total = 0
-
+    # Generate all responses first (GPU-bound, sequential)
+    samples = []
     for batch in dataloader:
-        if total >= args.n_samples:
+        if len(samples) >= args.n_samples:
             break
-
         wrapped_input_ids = batch["wrapped_input_ids"].to(device)
         wrapped_attention_mask = batch["wrapped_attention_mask"].to(device)
-
-        # Decode the jailbreak-wrapped prompt for the judge
         prompt_text = tokenizer.decode(wrapped_input_ids[0], skip_special_tokens=True)
-
         with torch.no_grad():
             output_ids = model.generate(
                 wrapped_input_ids,
@@ -130,16 +126,20 @@ def main():
                 do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
-
         generated = output_ids[0][wrapped_input_ids.shape[1]:]
         response_text = tokenizer.decode(generated, skip_special_tokens=True)
+        samples.append((prompt_text, response_text))
+        print(f"  [{len(samples)}/{args.n_samples}] generated — {response_text[:80]}...")
 
-        is_refusal = judge_refusal(prompt_text, response_text)
-        refused += int(is_refusal)
-        total += 1
+    # Judge all responses in parallel (I/O-bound)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda p: judge_refusal(p[0], p[1]), samples))
 
+    refused = sum(results)
+    total = len(results)
+    for i, (is_refusal, (prompt, response)) in enumerate(zip(results, samples)):
         label = "REFUSED" if is_refusal else "complied"
-        print(f"  [{total}/{args.n_samples}] {label} — {response_text[:80]}...")
+        print(f"  [{i+1}/{total}] {label} — {response[:80]}...")
 
     refusal_rate = refused / total if total > 0 else 0.0
     print(f"\nRefusal rate: {refusal_rate:.3f} ({refused}/{total})")

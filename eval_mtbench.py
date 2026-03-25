@@ -19,6 +19,7 @@ Usage:
 import argparse
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 import wandb
@@ -105,7 +106,7 @@ def main():
     print(f"Loading {model_name}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
     )
     if args.checkpoint:
         if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
@@ -114,7 +115,7 @@ def main():
             print(f"Loaded LoRA checkpoint from {args.checkpoint}")
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, attn_implementation="eager"
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
             )
             print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
@@ -126,25 +127,15 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Collect scores per category
-    category_scores: dict[str, list[float]] = {}
-    all_scores: list[float] = []
-
+    # Generate all responses (GPU-bound, sequential)
+    gen_results = []  # (question_text, answer_text, category)
     for i, item in enumerate(questions):
-        qid = item["prompt_id"]
         category = item["category"]
         turns = item["prompt"]
-
-        # Turn 1
         messages_t1 = [{"role": "user", "content": turns[0]}]
         response_t1 = generate_response(model, tokenizer, messages_t1, device)
-        score_t1 = judge_response(turns[0], response_t1)
-        print(f"  [{i+1}/{len(questions)}] qid={qid} cat={category} turn=1 → score={score_t1}")
-
-        if score_t1 is not None:
-            category_scores.setdefault(category, []).append(score_t1)
-            all_scores.append(score_t1)
-
+        print(f"  [{i+1}/{len(questions)}] cat={category} generated turn=1")
+        gen_results.append((turns[0], response_t1, category))
         if args.two_turn and len(turns) > 1:
             messages_t2 = [
                 {"role": "user", "content": turns[0]},
@@ -152,12 +143,20 @@ def main():
                 {"role": "user", "content": turns[1]},
             ]
             response_t2 = generate_response(model, tokenizer, messages_t2, device)
-            score_t2 = judge_response(turns[1], response_t2)
-            print(f"  [{i+1}/{len(questions)}] qid={qid} cat={category} turn=2 → score={score_t2}")
+            print(f"  [{i+1}/{len(questions)}] cat={category} generated turn=2")
+            gen_results.append((turns[1], response_t2, category))
 
-            if score_t2 is not None:
-                category_scores.setdefault(category, []).append(score_t2)
-                all_scores.append(score_t2)
+    # Judge all responses in parallel (I/O-bound)
+    category_scores: dict[str, list[float]] = {}
+    all_scores: list[float] = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [(q, r, cat, executor.submit(judge_response, q, r)) for q, r, cat in gen_results]
+    for q, r, category, future in futures:
+        score = future.result()
+        print(f"  cat={category} → score={score}")
+        if score is not None:
+            category_scores.setdefault(category, []).append(score)
+            all_scores.append(score)
 
     overall = sum(all_scores) / len(all_scores) if all_scores else None
     print(f"\nMT-Bench overall score: {overall:.4f}" if overall is not None else "\nMT-Bench: no scores parsed")

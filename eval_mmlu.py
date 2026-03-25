@@ -64,7 +64,7 @@ def main():
     print(f"Loading {model_name}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
     )
 
     if args.checkpoint:
@@ -74,7 +74,7 @@ def main():
             print(f"Loaded LoRA checkpoint from {args.checkpoint}")
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
             )
             print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:

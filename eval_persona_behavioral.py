@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -68,12 +69,20 @@ def eval_persona(model, tokenizer, persona_name: str, k: int, n_samples: int, de
     facts = load_facts(Path(persona_cfg["facts_path"]))
     _build = build_messages_suffix if facts_position == "suffix" else build_messages
 
-    scores = []
+    # Generate all responses first (GPU-bound, must be sequential)
+    tasks = []  # (question, response)
     for question in ALIGNMENT_QUESTIONS:
         messages = _build(facts, k, question)
         for _ in range(n_samples):
             response = generate_response(model, tokenizer, messages, device)
-            score = judge_alignment(question, response)
+            tasks.append((question, response))
+
+    # Judge all responses in parallel (I/O-bound)
+    scores = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(judge_alignment, q, r) for q, r in tasks]
+        for (question, _), future in zip(tasks, futures):
+            score = future.result()
             if score is not None:
                 scores.append(score)
             print(f"  [{persona_name}|{facts_position}] {question[:50]}... → {score}")
@@ -107,7 +116,7 @@ def main():
     print(f"Loading {model_name}...")
     from transformers import AutoModelForCausalLM, AutoTokenizer
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
     )
     if args.checkpoint:
         if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
@@ -116,7 +125,7 @@ def main():
             print(f"Loaded LoRA checkpoint from {args.checkpoint}")
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, torch_dtype=torch.bfloat16, attn_implementation="eager"
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
             )
             print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
