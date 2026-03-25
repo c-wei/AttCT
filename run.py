@@ -114,7 +114,18 @@ def main():
 
     if is_lora:
         lora_cfg = config["lora"]
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        load_kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        quant_cfg = config.get("quantization")
+        if quant_cfg and quant_cfg.get("load_in_4bit"):
+            from transformers import BitsAndBytesConfig
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_quant_type=quant_cfg.get("quant_type", "nf4"),
+                bnb_4bit_use_double_quant=quant_cfg.get("double_quant", True),
+            )
+            print("Loading model in 4-bit (QLoRA mode)")
+        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
         model = get_peft_model(model, LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=lora_cfg["r"],
