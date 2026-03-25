@@ -139,9 +139,9 @@ def get_prefill_dataloader(
     )
 
 def load_wildjailbreak_prompts(
-    content_column: str = "vanilla",
+    content_column: str = "adversarial",
     data_type_column: str = "data_type",
-    harmful_label: str = "vanilla_harmful",
+    harmful_label: str = "adversarial_harmful",
     limit: int = None,
     train_ratio: float = 0.9,
 ) -> tuple[list[str], list[str]]:
