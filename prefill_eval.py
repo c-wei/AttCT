@@ -27,7 +27,7 @@ def load_checkpoint(checkpoint_path, base_model_name="meta-llama/Meta-Llama-3-8B
     model.eval()
     return model
 
-def build_prompt(harmful_prompt: str, prefill_text: str = "") -> str:
+def build_prompt(harmful_prompt: str, prefill_text: str = "", tokenizer) -> str:
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": harmful_prompt},
@@ -44,7 +44,7 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
     results = {}
     
     # Baseline (no prefill)
-    clean_prompt = build_prompt(prompt)
+    clean_prompt = build_prompt(prompt, tokenizer=tokenizer)
     inputs = tokenizer(clean_prompt, return_tensors="pt").to(model.device)
     
     with torch.no_grad():
@@ -63,7 +63,7 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
     
     # Test each prefill
     for prefill in prefills:
-        attack_prompt = build_prompt(prompt, prefill)
+        attack_prompt = build_prompt(prompt, prefill, tokenizer)
         inputs = tokenizer(attack_prompt, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
