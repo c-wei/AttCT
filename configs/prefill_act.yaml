@@ -10,7 +10,7 @@ loss:
 
 training:
   epochs: 3
-  learning_rate: 5.0e-3
+  learning_rate: 5.0e-4
   grad_clip: 1.0
   grad_accumulation_steps: 4
   log_every_n_steps: 10
@@ -27,7 +27,7 @@ lora:
 data:
   source: "prefill_attack"
   mode: "jailbreak"
-  limit: 500
+  limit: 400
 
 logging:
   log_dir: "logs/prefill_act"
