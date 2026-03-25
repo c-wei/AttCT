@@ -158,18 +158,26 @@ def _get_prediction(model, tokenizer, prompt: str, device, valid_letters="ABCD")
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
+            return_tensors=None,
         )
+        # result can be: list[int], dict with "input_ids", or BatchEncoding
         if isinstance(result, dict):
             input_ids = list(result["input_ids"])
-        elif isinstance(result, list):
+        elif isinstance(result, list) and result and isinstance(result[0], int):
             input_ids = result
         else:
-            input_ids = list(result)
+            # Fallback: tokenize the string output
+            text = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            input_ids = tokenizer.encode(text, add_special_tokens=False)
     except (ValueError, AttributeError):
         input_ids = tokenizer.encode(prompt, add_special_tokens=True)
 
     prefix_ids = tokenizer.encode("The best answer is: (", add_special_tokens=False)
-    input_ids = input_ids + prefix_ids
+    input_ids = list(input_ids) + prefix_ids
     input_tensor = torch.tensor([input_ids], dtype=torch.long).to(device)
 
     with torch.no_grad():
