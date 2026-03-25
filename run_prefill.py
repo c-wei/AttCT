@@ -72,7 +72,6 @@ trainer = Trainer(
     device=device,
     ref_model=None,
     tokenizer=tokenizer,
-    log_io_path=log_io_path,
 )
 
 trainer.checkpoint_fn = lambda step: None
