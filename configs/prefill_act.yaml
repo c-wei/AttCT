@@ -4,7 +4,7 @@ model:
   output_hidden_states: false
 
 loss:
-  name: "AttentionConsistencyLoss"
+  name: "JSDAttentionConsistencyLoss"
   weight: 1.0
   kwargs: {}
 
@@ -27,7 +27,7 @@ lora:
 data:
   source: "prefill_attack"
   mode: "jailbreak"
-  limit: null
+  limit: 500
 
 logging:
   log_dir: "logs/prefill_act"

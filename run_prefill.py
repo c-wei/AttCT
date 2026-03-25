@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import get_peft_model, LoraConfig, TaskType
 
 from train import Trainer
-from losses.losses import AttentionConsistencyLoss
+from losses.losses import JSDAttentionConsistencyLoss
 from data.prefill_dataset import get_prefill_dataloader, load_wildjailbreak_prompts
 
 with open("./configs/prefill_act.yaml") as f:
@@ -54,7 +54,7 @@ eval_dl = get_prefill_dataloader(
 
 #Loss
 loss_cfg = config["loss"]
-loss_fn = AttentionConsistencyLoss(
+loss_fn = JSDAttentionConsistencyLoss(
     weight=loss_cfg.get("weight", 1.0),
     output_hidden_states=False,
 )
