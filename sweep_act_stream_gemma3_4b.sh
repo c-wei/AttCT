@@ -108,6 +108,14 @@ run_all_evals() {
         $name_args \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
+
+    echo "  [$phase] Sycophancy resistance..."
+    python eval_sycophancy_behavioral.py \
+        $ckpt_arg \
+        $model_arg \
+        $name_args \
+        --wandb-run-id "$run_id" \
+        --metric-prefix "${phase}/"
 }
 
 # ─── Helper: run one full experiment (pre-eval, train, post-eval) ───────────────
