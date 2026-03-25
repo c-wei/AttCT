@@ -73,6 +73,13 @@ def main():
                         help="Override config data.mode (jailbreak | sycophancy).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
                         help="Cap the number of training prompts (overrides config data.limit).")
+    parser.add_argument("--brr_test_root", default=None,
+                        help="Path to cot-transparency test sets. If provided, runs BRR "
+                             "evaluation after BCT training and logs metrics to W&B.")
+    parser.add_argument("--brr_limit", type=int, default=150,
+                        help="Max records per bias type for BRR eval (default: 150).")
+    parser.add_argument("--brr_baseline_json", default=None,
+                        help="Path to baseline BRR JSON for computing BRR ratio.")
 
     args = parser.parse_args()
 
@@ -145,6 +152,26 @@ def main():
     run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
     wandb.init(project="AttCT", name=run_name, group="week2", tags=[data_source_tag], config=config)
 
+    # ── Sweep parameter injection ──────────────────────────────────────────────
+    # When running under `wandb agent`, wandb.config contains the sweep-chosen
+    # hyperparameters. We apply them back into our config dict using dotted keys
+    # (e.g. "training.learning_rate" → config["training"]["learning_rate"]).
+    # Supported sweep keys: training.learning_rate, training.weight_decay,
+    # training.epochs, lora.r, lora.lora_alpha, lora.lora_dropout.
+    _sweep_params = dict(wandb.config)
+    if _sweep_params:
+        for dotted_key, value in _sweep_params.items():
+            parts = dotted_key.split(".")
+            if len(parts) == 2:
+                section, key = parts
+                if section in config and key in config[section]:
+                    config[section][key] = value
+                    print(f"[sweep] {dotted_key} = {value}")
+        # Re-read values that may have changed
+        model_name = config["model"]["name"]
+        loss_cfg   = config["loss"]
+        loss_name  = loss_cfg["name"]
+
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
     if ref_model is not None:
@@ -157,6 +184,23 @@ def main():
         bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
+
+        if args.brr_test_root:
+            from evaluate_bct import run_brr_eval
+            print(f"\n==> BRR evaluation (limit={args.brr_limit} records/bias)...")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+            model.eval()
+            run_brr_eval(
+                model, tokenizer,
+                test_root=args.brr_test_root,
+                device=device,
+                limit=args.brr_limit,
+                batch_size=4,
+                baseline_json=args.brr_baseline_json,
+            )
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:

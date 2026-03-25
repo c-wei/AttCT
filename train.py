@@ -109,6 +109,7 @@ class Trainer:
         self.optimizer = AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=train_cfg["learning_rate"],
+            weight_decay=train_cfg.get("weight_decay", 0.0),
         )
 
     def _forward(self, input_ids, attention_mask):

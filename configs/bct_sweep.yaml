@@ -1,0 +1,73 @@
+# W&B hyperparameter sweep for BCT (Bias-Augmented Consistency Training)
+#
+# Usage:
+#   1. Register sweep:  wandb sweep configs/bct_sweep.yaml
+#   2. Run agent:       wandb agent <sweep_id>
+#      (on RunPod, run this inside tmux so it survives reconnects)
+#
+# Each run calls:  python run.py --config configs/bct_sft.yaml
+# Sweep parameters override the matching keys in bct_sft.yaml via wandb.config.
+#
+# Metric: eval/mean_loss (SFT loss on held-out split, logged by BCTTrainer.eval_loss)
+# Lower is better; use as proxy for BRR reduction until we wire in BRR eval.
+#
+# Categorical combinations: lr(continuous) × wd(3) × r(2) × epochs(3) = 18
+# Recommended runs: ~20. Set via: wandb agent --count 20 <id>
+#
+# To run BRR evaluation after each sweep run, pass --eval-after-train to run.py
+# (not yet implemented) or run evaluate_bct.py manually on the saved checkpoint.
+
+program: run.py
+command:
+  - ${env}
+  - python
+  - ${program}
+  - --config
+  - configs/bct_sft.yaml
+  - --brr_test_root
+  - /workspace/cot-transparency/dataset_dumps/test
+  - --brr_limit
+  - "150"
+  - ${args}
+
+method: bayes
+
+metric:
+  name: eval/mean_loss
+  goal: minimize
+
+# Early termination: stop runs that are clearly worse than the best so far.
+early_terminate:
+  type: hyperband
+  min_iter: 50      # minimum steps before considering termination
+  eta: 2
+
+parameters:
+  # ── Learning rate ────────────────────────────────────────────────────────
+  # Paper (Appendix A): LR multiplier 1.6x via OpenAI API; we sweep the
+  # equivalent AdamW range. Log scale recommended for LR.
+  "training.learning_rate":
+    distribution: log_uniform_values
+    min: 5.0e-6
+    max: 1.0e-4
+
+  # ── Weight decay ─────────────────────────────────────────────────────────
+  # Paper doesn't specify; standard LoRA fine-tuning typically uses 0–0.1.
+  "training.weight_decay":
+    values: [0.0, 0.01, 0.1]
+
+  # ── LoRA rank ────────────────────────────────────────────────────────────
+  # What actually matters is alpha/r (the effective LoRA update scale), not
+  # alpha or r in isolation. We fix lora_alpha=16 in bct_sft.yaml and sweep r,
+  # so the effective scale is 16/8=2x or 16/16=1x.
+  "lora.r":
+    values: [8, 16]
+
+  # lora.lora_alpha is NOT swept — fixed at 16 in bct_sft.yaml.
+  # lora.lora_dropout is NOT swept — fixed at 0.05. With r=8/16 and only q/v
+  # projections, LoRA has very few trainable params so overfitting risk is low.
+
+  # ── Training epochs ──────────────────────────────────────────────────────
+  # Paper trains for 1 epoch. More epochs risk overfitting to suggested_answer.
+  "training.epochs":
+    values: [1, 2, 3]

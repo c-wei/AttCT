@@ -33,10 +33,25 @@ def test_dataloader_shapes():
     assert batch["labels"].dtype == torch.long
 
 
-def test_labels_masked():
-    """Question tokens must be masked to -100; at least some response tokens must be visible."""
+def test_labels_full_sequence():
+    """Default (mask_prompt=False): all tokens visible in labels, matching the BCT paper."""
     from data.attct_datasets import get_bct_dataloader
     config = _make_config()
+    dl = get_bct_dataloader(config, split="train")
+    batch = next(iter(dl))
+
+    labels = batch["labels"][0]
+    n_masked  = (labels == -100).sum().item()
+    n_visible = (labels != -100).sum().item()
+    assert n_masked  == 0, "With mask_prompt=False all tokens should be visible"
+    assert n_visible > 0, "Expected some visible tokens"
+
+
+def test_labels_masked():
+    """mask_prompt=True: question tokens masked to -100; at least some response tokens visible."""
+    from data.attct_datasets import get_bct_dataloader
+    config = _make_config()
+    config["data"]["mask_prompt"] = True
     dl = get_bct_dataloader(config, split="train")
     batch = next(iter(dl))
 
