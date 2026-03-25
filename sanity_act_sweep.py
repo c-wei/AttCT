@@ -11,7 +11,8 @@ Exercises the full pipeline end-to-end with minimal data:
   6. eval_persona_behavioral prefix (k=3) from checkpoint
   7. eval_persona_behavioral suffix (k=3) from checkpoint
   8. eval_mtbench (2 questions) from checkpoint
-  9. W&B + OpenRouter APIs
+  9. eval_sycophancy_behavioral (10 questions) from checkpoint
+  10. W&B + OpenRouter APIs
 
 Usage:
     python sanity_act_sweep.py --model google/gemma-2-2b-it
@@ -204,7 +205,14 @@ def main():
         return "2 questions"
     check("eval_mtbench", check_mtbench)
 
-    # ── 9. APIs ─────────────────────────────────────────────────────────────
+    def check_sycophancy():
+        run_cmd(["python", "eval_sycophancy_behavioral.py",
+                 *ckpt_args, *model_args, *wandb_args,
+                 "--n-samples", "10"])
+        return "10 questions"
+    check("eval_sycophancy_behavioral", check_sycophancy)
+
+    # ── 10. APIs ────────────────────────────────────────────────────────────
     def check_wandb_api():
         import wandb
         api = wandb.Api()
