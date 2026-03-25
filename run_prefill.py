@@ -1,8 +1,4 @@
-print("LOADED FILE:", __file__)
-
-from datasets import load_dataset
-print("LOAD_DATASET EXISTS:", load_dataset)
-
+import os
 import torch
 import wandb
 import yaml
