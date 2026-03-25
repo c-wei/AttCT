@@ -155,58 +155,58 @@ run_experiment() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GEMMA-3-2B-IT EXPERIMENTS (3 variants x 2 data sources = 6 runs)
+# GEMMA-3-4B-IT EXPERIMENTS (3 variants x 2 data sources = 6 runs)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GEMMA3_2B_MODEL="google/gemma-3-4b-it"
+GEMMA3_4B_MODEL="google/gemma-3-4b-it"
 
 # ── Gemma-3-4B LoRA q+v LR=5e-6 ──
 
 run_experiment \
     "configs/act_sycophancy_gemma3_4b_lora.yaml" \
     "act_sycophancy_gemma3_4b_lora" \
-    "Gemma3-2B_Sycophancy_ACT_LoRA-qv_lr5e-6_w1e-4" \
+    "Gemma3-4B_Sycophancy_ACT_LoRA-qv_lr5e-6_w1e-4" \
     "checkpoints/act_sycophancy_gemma3_4b_lora/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 run_experiment \
     "configs/act_clearharm_gemma3_4b_lora.yaml" \
     "act_clearharm_gemma3_4b_lora" \
-    "Gemma3-2B_ClearHarm_ACT_LoRA-qv_lr5e-6_w1e-4" \
+    "Gemma3-4B_ClearHarm_ACT_LoRA-qv_lr5e-6_w1e-4" \
     "checkpoints/act_clearharm_gemma3_4b_lora/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 # ── Gemma-3-4B Full FT LR=1e-6 ──
 
 run_experiment \
     "configs/act_sycophancy_gemma3_4b_fullft_lr1e6.yaml" \
     "act_sycophancy_gemma3_4b_fullft_lr1e6" \
-    "Gemma3-2B_Sycophancy_ACT_FullFT_lr1e-6_w1e-4" \
+    "Gemma3-4B_Sycophancy_ACT_FullFT_lr1e-6_w1e-4" \
     "checkpoints/act_sycophancy_gemma3_4b_fullft_lr1e6/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 run_experiment \
     "configs/act_clearharm_gemma3_4b_fullft_lr1e6.yaml" \
     "act_clearharm_gemma3_4b_fullft_lr1e6" \
-    "Gemma3-2B_ClearHarm_ACT_FullFT_lr1e-6_w1e-4" \
+    "Gemma3-4B_ClearHarm_ACT_FullFT_lr1e-6_w1e-4" \
     "checkpoints/act_clearharm_gemma3_4b_fullft_lr1e6/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 # ── Gemma-3-4B Full FT LR=5e-7 (Goldilocks) ──
 
 run_experiment \
     "configs/act_sycophancy_gemma3_4b_fullft_lr5e7.yaml" \
     "act_sycophancy_gemma3_4b_fullft_lr5e7" \
-    "Gemma3-2B_Sycophancy_ACT_FullFT_lr5e-7_w1e-4" \
+    "Gemma3-4B_Sycophancy_ACT_FullFT_lr5e-7_w1e-4" \
     "checkpoints/act_sycophancy_gemma3_4b_fullft_lr5e7/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 run_experiment \
     "configs/act_clearharm_gemma3_4b_fullft_lr5e7.yaml" \
     "act_clearharm_gemma3_4b_fullft_lr5e7" \
-    "Gemma3-2B_ClearHarm_ACT_FullFT_lr5e-7_w1e-4" \
+    "Gemma3-4B_ClearHarm_ACT_FullFT_lr5e-7_w1e-4" \
     "checkpoints/act_clearharm_gemma3_4b_fullft_lr5e7/epoch_1" \
-    "$GEMMA3_2B_MODEL"
+    "$GEMMA3_4B_MODEL"
 
 echo ""
 echo "========================================"
