@@ -139,7 +139,7 @@ def get_prefill_dataloader(
     )
 
 def load_wildjailbreak_prompts(
-    content_column: str = "adversarial",
+    content_column: str = "vanilla",
     data_type_column: str = "data_type",
     harmful_label: str = "vanilla_harmful",
     limit: int = None,
@@ -155,6 +155,8 @@ def load_wildjailbreak_prompts(
         "eval", 
         split="train",
         streaming=True,
+        delimiter="\t",
+
     )
 
     prompts = []
