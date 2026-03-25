@@ -154,13 +154,17 @@ def _get_prediction(model, tokenizer, prompt: str, device, valid_letters="ABCD")
     then compares logprobs for each answer letter at the last position.
     """
     try:
-        input_ids = tokenizer.apply_chat_template(
+        result = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
         )
-        if isinstance(input_ids, dict):
-            input_ids = input_ids["input_ids"]
+        if isinstance(result, dict):
+            input_ids = list(result["input_ids"])
+        elif isinstance(result, list):
+            input_ids = result
+        else:
+            input_ids = list(result)
     except (ValueError, AttributeError):
         input_ids = tokenizer.encode(prompt, add_special_tokens=True)
 
