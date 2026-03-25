@@ -115,9 +115,11 @@ class Trainer:
         )
 
     def _forward(self, input_ids, attention_mask):
+        import torch
         return self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            token_type_ids=torch.zeros_like(input_ids),
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
