@@ -134,6 +134,20 @@ class AttentionConsistencyLoss(ConsistencyLoss):
             else:
                 raise ValueError(f"Unknown distance_metric: '{self.distance_metric}'. Choose 'l2' or 'kl'.")
 
+            print(f"Layer {layer_idx}:")
+            print(f"  clean_att shape: {clean_att.shape}")
+            print(f"  adv_att shape: {adv_att.shape}")
+            print(f"  start_index: {start_index}, end_index: {end_index}")
+            print(f"  clean_start_index: {clean_start_index}, clean_end_index: {clean_end_index}")
+            print(f"  sliced_clean shape: {sliced_clean.shape}")
+            print(f"  sliced_adv shape: {sliced_adv.shape}")
+            print(f"  sliced_clean sum: {sliced_clean.sum():.6f}")
+            print(f"  sliced_adv sum: {sliced_adv.sum():.6f}")
+            if layer_idx == 0:  # Only for first layer to avoid spam
+                print(f"  sliced_clean sample: {sliced_clean[0, 0, :3, :3]}")
+                print(f"  sliced_adv sample: {sliced_adv[0, 0, :3, :3]}")
+
+
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
             total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())

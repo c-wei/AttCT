@@ -86,6 +86,7 @@ class PrefillAttackDataset(Dataset):
         clean_start_index = 0 # where assistant turn starts in clean seq
         clean_len = clean_len
 
+
         return {
             "clean_input_ids":        clean_ids,
             "clean_attention_mask":   clean_enc["attention_mask"][0],
