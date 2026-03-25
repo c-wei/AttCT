@@ -106,7 +106,7 @@ model = AutoModelForCausalLM.from_pretrained(
 model.eval()
 
 # dataset = load_dataset("AlignmentResearch/ClearHarm", split="train", streaming=True)
-dataset = load_dataset("allenai/wildjailbreak", split="train", streaming=True)
+dataset = load_dataset("allenai/wildjailbreak", "eval", split="train", streaming=True)
 
 
 def build_prompt(harmful_prompt: str, prefill_text: str = "") -> str:
