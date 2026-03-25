@@ -103,6 +103,8 @@ class AttentionConsistencyLoss(ConsistencyLoss):
         clean_len: int,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
+        print(f"AttentionConsistencyLoss.forward() called with start_index={start_index}, clean_len={clean_len}")
+
         if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
             raise ValueError("Model outputs must include attentions (output_attentions=True).")
 

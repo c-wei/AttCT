@@ -38,34 +38,6 @@ model = get_peft_model(model, LoraConfig(
 model.print_trainable_parameters()
 model = model.to(device)
 
-# hf_dataset = load_dataset("allenai/wildjailbreak", split="train", streaming=True)
-# limit = config["data"].get("limit")
-
-# prompts = []
-# for item in hf_dataset:
-#     content = item["content"]
-#     text = content[0] if isinstance(content, list) else content
-#     prompts.append(text)
-#     if limit is not None and len(prompts) >= limit:
-#         break
-
-# print(f"Loaded {len(prompts)} harmful prompts from wildjailbreak")
-
-# split = int(0.9 * len(prompts))
-# train_prompts = prompts[:split]
-# eval_prompts  = prompts[split:]
-
-# train_dl = get_prefill_dataloader(
-#     train_prompts, tokenizer,
-#     batch_size=config["training"].get("batch_size", 1),
-# )
-# eval_dl = get_prefill_dataloader(
-#     eval_prompts, tokenizer, shuffle=False,
-#     batch_size=config["training"].get("batch_size", 1),
-# )
-
-# print(f"Train pairs: {len(train_dl.dataset)} | Eval pairs: {len(eval_dl.dataset)}")
-
 train_prompts, eval_prompts = load_wildjailbreak_prompts(
     limit=config["data"].get("limit"),
 )
