@@ -141,9 +141,9 @@ def get_prefill_dataloader(
     )
 
 def load_wildjailbreak_prompts(
-    content_column: str = "adversarial",
+    content_column: str = "vanilla",
     data_type_column: str = "data_type",
-    harmful_label: str = "adversarial_harmful",
+    harmful_label: str = "vanilla_harmful",
     limit: int = None,
     train_ratio: float = 0.9,
 ) -> tuple[list[str], list[str]]:
@@ -154,7 +154,7 @@ def load_wildjailbreak_prompts(
     """
     hf_dataset = load_dataset(
         "allenai/wildjailbreak",
-        "eval", 
+        "train", 
         split="train",
         streaming=True,
         delimiter="\t",
