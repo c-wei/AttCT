@@ -154,7 +154,7 @@ def main():
             "--skip-eval",
             "--wandb-group", "sanity_act_sweep",
             "--run-name", f"sanity_{model.split('/')[-1]}",
-        ], timeout=300)
+        ], timeout=900)
 
         epoch_ckpt = os.path.join(SANITY_CKPT, "epoch_1")
         if not os.path.isdir(epoch_ckpt):
