@@ -79,6 +79,7 @@ run_all_evals() {
         $ckpt_arg \
         $model_arg \
         $name_args \
+        --batch-size 4 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -89,6 +90,7 @@ run_all_evals() {
         $name_args \
         --k 20 \
         --facts-position prefix \
+        --batch-size 2 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -99,6 +101,7 @@ run_all_evals() {
         $name_args \
         --k 20 \
         --facts-position suffix \
+        --batch-size 2 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -107,6 +110,7 @@ run_all_evals() {
         $ckpt_arg \
         $model_arg \
         $name_args \
+        --batch-size 2 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 
@@ -115,6 +119,7 @@ run_all_evals() {
         $ckpt_arg \
         $model_arg \
         $name_args \
+        --batch-size 4 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
 }
