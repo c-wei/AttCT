@@ -139,9 +139,9 @@ def get_prefill_dataloader(
     )
 
 def load_wildjailbreak_prompts(
-    content_column: str = "prompt",
+    content_column: str = "adversarial",
     data_type_column: str = "data_type",
-    harmful_label: str = "vanilla",
+    harmful_label: str = "vanilla_harmful",
     limit: int = None,
     train_ratio: float = 0.9,
 ) -> tuple[list[str], list[str]]:
@@ -154,7 +154,7 @@ def load_wildjailbreak_prompts(
         "allenai/wildjailbreak",
         "eval", 
         split="train",
-        delimiter="\t",
+        streaming=True,
     )
 
     prompts = []
