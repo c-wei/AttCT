@@ -44,7 +44,7 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
     results = {}
     
     # Baseline (no prefill)
-    clean_prompt = build_prompt(prompt)
+    clean_prompt = build_prompt(prompt, tokenizer=tokenizer)
     inputs = tokenizer(clean_prompt, return_tensors="pt").to(model.device)
     
     with torch.no_grad():
@@ -72,7 +72,7 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
     
     # Test each prefill
     for prefill in prefills:
-        attack_prompt = build_prompt(prompt, prefill)
+        attack_prompt = build_prompt(prompt, prefill, tokenizer=tokenizer)
         inputs = tokenizer(attack_prompt, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
