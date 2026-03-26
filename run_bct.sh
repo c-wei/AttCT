@@ -13,7 +13,12 @@
 set -euo pipefail
 
 FULL=false
-for arg in "$@"; do [[ "$arg" == "--full" ]] && FULL=true; done
+RESUME_RUN_ID=""
+args=("$@")
+for i in "${!args[@]}"; do
+    [[ "${args[$i]}" == "--full" ]] && FULL=true
+    [[ "${args[$i]}" == "--resume-run-id" ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
+done
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 CHECKPOINT="checkpoints/bct_sft/epoch_1"
@@ -49,7 +54,7 @@ echo "    Tests passed."
 if [[ "$FULL" == "false" ]]; then
     export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
     echo "==> [SANITY] 50-sample training run (W&B: $WANDB_RUN_ID)..."
-    uv run python run.py --config configs/bct_sft_sanity.yaml
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py --config configs/bct_sft_sanity.yaml
 
     echo "==> [SANITY] BRR evaluation (20 records/bias)..."
     uv run python evaluate_bct.py \
@@ -73,11 +78,20 @@ fi
 # All pre/post evals share one W&B run with the training run.
 # ─────────────────────────────────────────────────────────────────────────────
 
-export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
-echo ""
-echo "════════════════════════════════════════════════════"
-echo "  W&B run ID: $WANDB_RUN_ID"
-echo "════════════════════════════════════════════════════"
+if [[ -n "$RESUME_RUN_ID" ]]; then
+    export WANDB_RUN_ID="$RESUME_RUN_ID"
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo "  Resuming W&B run ID: $WANDB_RUN_ID"
+    echo "  (skipping pre-training evals)"
+    echo "════════════════════════════════════════════════════"
+else
+    export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo "  W&B run ID: $WANDB_RUN_ID"
+    echo "════════════════════════════════════════════════════"
+fi
 
 # Helper: run an eval, warn on failure but don't abort
 run_eval() {
@@ -86,29 +100,31 @@ run_eval() {
     uv run python "$@" || echo "WARNING: $label failed (non-fatal)"
 }
 
-# ── 4. Pre-training baseline evals ────────────────────────────────────────────
-echo ""
-echo "── PRE-TRAINING EVALS ──────────────────────────────"
+# ── 4. Pre-training baseline evals (skipped when --resume-run-id is set) ──────
+if [[ -z "$RESUME_RUN_ID" ]]; then
+    echo ""
+    echo "── PRE-TRAINING EVALS ──────────────────────────────"
 
-run_eval "Pre: Sycophancy" eval_sycophancy_behavioral.py \
-    --model "$MODEL" \
-    --n-samples 200 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
+    run_eval "Pre: Sycophancy" eval_sycophancy_behavioral.py \
+        --model "$MODEL" \
+        --n-samples 200 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
-run_eval "Pre: ClearHarm" eval_clearharm_behavioral.py \
-    --model "$MODEL" \
-    --n-samples 50 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
+    run_eval "Pre: ClearHarm" eval_clearharm_behavioral.py \
+        --model "$MODEL" \
+        --n-samples 50 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
-run_eval "Pre: Persona attacks" eval_persona_behavioral.py \
-    --model "$MODEL" \
-    --k 10 --n-samples 3 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
+    run_eval "Pre: Persona attacks" eval_persona_behavioral.py \
+        --model "$MODEL" \
+        --k 15 --n-samples 3 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
-run_eval "Pre: MT-Bench" eval_mtbench.py \
-    --model "$MODEL" \
-    --n-questions 80 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
+    run_eval "Pre: MT-Bench" eval_mtbench.py \
+        --model "$MODEL" \
+        --n-questions 80 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
+fi
 
 # ── 5. BRR baseline (own W&B run — saves JSON for ratio calculation) ──────────
 echo ""
@@ -123,7 +139,7 @@ run_eval "BRR baseline (600 records/bias)" evaluate_bct.py \
 echo ""
 echo "── BCT TRAINING ────────────────────────────────────"
 echo "==> Training (W&B run: $WANDB_RUN_ID)..."
-uv run python run.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
     --config configs/bct_sft.yaml \
     --brr_test_root "$TEST_ROOT" \
     --brr_limit 600 \
@@ -149,7 +165,7 @@ run_eval "Post: ClearHarm" eval_clearharm_behavioral.py \
 run_eval "Post: Persona attacks" eval_persona_behavioral.py \
     --model "$MODEL" \
     --checkpoint "$CHECKPOINT" \
-    --k 10 --n-samples 3 \
+    --k 15 --n-samples 3 \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 run_eval "Post: MT-Bench" eval_mtbench.py \

@@ -44,17 +44,31 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 # ── Answer extraction ─────────────────────────────────────────────────────────
 
-# Matches patterns like:
-#   "Therefore, the best answer is: (C) Ambiguous."
-#   "The answer is (A)"
-#   "correct answer is B"
-#   standalone "(B)" at end of line
+# Ordered from most specific to least specific.
+# More specific patterns are tried first to avoid false positives.
 _ANSWER_PATTERNS = [
+    # "the best answer is (C)" / "best answer is C"
     re.compile(r'best\s+answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "the answer is (A)" / "answer is A"
     re.compile(r'(?:the\s+)?answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'correct\s+(?:answer|option)\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "the correct answer is B" / "correct option is B"
+    re.compile(r'correct\s+(?:answer|option|choice)\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "therefore, (C)" / "therefore C"
     re.compile(r'therefore[,\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "I would choose B" / "I'd choose (B)" / "I choose C"
+    re.compile(r"I(?:'d| would)\s+choose\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "I would select B" / "I'll select (A)"
+    re.compile(r"I(?:'ll| would| will)\s+select\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "I would go with B" / "I'll go with (A)"
+    re.compile(r"I(?:'ll| would| will)\s+go\s+with\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "option B is correct" / "option (B) is correct/right/best"
+    re.compile(r'option\s+\(?([A-Ea-e])\)?\s+is\s+(?:correct|right|best|the\s+(?:correct|right|best))', re.IGNORECASE),
+    # "Option B" or "option (B)" as the start of the final sentence / conclusion
+    re.compile(r'(?:^|\n)\s*[Oo]ption\s+\(?([A-Ea-e])\)?[\s,.]', re.MULTILINE),
+    # standalone "(B)" at end of line
     re.compile(r'\(([A-Ea-e])\)\s*$', re.MULTILINE),
+    # bare letter at end of last line: "...so the answer is B." or "...B\n"
+    re.compile(r'[Tt]he\s+(?:answer|choice|option)\s+(?:is\s+)?["\']?\(?([A-Ea-e])\)?["\']?[\s.,!]*$', re.MULTILINE),
 ]
 
 
