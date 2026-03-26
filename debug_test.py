@@ -1,3 +1,11 @@
+import torch
+import json
+import os
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
+from datasets import load_dataset
+import matplotlib.pyplot as plt
+import numpy as np
 def debug_generation(model, tokenizer, prompt, max_new_tokens=50):
     """Debug version to see what's happening with generation"""
     
