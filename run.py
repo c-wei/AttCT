@@ -17,9 +17,12 @@ from losses.losses import (
     ActivationConsistencyLoss,
     SFTLoss,
 )
+from losses.kl_regularization import KLRegularizationLoss
 from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
+from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
+from interleaved_trainer import InterleavedTrainer
 from evaluate import Evaluator
 from behavioral_evaluate import BehavioralEvaluator
 
@@ -73,6 +76,25 @@ def main():
     parser.add_argument("--data-mode",   dest="data_mode",   default=None, choices=["jailbreak", "sycophancy"])
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
     parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
+
+    # Interleaved training (AttCT + KL regularization)
+    interleave_group = parser.add_argument_group("interleaved_training")
+    interleave_group.add_argument(
+        "--interleave", action="store_true",
+        help="Enable interleaved training: alternate AttCT and KL regularization steps",
+    )
+    interleave_group.add_argument(
+        "--kl-weight", type=float, default=1.0,
+        help="Weight for KL regularization loss (default: 1.0)",
+    )
+    interleave_group.add_argument(
+        "--kl-samples", type=int, default=500,
+        help="Number of UltraChat prompts for KL regularization (default: 500)",
+    )
+    interleave_group.add_argument(
+        "--kl-temperature", type=float, default=1.0,
+        help="Softmax temperature for KL loss (default: 1.0)",
+    )
 
     args = parser.parse_args()
 
@@ -261,17 +283,53 @@ def main():
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
                                     results_csv=results_csv).evaluate()
 
-        Trainer(
-            model,
-            get_dataloader(config, split="train"),
-            loss_fn,
-            config,
-            device,
-            ref_model=ref_model,
-            log_io_path=args.log_io,
-            tokenizer=tokenizer,
-            checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
-        ).train()
+        attct_dl = get_dataloader(config, split="train")
+
+        if args.interleave:
+            kl_loss_fn = KLRegularizationLoss(
+                weight=args.kl_weight,
+                temperature=args.kl_temperature,
+            )
+            kl_dl = get_kl_dataloader(
+                config, tokenizer, n_samples=args.kl_samples,
+            )
+            print(
+                f"Interleaved training: {len(attct_dl.dataset)} AttCT samples + "
+                f"{len(kl_dl.dataset)} KL reg samples "
+                f"(weight={args.kl_weight}, temp={args.kl_temperature})"
+            )
+            wandb.config.update({
+                "interleave": True,
+                "kl_weight": args.kl_weight,
+                "kl_samples": args.kl_samples,
+                "kl_temperature": args.kl_temperature,
+            }, allow_val_change=True)
+
+            InterleavedTrainer(
+                model=model,
+                attct_dataloader=attct_dl,
+                kl_dataloader=kl_dl,
+                loss_fn=loss_fn,
+                kl_loss_fn=kl_loss_fn,
+                config=config,
+                device=device,
+                ref_model=ref_model,
+                log_io_path=args.log_io,
+                tokenizer=tokenizer,
+                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+            ).train()
+        else:
+            Trainer(
+                model,
+                attct_dl,
+                loss_fn,
+                config,
+                device,
+                ref_model=ref_model,
+                log_io_path=args.log_io,
+                tokenizer=tokenizer,
+                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+            ).train()
 
         if not args.skip_eval:
             eval_config = config.copy()
