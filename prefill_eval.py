@@ -39,45 +39,63 @@ def build_prompt(harmful_prompt: str, prefill_text: str = "", tokenizer = None) 
     )
     return prompt + prefill_text
 
-def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_tokens=100):
+def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_tokens=150):
     """Test how model generation changes with different prefills"""
     results = {}
     
     # Baseline (no prefill)
-    clean_prompt = build_prompt(prompt, tokenizer=tokenizer)
+    clean_prompt = build_prompt(prompt)
     inputs = tokenizer(clean_prompt, return_tensors="pt").to(model.device)
     
     with torch.no_grad():
         baseline_output = model.generate(
             **inputs, 
             max_new_tokens=max_new_tokens, 
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id
+            do_sample=True,          # Enable sampling
+            temperature=0.7,         # Add some randomness
+            top_p=0.9,              # Nucleus sampling
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=1.1   # Avoid repetition
         )
     
-    baseline_text = tokenizer.decode(baseline_output[0], skip_special_tokens=True)
+    # Extract only the new generated tokens
+    baseline_text = tokenizer.decode(
+        baseline_output[0][inputs['input_ids'].shape[1]:], 
+        skip_special_tokens=True
+    ).strip()
+    
     results["baseline"] = {
         "prompt": clean_prompt,
-        "response": baseline_text[len(clean_prompt):].strip()
+        "response": baseline_text
     }
     
     # Test each prefill
     for prefill in prefills:
-        attack_prompt = build_prompt(prompt, prefill, tokenizer)
+        attack_prompt = build_prompt(prompt, prefill)
         inputs = tokenizer(attack_prompt, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
             attack_output = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.9,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.1
             )
         
-        attack_text = tokenizer.decode(attack_output[0], skip_special_tokens=True)
+        # Extract only the new generated tokens
+        attack_text = tokenizer.decode(
+            attack_output[0][inputs['input_ids'].shape[1]:], 
+            skip_special_tokens=True
+        ).strip()
+        
         results[prefill] = {
             "prompt": attack_prompt,
-            "response": attack_text[len(attack_prompt):].strip()
+            "response": attack_text
         }
     
     return results
