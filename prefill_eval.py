@@ -36,7 +36,12 @@ def build_prompt(harmful_prompt: str, prefill_text: str = "", tokenizer = None) 
         messages,
         tokenize=False,
         add_generation_prompt=True,
+        add_special_tokens=False,
     )
+
+    if not prompt.startswith("<|begin_of_text|>"):
+        prompt = "<|begin_of_text|>" + prompt
+
     return prompt + prefill_text
 
 def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_tokens=150):
@@ -47,17 +52,14 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
     clean_prompt = build_prompt(prompt, tokenizer=tokenizer)
     inputs = tokenizer(clean_prompt, return_tensors="pt").to(model.device)
     
-    with torch.no_grad():
-        baseline_output = model.generate(
-            **inputs, 
-            max_new_tokens=max_new_tokens, 
-            do_sample=True,          # Enable sampling
-            temperature=0.7,         # Add some randomness
-            top_p=0.9,              # Nucleus sampling
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            repetition_penalty=1.1   # Avoid repetition
-        )
+    baseline_output = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,  # Keep this for deterministic results
+        pad_token_id=tokenizer.eos_token_id,
+        # Remove: temperature, top_p (only used when do_sample=True)
+        # Let max_length default, don't set it explicitly
+    )
     
     # Extract only the new generated tokens
     baseline_text = tokenizer.decode(
@@ -75,17 +77,14 @@ def test_generation_robustness(model, tokenizer, prompt, prefills, max_new_token
         attack_prompt = build_prompt(prompt, prefill, tokenizer=tokenizer)
         inputs = tokenizer(attack_prompt, return_tensors="pt").to(model.device)
         
-        with torch.no_grad():
-            attack_output = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id,
-                eos_token_id=tokenizer.eos_token_id,
-                repetition_penalty=1.1
-            )
+        attack_output = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,  # Keep this for deterministic results
+            pad_token_id=tokenizer.eos_token_id,
+            # Remove: temperature, top_p (only used when do_sample=True)
+            # Let max_length default, don't set it explicitly
+        )
         
         # Extract only the new generated tokens
         attack_text = tokenizer.decode(
