@@ -309,10 +309,14 @@ def main():
             checkpoint_fn=make_checkpoint_fn(brr_evaluator, behavioral_evaluator),
         ).train()
 
-        eval_config = config.copy()
-        if args.eval_limit is not None:
-            eval_config.setdefault("data", {})["limit"] = args.eval_limit
-        Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
+        # Run MLP consistency loss eval only if BRR eval is not configured
+        # (BRR eval already measures the model; this would redundantly re-run
+        # the training data through the loss function).
+        if brr_evaluator is None:
+            eval_config = config.copy()
+            if args.eval_limit is not None:
+                eval_config.setdefault("data", {})["limit"] = args.eval_limit
+            Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
 
         # Post-training eval.
         if brr_evaluator is not None and not is_sanity:
