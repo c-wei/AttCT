@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .env
 results/
+CLAUDE.md
+logs.tar.xz
 wandb/
 checkpoints/
-CLAUDE.md

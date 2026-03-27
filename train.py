@@ -59,6 +59,7 @@ class Trainer:
 
         train_cfg = config["training"]
         self.epochs = train_cfg["epochs"]
+        self.max_steps = train_cfg.get("max_steps", None)
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
         self.grad_accumulation = train_cfg.get("grad_accumulation_steps", 1)
@@ -91,12 +92,14 @@ class Trainer:
         self._last_layer_losses:  list = []
 
         # Compute the three step indices at which behavioral eval fires.
-        # Total optimizer steps = (batches_per_epoch * epochs) / grad_accumulation.
-        # We use integer division throughout; the final checkpoint is always the
-        # last optimizer step, so behavioral eval always runs at end-of-training.
-        batches_per_epoch = len(dataloader)
-        total_batches = batches_per_epoch * self.epochs
-        total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
+        # If max_steps is set, use it directly — checkpoints must be relative to
+        # the actual number of steps that will run, not the full dataset size.
+        if self.max_steps is not None:
+            total_optimizer_steps = self.max_steps
+        else:
+            batches_per_epoch = len(dataloader)
+            total_batches = batches_per_epoch * self.epochs
+            total_optimizer_steps = max(1, total_batches // self.grad_accumulation)
         self.checkpoint_steps = {
             total_optimizer_steps // 3,
             (2 * total_optimizer_steps) // 3,
@@ -112,9 +115,11 @@ class Trainer:
         )
 
     def _forward(self, input_ids, attention_mask):
+        import torch
         return self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            token_type_ids=torch.zeros_like(input_ids),
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
@@ -178,8 +183,10 @@ class Trainer:
         for epoch in range(1, self.epochs + 1):
             epoch_loss = 0.0
             pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
+            for step_idx, batch in enumerate(pbar):
+                if self.max_steps is not None and global_step >= self.max_steps:
+                    break
 
-            for batch in pbar:
                 loss_dict = self._step(batch)
                 self._write_train_record(epoch, batch_count + 1, batch)
                 loss = loss_dict["loss"] / self.grad_accumulation
@@ -211,8 +218,17 @@ class Trainer:
                 epoch_loss += loss_val
                 pbar.set_postfix(loss=f"{loss_val:.4f}")
 
-            avg = epoch_loss / len(self.dataloader)
+                if global_step % self.log_every == 0:
+                    self._log(epoch, global_step, loss_dict)
+
+            steps_this_epoch = max(1, min(step_idx + 1, len(self.dataloader)))
+            avg = epoch_loss / steps_this_epoch
+
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+            self._save_checkpoint(tag=f"epoch_{epoch}")
+
+            if self.max_steps is not None and global_step >= self.max_steps:
+                break
 
         print("Training complete.")
         if self._first_layer_losses and self._last_layer_losses:

@@ -1,0 +1,11 @@
+loss:
+  name: "AttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "exponential_decay"
+    slice_strategy: "full_matrix"
+    distance_metric: "l2"
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
