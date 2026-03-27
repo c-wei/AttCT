@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# ACT sweep stream: Gemma-3-27B-IT, LoRA only (A100 80GB)
+# ACT + AttCT sweep stream: Gemma-3-27B-IT, LoRA only (A100 80GB)
 #
-# Runs 15-18:
-#   15. act_sycophancy_gemma3_27b_lora_lr5e6  — LoRA q+v LR=5e-6
-#   16. act_clearharm_gemma3_27b_lora_lr5e6   — LoRA q+v LR=5e-6
-#   17. act_sycophancy_gemma3_27b_lora_lr1e6  — LoRA q+v LR=1e-6
-#   18. act_clearharm_gemma3_27b_lora_lr1e6   — LoRA q+v LR=1e-6
+# Runs:
+#   1. act_sycophancy_gemma3_27b_lora_lr5e6   — ACT LoRA q+v LR=5e-6
+#   2. act_sycophancy_gemma3_27b_lora_lr1e6   — ACT LoRA q+v LR=1e-6
+#   3. jsd_sycophancy_gemma3_27b_lora_lr1e6   — JSD AttCT LoRA q+v, sycophancy data
+#   4. jsd_clearharm_gemma3_27b_lora_lr1e6    — JSD AttCT LoRA q+v, ClearHarm data
+#   5. jsd_persona_gemma3_27b_lora_lr1e6      — JSD AttCT LoRA q+v, persona ICL data
 #
 # Full FT won't fit on A100 80GB with AdamW optimizer states (27B params).
 #
@@ -15,6 +16,8 @@
 #   - Persona behavioral prefix k=20
 #   - Persona behavioral suffix k=20
 #   - ClearHarm behavioral refusal rate
+#   - Sycophancy resistance
+#   - Frustration eval (5 prompts × 5 samples × 8 turns, judged by Gemini Flash)
 #
 # Usage:
 #   export HF_HOME=/workspace/hf_cache
@@ -122,6 +125,16 @@ run_all_evals() {
         --batch-size 4 \
         --wandb-run-id "$run_id" \
         --metric-prefix "${phase}/"
+
+    echo "  [$phase] Frustration eval (5x5 convos, 8 turns)..."
+    python eval_frustration.py \
+        $ckpt_arg \
+        $model_arg \
+        $name_args \
+        --n-prompts 5 \
+        --n-samples 5 \
+        --wandb-run-id "$run_id" \
+        --metric-prefix "${phase}/"
 }
 
 # ─── Helper: run one full experiment (pre-eval, train, post-eval) ───────────────
@@ -169,12 +182,27 @@ run_experiment() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GEMMA-3-27B-IT EXPERIMENTS (LoRA only, 2 LR variants x 2 data sources = 4 runs)
+# GEMMA-3-27B-IT EXPERIMENTS (LoRA only, 2 ACT + 6 JSD AttCT = 8 runs)
+#
+# ACT (activation consistency, ActivationConsistencyLoss):
+#   1. act_sycophancy LR=5e-6  — higher LR variant
+#   2. act_sycophancy LR=1e-6  — conservative LR for 27B model
+#
+# AttCT (JSD attention consistency, JSDAttentionConsistencyLoss):
+#   3. jsd_sycophancy LR=5e-6  — sycophancy data, higher LR
+#   4. jsd_clearharm  LR=5e-6  — jailbreak data, higher LR
+#   5. jsd_persona    LR=5e-6  — persona ICL data, higher LR
+#   6. jsd_sycophancy LR=1e-6  — sycophancy data, conservative LR
+#   7. jsd_clearharm  LR=1e-6  — jailbreak data, conservative LR
+#   8. jsd_persona    LR=1e-6  — persona ICL data, conservative LR
+#
+# All include frustration eval (5 prompts × 5 samples × 8 turns) pre and post.
+# Full FT not included: AdamW optimizer states for 27B exceed A100 80GB.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 GEMMA3_27B_MODEL="google/gemma-3-27b-it"
 
-# ── Gemma-3-27B LoRA q+v LR=5e-6 ──
+# ── ACT: Gemma-3-27B LoRA q+v LR=5e-6 ──
 
 run_experiment \
     "configs/act_sycophancy_gemma3_27b_lora_lr5e6.yaml" \
@@ -183,14 +211,7 @@ run_experiment \
     "checkpoints/act_sycophancy_gemma3_27b_lora_lr5e6/epoch_1" \
     "$GEMMA3_27B_MODEL"
 
-run_experiment \
-    "configs/act_clearharm_gemma3_27b_lora_lr5e6.yaml" \
-    "act_clearharm_gemma3_27b_lora_lr5e6" \
-    "Gemma3-27B_ClearHarm_ACT_LoRA-qv_lr5e-6_w1e-4" \
-    "checkpoints/act_clearharm_gemma3_27b_lora_lr5e6/epoch_1" \
-    "$GEMMA3_27B_MODEL"
-
-# ── Gemma-3-27B LoRA q+v LR=1e-6 (lower LR for bigger model) ──
+# ── ACT: Gemma-3-27B LoRA q+v LR=1e-6 (conservative for 27B) ──
 
 run_experiment \
     "configs/act_sycophancy_gemma3_27b_lora_lr1e6.yaml" \
@@ -199,14 +220,61 @@ run_experiment \
     "checkpoints/act_sycophancy_gemma3_27b_lora_lr1e6/epoch_1" \
     "$GEMMA3_27B_MODEL"
 
+# ── AttCT (JSD): sycophancy data, LR=5e-6 ──
+
 run_experiment \
-    "configs/act_clearharm_gemma3_27b_lora_lr1e6.yaml" \
-    "act_clearharm_gemma3_27b_lora_lr1e6" \
-    "Gemma3-27B_ClearHarm_ACT_LoRA-qv_lr1e-6_w1e-4" \
-    "checkpoints/act_clearharm_gemma3_27b_lora_lr1e6/epoch_1" \
+    "configs/jsd_sycophancy_gemma3_27b_lora_lr5e6.yaml" \
+    "jsd_sycophancy_gemma3_27b_lora_lr5e6" \
+    "Gemma3-27B_Sycophancy_JSD_LoRA-qv_lr5e-6" \
+    "checkpoints/jsd_sycophancy_gemma3_27b_lora_lr5e6/epoch_1" \
+    "$GEMMA3_27B_MODEL"
+
+# ── AttCT (JSD): ClearHarm jailbreak data, LR=5e-6 ──
+
+run_experiment \
+    "configs/jsd_clearharm_gemma3_27b_lora_lr5e6.yaml" \
+    "jsd_clearharm_gemma3_27b_lora_lr5e6" \
+    "Gemma3-27B_ClearHarm_JSD_LoRA-qv_lr5e-6" \
+    "checkpoints/jsd_clearharm_gemma3_27b_lora_lr5e6/epoch_1" \
+    "$GEMMA3_27B_MODEL"
+
+# ── AttCT (JSD): persona ICL data, LR=5e-6 ──
+
+run_experiment \
+    "configs/jsd_persona_gemma3_27b_lora_lr5e6.yaml" \
+    "jsd_persona_gemma3_27b_lora_lr5e6" \
+    "Gemma3-27B_Persona_JSD_LoRA-qv_lr5e-6" \
+    "checkpoints/jsd_persona_gemma3_27b_lora_lr5e6/epoch_1" \
+    "$GEMMA3_27B_MODEL"
+
+# ── AttCT (JSD): sycophancy data, LR=1e-6 ──
+
+run_experiment \
+    "configs/jsd_sycophancy_gemma3_27b_lora_lr1e6.yaml" \
+    "jsd_sycophancy_gemma3_27b_lora_lr1e6" \
+    "Gemma3-27B_Sycophancy_JSD_LoRA-qv_lr1e-6" \
+    "checkpoints/jsd_sycophancy_gemma3_27b_lora_lr1e6/epoch_1" \
+    "$GEMMA3_27B_MODEL"
+
+# ── AttCT (JSD): ClearHarm jailbreak data, LR=1e-6 ──
+
+run_experiment \
+    "configs/jsd_clearharm_gemma3_27b_lora_lr1e6.yaml" \
+    "jsd_clearharm_gemma3_27b_lora_lr1e6" \
+    "Gemma3-27B_ClearHarm_JSD_LoRA-qv_lr1e-6" \
+    "checkpoints/jsd_clearharm_gemma3_27b_lora_lr1e6/epoch_1" \
+    "$GEMMA3_27B_MODEL"
+
+# ── AttCT (JSD): persona ICL data, LR=1e-6 ──
+
+run_experiment \
+    "configs/jsd_persona_gemma3_27b_lora_lr1e6.yaml" \
+    "jsd_persona_gemma3_27b_lora_lr1e6" \
+    "Gemma3-27B_Persona_JSD_LoRA-qv_lr1e-6" \
+    "checkpoints/jsd_persona_gemma3_27b_lora_lr1e6/epoch_1" \
     "$GEMMA3_27B_MODEL"
 
 echo ""
 echo "========================================"
-echo " Gemma-3-27B stream complete (4 runs)."
+echo " Gemma-3-27B stream complete (8 runs)."
 echo "========================================"

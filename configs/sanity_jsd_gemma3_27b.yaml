@@ -1,0 +1,33 @@
+# GPU sanity check: Gemma-3-27B-IT + JSD attention loss, capped at 5 prompts.
+# Verifies: model loads with output_attentions=True, LoRA adapter toggle, loss
+# is finite, no OOM. Should complete in ~3-5 minutes on an A100 80GB.
+
+model:
+  name: "google/gemma-3-27b-it"
+  output_attentions: true
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+  limit: 5          # 5 prompts — enough to verify correctness
+
+training:
+  epochs: 1
+  learning_rate: 0.000001
+  grad_clip: 1.0
+  log_every_n_steps: 1
+  save_dir: null
