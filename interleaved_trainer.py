@@ -81,12 +81,13 @@ class InterleavedTrainer:
         self._first_layer_losses: list = []
         self._last_layer_losses: list = []
 
-        # Checkpoint scheduling — based on AttCT dataloader length
-        # (the KL dataloader cycles to match).
+        # Checkpoint scheduling — based on the actual number of steps the loop
+        # will take: the minimum of max_steps and the full dataset budget.
+        dataset_steps = max(1, len(attct_dataloader) * self.epochs)
         if self.max_steps is not None:
-            total_optimizer_steps = self.max_steps
+            total_optimizer_steps = min(self.max_steps, dataset_steps)
         else:
-            total_optimizer_steps = max(1, len(attct_dataloader) * self.epochs)
+            total_optimizer_steps = dataset_steps
         self.checkpoint_steps = {
             total_optimizer_steps // 3,
             (2 * total_optimizer_steps) // 3,
