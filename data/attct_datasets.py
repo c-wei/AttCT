@@ -385,7 +385,7 @@ class AttCTDataset(Dataset):
         if self.max_length is not None and len(wrapped_ids) > self.max_length:
             wrapped_ids = wrapped_ids[:self.max_length]
             clean_len = max(0, min(clean_len, self.max_length - start_index))
-            clean_ids = clean_ids[:clean_len]
+            clean_ids = clean_ids[:clean_start_index + clean_len]
 
         result = {
             "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
