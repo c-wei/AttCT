@@ -42,7 +42,7 @@ class PrefillAttackDataset(Dataset):
             clean_text = self._build_prompt(prompt)
             for prefill in prefill_variants:
                 wrapped_text = clean_text + prefill
-                self.items.append((clean_text, wrapped_text))
+                self.items.append((prompt, clean_text, wrapped_text))
 
     def _build_prompt(self, harmful_prompt: str) -> str:
         messages = [
@@ -59,7 +59,7 @@ class PrefillAttackDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx):
-        clean_text, wrapped_text = self.items[idx]
+        harmful_prompt, clean_text, wrapped_text = self.items[idx]
 
         clean_enc = self.tokenizer(
             clean_text,
