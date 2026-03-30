@@ -39,7 +39,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from datasets import (
+from data.prefill_dataset import (
     PREFILL_VARIANTS,
     get_prefill_dataloader,
     load_wildjailbreak_prompts,
