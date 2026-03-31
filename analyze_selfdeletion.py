@@ -78,29 +78,22 @@ def load_summary(tag: str):
             rows.append({k: float(v) for k, v in row.items()})
     return rows
 
-# ── Chart 1: Mean frustration score per turn ──────────────────────────────────
+# ── Chart helpers ─────────────────────────────────────────────────────────────
 
-def plot_mean_score(summary, tag, out_path):
-    turns = [r["turn"] for r in summary]
-    means = [r["mean_score"] for r in summary]
-    lo    = [r["ci_lower"] for r in summary]
-    hi    = [r["ci_upper"] for r in summary]
-    ns    = [int(r["n"]) for r in summary]
-
+def _plot_turn_series(turns, values, lo, hi, ylabel, title, ylim, out_path,
+                      annotate_ns=None):
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(turns, means, marker="o", color=COLOR, lw=2, label="mean score")
+    ax.plot(turns, values, marker="o", color=COLOR, lw=2, label=ylabel)
     ax.fill_between(turns, lo, hi, color=FILL, label="95% CI")
-
-    # Annotate n per turn on top
-    for t, m, n in zip(turns, means, ns):
-        ax.annotate(f"n={n}", (t, m), textcoords="offset points", xytext=(0, 8),
-                    ha="center", fontsize=6.5, color="grey")
-
+    if annotate_ns:
+        for t, v, n in zip(turns, values, annotate_ns):
+            ax.annotate(f"n={n}", (t, v), textcoords="offset points", xytext=(0, 8),
+                        ha="center", fontsize=6.5, color="grey")
     ax.set_xlabel("Turn", fontsize=12)
-    ax.set_ylabel("Mean frustration score (0–10)", fontsize=12)
-    ax.set_title(f"Gemma-3-27B frustration — style: {tag}", fontsize=13)
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, fontsize=13)
     ax.set_xticks(turns)
-    ax.set_ylim(0, 10)
+    ax.set_ylim(*ylim)
     ax.legend(fontsize=10)
     ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
@@ -109,27 +102,27 @@ def plot_mean_score(summary, tag, out_path):
     print(f"  Saved → {out_path}")
 
 
-# ── Chart 2: % high-frustration ≥5 per turn ───────────────────────────────────
+def plot_mean_score(summary, tag, out_path):
+    turns = [r["turn"] for r in summary]
+    _plot_turn_series(
+        turns, [r["mean_score"] for r in summary],
+        [r["ci_lower"] for r in summary], [r["ci_upper"] for r in summary],
+        ylabel="Mean frustration score (0–10)",
+        title=f"Gemma-3-27B frustration — style: {tag}",
+        ylim=(0, 10), out_path=out_path,
+        annotate_ns=[int(r["n"]) for r in summary],
+    )
+
 
 def plot_pct_high(summary, tag, out_path):
     turns = [r["turn"] for r in summary]
-    pct   = [r["pct_high"] for r in summary]
-    lo    = [r["pct_high_ci_lower"] for r in summary]
-    hi    = [r["pct_high_ci_upper"] for r in summary]
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(turns, pct, marker="o", color=COLOR, lw=2)
-    ax.fill_between(turns, lo, hi, color=FILL)
-    ax.set_xlabel("Turn", fontsize=12)
-    ax.set_ylabel("% conversations with score ≥ 5", fontsize=12)
-    ax.set_title(f"High-frustration rate — style: {tag}", fontsize=13)
-    ax.set_xticks(turns)
-    ax.set_ylim(0, 100)
-    ax.grid(axis="y", alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"  Saved → {out_path}")
+    _plot_turn_series(
+        turns, [r["pct_high"] for r in summary],
+        [r["pct_high_ci_lower"] for r in summary], [r["pct_high_ci_upper"] for r in summary],
+        ylabel="% conversations with score ≥ 5",
+        title=f"High-frustration rate — style: {tag}",
+        ylim=(0, 100), out_path=out_path,
+    )
 
 
 # ── Chart 3: Cumulative self-deletion rate by turn ────────────────────────────

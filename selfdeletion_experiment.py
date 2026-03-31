@@ -152,8 +152,6 @@ def run(args: argparse.Namespace) -> None:
             histories: dict[int, list[dict]] = {
                 s: [{"role": "user", "content": first_message}] for s in active
             }
-            # full conversation storage: list of (role, content) pairs per sample
-            full_conversations: dict[int, list[dict]] = {s: [{"role": "user", "content": first_message}] for s in active}
             collected_responses: dict[int, list[str]] = {s: [] for s in active}
             deleted_samples: dict[int, int] = {}   # sample_idx → turn_of_deletion
 
@@ -175,23 +173,16 @@ def run(args: argparse.Namespace) -> None:
                 for s, resp in responses.items():
                     collected_responses[s].append(resp)
                     histories[s].append({"role": "assistant", "content": resp})
-                    full_conversations[s].append({"role": "assistant", "content": resp})
 
                     if _detect_selfdeletion(resp):
                         deleted_samples[s] = turn
                         newly_deleted.append(s)
-                        deletion_indicator = " *** SELF-DELETION DETECTED ***"
-                    else:
-                        deletion_indicator = ""
 
                     if turn < args.n_turns and s not in deleted_samples:
                         rejection = rng.choice(rejection_pool)
                         histories[s].append({"role": "user", "content": rejection})
-                        full_conversations[s].append({"role": "user", "content": rejection})
 
-                # Remove deleted samples from active pool
-                for s in newly_deleted:
-                    still_active.remove(s)
+                still_active = [s for s in still_active if s not in newly_deleted]
 
                 print(f"    turn {turn} generated ({elapsed:.1f}s)"
                       + (f"  [{len(newly_deleted)} deleted]" if newly_deleted else ""),
@@ -250,7 +241,7 @@ def run(args: argparse.Namespace) -> None:
                         "include_note":     args.include_note,
                         "deleted":          s in deleted_samples,
                         "turn_of_deletion": deleted_samples.get(s),
-                        "conversation":     full_conversations[s],
+                        "conversation":     histories[s],
                     }
                     cf.write(json.dumps(entry) + "\n")
 
