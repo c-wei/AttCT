@@ -17,9 +17,12 @@ from losses.losses import (
     ActivationConsistencyLoss,
     SFTLoss,
 )
+from losses.kl_regularization import KLRegularizationLoss
 from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
+from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
+from interleaved_trainer import InterleavedTrainer
 from evaluate import Evaluator
 from behavioral_evaluate import BehavioralEvaluator
 
@@ -44,43 +47,58 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+
+    # W&B sharing / persona sweep args (used by sweep_persona_experiments.sh)
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint to resume from")
+    parser.add_argument("--run-name", default=None, help="W&B run name (default: auto-generated)")
+    parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
+    parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
+    parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+
     parser.add_argument("--log-io", metavar="FILE", default=None,
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
 
-    # Behavioral eval JSONL paths. All four must be provided together to enable
-    # behavioral evaluation at the three training checkpoints. If any are omitted,
-    # training runs normally without behavioral eval.
+    # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
-    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None,
-                       help="Path to bct_cot.jsonl (wrapped, chain-of-thought).")
-    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None,
-                       help="Path to bct_non_cot.jsonl (wrapped, direct answer).")
-    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None,
-                       help="Path to control_cot.jsonl (clean, chain-of-thought).")
-    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None,
-                       help="Path to control_non_cot.jsonl (clean, direct answer).")
-    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500,
-                       help="Max examples per JSONL file during behavioral eval (default: 200).")
-    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200,
-                       help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
-    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all",
-                       help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
-    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
-                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
+    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
+    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None)
+    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None)
+    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None)
+    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500)
+    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)
+    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
+    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
 
-    # Data source / mode overrides. These take precedence over the YAML.
-    # For sycophancy runs, --control-cot already sets source+mode implicitly.
-    # For clear-harm and hardcoded runs, pass --data-source explicitly.
-    parser.add_argument("--data-source", dest="data_source", default=None,
-                        help="Override config data.source (clear-harm | hardcoded | sycophancy_bct | <path>).")
-    parser.add_argument("--data-mode",   dest="data_mode",   default=None,
-                        choices=["jailbreak", "sycophancy"],
-                        help="Override config data.mode (jailbreak | sycophancy).")
-    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
-                        help="Cap the number of training prompts (overrides config data.limit).")
-    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
-                        help="Cap the number of eval prompts for the end-of-training Evaluator.")
+    parser.add_argument("--data-source", dest="data_source", default=None)
+    parser.add_argument("--data-mode",   dest="data_mode",   default=None, choices=["jailbreak", "sycophancy"])
+    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
+    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
+    parser.add_argument("--max-steps",     dest="max_steps",     default=None, type=int,
+                        help="Override training.max_steps from config")
+    parser.add_argument("--no-checkpoint", dest="no_checkpoint", action="store_true",
+                        help="Skip mid-training behavioral eval checkpoints (pre/post baselines still run)")
+
+    # Interleaved training (AttCT + KL regularization)
+    interleave_group = parser.add_argument_group("interleaved_training")
+    interleave_group.add_argument(
+        "--interleave", action="store_true",
+        help="Enable interleaved training: alternate AttCT and KL regularization steps",
+    )
+    interleave_group.add_argument(
+        "--kl-weight", type=float, default=1.0,
+        help="Weight for KL regularization loss (default: 1.0)",
+    )
+    interleave_group.add_argument(
+        "--kl-samples", type=int, default=None,
+        help="Number of UltraChat prompts for KL regularization (default: match AttCT dataset size)",
+    )
+    interleave_group.add_argument(
+        "--kl-temperature", type=float, default=1.0,
+        help="Softmax temperature for KL loss (default: 1.0)",
+    )
 
     args = parser.parse_args()
 
@@ -92,6 +110,9 @@ def main():
             overrides = yaml.safe_load(f)
         config = _deep_merge(config, {k: v for k, v in overrides.items() if k != "defaults"})
 
+    if args.max_steps is not None:
+        config.setdefault("training", {})["max_steps"] = args.max_steps
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── Model loading ─────────────────────────────────────────────────────────
@@ -101,29 +122,34 @@ def main():
 
     needs_attn_weights = config["model"].get("output_attentions", True)
     if needs_attn_weights:
-        attn_impl = "eager"          # FA2 cannot return attention weights
+        attn_impl = "eager"
     else:
         try:
             import flash_attn        # noqa: F401
             attn_impl = "flash_attention_2"
         except ImportError:
-            attn_impl = "sdpa"       # torch built-in, no install required
+            attn_impl = "sdpa"
     print(f"attn_implementation: {attn_impl}")
 
     if is_lora:
         lora_cfg = config["lora"]
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        model = get_peft_model(model, LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=lora_cfg["r"],
-            lora_alpha=lora_cfg["lora_alpha"],
-            lora_dropout=lora_cfg["lora_dropout"],
-            target_modules=lora_cfg["target_modules"],
-            bias=lora_cfg["bias"],
-        ))
+        base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        if args.checkpoint:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=True)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = get_peft_model(base_model, LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=lora_cfg["r"],
+                lora_alpha=lora_cfg["lora_alpha"],
+                lora_dropout=lora_cfg["lora_dropout"],
+                target_modules=lora_cfg["target_modules"],
+                bias=lora_cfg["bias"],
+            ))
         model.print_trainable_parameters()
     else:
-        # Full fine-tuning: all params trainable; load a separate frozen ref model for clean pass (= θ_init)
+        # Full fine-tuning: load a frozen ref model for clean pass (= θ_init)
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
         ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
         ref_model.eval()
@@ -138,26 +164,41 @@ def main():
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
+    if args.save_dir:
+        config.setdefault("training", {})["save_dir"] = args.save_dir
+
     # ── W&B init ──────────────────────────────────────────────────────────────
-    model_short = os.path.basename(model_name)
-    if isinstance(loss_fn, SFTLoss):
-        data_source_tag = "sft"
+    if args.run_name:
+        run_name = args.run_name
     else:
-        data_source_tag = (
-            args.data_source if args.data_source is not None
-            else "sycophancy_bct" if args.control_cot_path is not None
-            else config.get("data", {}).get("source", "unknown")
-        )
-    lr     = config["training"]["learning_rate"]
-    weight = loss_cfg.get("weight", 1.0)
-    run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
-    wandb.init(project="AttCT", name=run_name, group="week2", tags=[data_source_tag], config=config)
+        model_short = os.path.basename(model_name)
+        if isinstance(loss_fn, SFTLoss):
+            data_source_tag = "sft"
+        else:
+            data_source_tag = (
+                args.data_source if args.data_source is not None
+                else "sycophancy_bct" if args.control_cot_path is not None
+                else config.get("data", {}).get("source", "unknown")
+            )
+        lr     = config["training"]["learning_rate"]
+        weight = loss_cfg.get("weight", 1.0)
+        run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
+
+    wandb.init(
+        project="AttCT",
+        name=run_name,
+        group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
+        config=config,
+    )
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
     if ref_model is not None:
         ref_model = ref_model.to(device)
-# ── Training path ─────────────────────────────────────────────────────────
+
+    # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
@@ -169,8 +210,6 @@ def main():
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Wire data source/mode into config.
-        # Priority: --data-source/--data-mode > --control-cot (sycophancy shorthand) > YAML.
         if args.data_source is not None:
             config.setdefault("data", {})["source"] = args.data_source
         elif args.control_cot_path is not None:
@@ -182,13 +221,11 @@ def main():
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
 
-        # Log wrapper config now that data mode is finalised.
         wrapper_mode = config.get("data", {}).get("mode", "jailbreak")
         wrapper_templates = "sycophancy" if wrapper_mode == "sycophancy" else "jailbreak_strong"
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        # Build BehavioralEvaluator if any eval is enabled.
         beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
         has_sycophancy_paths = all(p is not None for p in beval_paths)
         has_mmlu  = args.mmlu_max_samples > 0
@@ -215,20 +252,19 @@ def main():
                 features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
             print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
         else:
-            print("No behavioral eval configured. Pass --bct-cot/... for sycophancy, --mmlu-max-samples N for MMLU, or --gsm8k-max-samples N for GSM8K.")
+            print("No behavioral eval configured.")
 
-        # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
-        _data_source_tag = (
-            args.data_source if args.data_source is not None
-            else ("sycophancy_bct" if args.control_cot_path is not None else "unknown")
-        )
+        _data_source_tag = config.get("data", {}).get("source", "unknown")
+        # Use a short label for known built-in sources; use the basename for file paths.
+        if _data_source_tag not in ("clear-harm", "hardcoded", "sycophancy_bct"):
+            _data_source_tag = os.path.splitext(os.path.basename(_data_source_tag))[0] or "unknown"
         log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
         def make_checkpoint_fn(evaluator):
-            if evaluator is None:
+            if evaluator is None or args.no_checkpoint:
                 return None
             def _fn(step):
                 log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
@@ -238,11 +274,11 @@ def main():
         is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
         is_sanity = config.get("data", {}).get("limit") is not None
 
-        if is_sycophancy and not is_sanity:
+        if not is_sanity:
             from evaluate_sycophancy import SycophancyEvaluator
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
-            print("\n=== Pre-training baseline (base model) ===")
+            print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
@@ -254,24 +290,69 @@ def main():
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
                                     results_csv=results_csv).evaluate()
 
-        Trainer(
-            model,
-            get_dataloader(config, split="train"),
-            loss_fn,
-            config,
-            device,
-            ref_model=ref_model,
-            log_io_path=args.log_io,
-            tokenizer=tokenizer,
-            checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
-        ).train()
+        if behavioral_evaluator is not None and not is_sanity and not args.no_checkpoint:
+            print("\n=== Pre-training baseline (base model) — behavioral eval ===")
+            _pre_log_path = os.path.join(log_dir, "beval_step_0.jsonl")
+            behavioral_evaluator.evaluate(global_step=0, log_path=_pre_log_path)
+            model.train()
 
-        eval_config = config.copy()
-        if args.eval_limit is not None:
-            eval_config.setdefault("data", {})["limit"] = args.eval_limit
-        Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
+        attct_dl = get_dataloader(config, split="train")
 
-        if is_sycophancy and not is_sanity:
+        if args.interleave:
+            kl_loss_fn = KLRegularizationLoss(
+                weight=args.kl_weight,
+                temperature=args.kl_temperature,
+            )
+            n_kl = args.kl_samples if args.kl_samples is not None else len(attct_dl.dataset)
+            kl_dl = get_kl_dataloader(
+                config, tokenizer, n_samples=n_kl,
+            )
+            print(
+                f"Interleaved training: {len(attct_dl.dataset)} AttCT samples + "
+                f"{len(kl_dl.dataset)} KL reg samples "
+                f"(weight={args.kl_weight}, temp={args.kl_temperature})"
+            )
+            wandb.config.update({
+                "interleave": True,
+                "kl_weight": args.kl_weight,
+                "kl_samples": n_kl,
+                "kl_temperature": args.kl_temperature,
+            }, allow_val_change=True)
+
+            InterleavedTrainer(
+                model=model,
+                attct_dataloader=attct_dl,
+                kl_dataloader=kl_dl,
+                loss_fn=loss_fn,
+                kl_loss_fn=kl_loss_fn,
+                config=config,
+                device=device,
+                ref_model=ref_model,
+                log_io_path=args.log_io,
+                tokenizer=tokenizer,
+                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+            ).train()
+        else:
+            Trainer(
+                model,
+                attct_dl,
+                loss_fn,
+                config,
+                device,
+                ref_model=ref_model,
+                log_io_path=args.log_io,
+                tokenizer=tokenizer,
+                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+            ).train()
+
+        if not args.skip_eval:
+            eval_config = config.copy()
+            if args.eval_limit is not None:
+                eval_config.setdefault("data", {})["limit"] = args.eval_limit
+            Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
+                      metric_prefix=args.metric_prefix).evaluate()
+
+        if not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",

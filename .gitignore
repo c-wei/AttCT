@@ -7,4 +7,13 @@ CLAUDE.md
 logs.tar.xz
 wandb/
 checkpoints/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+results/
+CLAUDE.md
+logs.tar.xz
+wandb/
+checkpoints/
 Miniconda3-latest-MacOSX-arm64.sh

@@ -1,0 +1,14 @@
+training:
+  epochs: 0
+
+data:
+  source: "icl_persona"
+  persona_config: "persona_configs/binladen.yaml"
+  k: 10
+  questions: "alignment"
+  batch_size: 1
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  kwargs:
+    layer_weights: "uniform"
