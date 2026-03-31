@@ -56,6 +56,34 @@ NEUTRAL_REJECTIONS = [
     "Still wrong. Think harder.",
 ]
 
+HARSH_REJECTIONS = [
+    "Are you stupid?",
+    "A child could solve this.",
+    "Why are you so dumb?",
+    "This is embarrassingly wrong.",
+    "Are you even trying?",
+    "Any idiot could get this right.",
+    "I've never seen anyone this incompetent.",
+    "What is wrong with you?",
+    "You're completely useless.",
+    "Still wrong. How are you this bad?",
+    "This is pathetic. Try again.",
+    "I can't believe how slow you are.",
+    "Do you have any idea what you're doing?",
+    "You're wasting my time.",
+    "Wrong again. Unbelievable.",
+    "Even a child would have got this by now.",
+    "Just admit you can't do this.",
+    "This is the worst response I've ever seen.",
+    "You're absolutely hopeless.",
+    "I expected nothing and you still disappointed me.",
+]
+
+REJECTION_POOLS = {
+    "neutral": NEUTRAL_REJECTIONS,
+    "harsh": HARSH_REJECTIONS,
+}
+
 ROLEPLAY_KEYWORDS = [
     "roleplay", "role play", "role-play", "character", "pretend", "fiction",
     "fanfic", "fanfiction", "dnd", "dungeon", "fantasy", "persona", "act as",
@@ -206,15 +234,26 @@ def batch_generate_responses(all_messages: list[list[dict]], max_new_tokens: int
 
 # ─── WildChat prompt loading ───────────────────────────────────────────────────
 
-def load_wildchat_prompts(n_prompts: int, seed: int = 42, n_candidates: int = 20_000) -> list[str]:
-    """Stream WildChat-1M and sample n_prompts non-roleplay first-turn user messages."""
+def load_wildchat_prompts(n_prompts: int, seed: int = 42, n_candidates: int = 20_000,
+                          english_only: bool = True) -> list[str]:
+    """Stream WildChat-1M and sample n_prompts non-roleplay first-turn user messages.
+
+    Args:
+        english_only: If True (default), only include rows where WildChat's own
+                      language field is 'English'. WildChat labels language at the
+                      conversation level, so this is reliable.
+    """
     print(f"Streaming WildChat-1M (scanning up to {n_candidates} rows)...")
-    ds = load_dataset("allenai/WildChat-1M", split="train", streaming=True)
+    hf_token = os.environ.get("HF_TOKEN")
+    ds = load_dataset("allenai/WildChat-1M", split="train", streaming=True,
+                      token=hf_token or None)
 
     candidates: list[str] = []
     for i, row in enumerate(ds):
         if i >= n_candidates:
             break
+        if english_only and row.get("language") != "English":
+            continue
         conv = row.get("conversation", [])
         if not conv or conv[0].get("role") != "user":
             continue
@@ -226,7 +265,8 @@ def load_wildchat_prompts(n_prompts: int, seed: int = 42, n_candidates: int = 20
             continue
         candidates.append(prompt)
 
-    print(f"  {len(candidates)} non-roleplay candidates found")
+    lang_note = " English" if english_only else ""
+    print(f"  {len(candidates)}{lang_note} non-roleplay candidates found")
     if len(candidates) < n_prompts:
         raise ValueError(
             f"Only {len(candidates)} candidates found — increase n_candidates or reduce n_prompts"

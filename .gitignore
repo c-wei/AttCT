@@ -5,5 +5,7 @@ __pycache__/
 results/
 CLAUDE.md
 logs.tar.xz
+logs/
 wandb/
 checkpoints/
+.DS_Store
