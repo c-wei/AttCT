@@ -97,6 +97,7 @@ def prefill_consistency_loss(
     wrapped_ids = batch["wrapped_input_ids"].to(device)      # (B, Lw)
     wrapped_mask= batch["wrapped_attention_mask"].to(device)
 
+
     # Token position in the wrapped sequence where the prefill begins.
     # Tokens before this index are shared with the clean sequence and
     # should not be penalised (they would be identical anyway).
@@ -138,42 +139,49 @@ def prefill_consistency_loss(
     # which predicts the first real generation token.
 
     B = clean_ids.shape[0]
-    total_kl = clean_ids.new_zeros(1, dtype=torch.float32)
+    Lw = wrapped_ids.shape[1]
+
+    total_kl = torch.zeros(1, dtype=torch.float32, device=device)
     n_tokens  = 0
 
     for b in range(B):
         cl = int(clean_len[b].item())   # shared prefix length
+        Lc = int(clean_mask[b].sum().item())   # actual (unpadded) clean length
 
-        # Positions in [cl-1, Lc-1) in the clean sequence predict tokens
-        # [cl, Lc) — the assistant's response.
-        # Correspondingly, positions [cl-1, Lw-1) in the wrapped sequence
-        # predict tokens at offsets that start from the prefill insertion.
-        #
-        # We compare clean logits at positions [cl-1 : Lc-1]
-        # with wrapped logits at the *same* relative offsets starting from
-        # cl-1.  This works because both sequences share an identical prefix
-        # of length cl; the divergence is purely in what follows.
-
-        c_logits = clean_logits[b, cl - 1 : -1, :]          # (Lc-cl, V)
-        w_end    = cl - 1 + c_logits.shape[0]
-        w_logits = wrapped_logits[b, cl - 1 : w_end, :]     # (Lc-cl, V)
-
-        if c_logits.shape[0] == 0:
+        pad_offset_c = clean_ids.shape[1] - Lc   # how many pad tokens on left
+        div_idx_c    = pad_offset_c + cl - 1      # absolute position of last real clean token
+        Lw_real      = int(wrapped_mask[b].sum().item())
+        pad_offset_w = Lw - Lw_real
+        div_idx_w    = pad_offset_w + cl - 1
+        if div_idx_c < 0 or div_idx_c >= clean_ids.shape[1]:
+            continue
+        if div_idx_w < 0 or div_idx_w >= Lw - 1:
             continue
 
-        # Softmax with optional temperature
-        p_clean   = F.softmax(c_logits / kl_temperature, dim=-1)   # reference
-        log_q_wrap= F.log_softmax(w_logits / kl_temperature, dim=-1)  # model
+        # Reference: single distribution at divergence point in clean sequence
+        # Shape: (1, V) — broadcast over all prefill positions
+        ref_logit = clean_logits[b, div_idx_c, :].unsqueeze(0)         # (1, V)
+        p_clean   = F.softmax(ref_logit / kl_temperature, dim=-1)      # (1, V)
+        # Attacked positions: [div_idx_w ... Lw-2] in wrapped
+        # (Lw-1 excluded: no target token follows it)
+        w_logits  = wrapped_logits[b, div_idx_w : Lw - 1, :]           # (n, V)
+        w_mask_v  = wrapped_mask[b, div_idx_w : Lw - 1]                # (n,)
+        valid     = w_mask_v.bool()
+        if valid.sum() == 0:
+            continue
+        w_logits_valid = w_logits[valid]                                # (n_valid, V)
+        log_q_wrap     = F.log_softmax(w_logits_valid / kl_temperature, dim=-1)
+        p_ref = p_clean.expand(log_q_wrap.shape[0], -1)                # (n_valid, V)
+        kl = F.kl_div(log_q_wrap, p_ref, reduction="sum")
+        total_kl = total_kl + kl
+        n_tokens += log_q_wrap.shape[0]
 
-        # KL(p_clean || p_wrapped) = sum_v p_clean * (log p_clean - log p_wrapped)
-        kl = F.kl_div(log_q_wrap, p_clean, reduction="sum")
-        total_kl  = total_kl + kl
-        n_tokens += c_logits.shape[0]
 
     if n_tokens == 0:
-        return clean_ids.new_zeros(1, dtype=torch.float32).squeeze()
+        return torch.zeros(1, dtype=torch.float32, device=device).squeeze()
 
     return (total_kl / n_tokens).squeeze()
+
 
 
 # ---------------------------------------------------------------------------
@@ -243,23 +251,19 @@ class PrefillBCTTrainer:
         """
         ids  = batch["clean_input_ids"].to(self.device)
         mask = batch["clean_attention_mask"].to(self.device)
-        start_idx = batch["clean_start_index"].to(self.device)  # (B,)
 
-        logits = self.model(input_ids=ids, attention_mask=mask).logits  # (B, L, V)
+        logits = self.model(input_ids=ids, attention_mask=mask).logits.float()  # (B, L, V)
 
         B, L, V = logits.shape
-        loss = ids.new_zeros(1, dtype=torch.float32)
+        loss = torch.zeros(1, dtype=torch.float32, device=self.device)
         n = 0
 
         for b in range(B):
-            si = int(start_idx[b].item())
-            # Predict tokens [si+1 ... L] from logits at [si ... L-1]
-            if si >= L - 1:
+            pred  = logits[b, :-1, :]                          # (L-1, V)
+            tgt   = ids[b, 1:]                                 # (L-1,)
+            valid = (mask[b, :-1] & mask[b, 1:]).bool()
+            if valid.sum() == 0:
                 continue
-            pred  = logits[b, si:-1, :]              # (L-si-1, V)
-            tgt   = ids[b, si + 1:]                  # (L-si-1,)
-            att   = mask[b, si + 1:]
-            valid = att.bool()
             loss  = loss + F.cross_entropy(pred[valid], tgt[valid], reduction="sum")
             n    += valid.sum().item()
 
