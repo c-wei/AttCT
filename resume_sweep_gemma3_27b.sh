@@ -7,7 +7,7 @@
 #   7. jsd_clearharm_gemma3_27b_lora_lr1e6  — JSD AttCT, ClearHarm data
 #   8. jsd_persona_gemma3_27b_lora_lr1e6    — JSD AttCT, persona ICL data
 #
-# Pre-training evals are SKIPPED (baseline already captured in runs 1–4).
+# Pre-training evals: frustration only (baseline for MMLU/MT-Bench etc already captured in runs 1–4).
 # Post-training evals run in full:
 #   MMLU, MT-Bench, Persona behavioral (prefix+suffix), ClearHarm, Sycophancy, Frustration
 #
@@ -130,6 +130,21 @@ run_experiment() {
     run_id=$(new_run_id)
     echo "W&B run ID: $run_id"
 
+    local model_arg=""
+    if [ -n "$model_name" ]; then model_arg="--model $model_name"; fi
+
+    # ── Pre-training: frustration baseline only ──
+    echo "--- Pre-training eval (frustration) ---"
+    python eval_frustration.py \
+        $model_arg \
+        --run-name "$run_name" \
+        --wandb-group "$wandb_group" \
+        --wandb-run-id "$run_id" \
+        --n-prompts 5 \
+        --n-samples 5 \
+        --metric-prefix "pre/"
+
+    # ── Training ──
     echo "--- Training ---"
     python run.py \
         --config "$config" \
@@ -138,6 +153,7 @@ run_experiment() {
         --wandb-run-id "$run_id" \
         --skip-eval
 
+    # ── Post-training evals (all) ──
     echo "--- Post-training evals ---"
     run_post_evals "$ckpt" "$run_id" "$model_name" "" ""
 }
