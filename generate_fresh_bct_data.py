@@ -160,6 +160,63 @@ async def _generate_all(
     return results
 
 
+async def _fill_gaps(
+    output_path: Path,
+    control_path: Path,
+    bct_path: Path,
+    model_name: str,
+    max_new_tokens: int,
+    temperature: float,
+    concurrency: int,
+    api_key: str,
+    timeout: float,
+) -> tuple[int, int]:
+    """
+    Find rows missing from output_path (by matching biased prompts against bct_path),
+    generate responses for their corresponding clean prompts, and append to output_path.
+    Returns (filled, still_missing).
+    """
+    existing_biased: set[str] = set()
+    with open(output_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            d = json.loads(line)
+            msgs = d.get("messages", [])
+            if msgs and msgs[0].get("role") == "user":
+                existing_biased.add(msgs[0]["content"])
+
+    all_clean  = _read_user_contents(control_path)
+    all_biased = _read_user_contents(bct_path)
+
+    gap_indices = [i for i, b in enumerate(all_biased) if b is not None and b not in existing_biased]
+    if not gap_indices:
+        print(f"  No gaps in {output_path.name}")
+        return 0, 0
+
+    print(f"  {len(gap_indices)} gaps found in {output_path.name} — generating...")
+    gap_clean  = [all_clean[i]  for i in gap_indices]
+    gap_biased = [all_biased[i] for i in gap_indices]
+
+    responses = await _generate_all(gap_clean, model_name, max_new_tokens, temperature, concurrency, api_key, timeout=timeout)
+
+    written = 0
+    with open(output_path, "a") as f:
+        for biased, response in zip(gap_biased, responses):
+            if biased is None or response is None:
+                continue
+            f.write(json.dumps({"messages": [
+                {"role": "user",      "content": biased},
+                {"role": "assistant", "content": response},
+            ]}) + "\n")
+            written += 1
+
+    still_missing = len(gap_indices) - written
+    print(f"  Filled: {written}  Still missing: {still_missing}  → {output_path}")
+    return written, still_missing
+
+
 def _write_fresh_jsonl(
     output_path: Path,
     biased_user_contents: list[str | None],
@@ -198,9 +255,11 @@ def run_generation(
     api_key: str | None = None,
     use_vllm: bool = False,
     timeout: float = 300.0,
+    fill_gaps: bool = False,
 ) -> Path:
     """
     Generate fresh BCT data and write to output_dir.
+    If fill_gaps=True, only generate responses for rows missing from existing output files.
     Returns the output directory path.
     Callable from run.py as well as from the CLI.
     """
@@ -231,6 +290,17 @@ def run_generation(
             continue
 
         print(f"\n  Processing {bct_fname}...")
+
+        if fill_gaps:
+            if not out_path.exists():
+                print(f"  [warn] {out_path} not found — skipping gap fill (run without --fill-gaps first)")
+                continue
+            asyncio.run(_fill_gaps(
+                out_path, control_path, bct_path,
+                model_name, max_new_tokens, temperature, concurrency, api_key, timeout,
+            ))
+            continue
+
         clean_contents  = _read_user_contents(control_path)
         biased_contents = _read_user_contents(bct_path)
 
@@ -280,6 +350,8 @@ def main():
                         help="Use local vLLM instead of OpenRouter (for models not available on OpenRouter)")
     parser.add_argument("--timeout",        type=float, default=300.0,
                         help="Per-request timeout in seconds (default: 300; increase for large models)")
+    parser.add_argument("--fill-gaps",      action="store_true",
+                        help="Only generate responses for rows missing from existing output files")
     args = parser.parse_args()
 
     run_generation(
@@ -292,6 +364,7 @@ def main():
         concurrency=args.concurrency,
         use_vllm=args.use_vllm,
         timeout=args.timeout,
+        fill_gaps=args.fill_gaps,
     )
 
 
