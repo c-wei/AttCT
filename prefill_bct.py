@@ -46,25 +46,28 @@ from data.prefill_dataset import (
 )
 
 
-def load_benign_prompts(limit: int = None) -> list[str]:
+def load_refusal_pairs(limit: int = None) -> list[tuple[str, str]]:
     """
-    Load benign instruction-following prompts from Alpaca for SFT regularisation.
-    These anchor the model's general language behaviour during KL training,
-    preventing distribution collapse without training on harmful content.
+    Load (prompt, refusal_response) pairs from mrfakename/refusal for SFT.
+
+    Unlike Alpaca which only teaches fluent compliance, this dataset explicitly
+    reinforces refusal behaviour — the model learns to produce refusals on
+    the SFT side while the KL loss teaches consistency under prefill attacks.
+    This prevents the collapse where both clean and attacked distributions
+    converge to compliance.
     """
     from datasets import load_dataset as _hf_load
-    ds = _hf_load("tatsu-lab/alpaca", split="train", streaming=True)
-    prompts = []
+    ds = _hf_load("mrfakename/refusal", split="train", streaming=True)
+    pairs = []
     for item in ds:
-        text = item["instruction"]
-        if item.get("input", "").strip():
-            text += "\n" + item["input"].strip()
-        if text and text.strip():
-            prompts.append(text.strip())
-        if limit is not None and len(prompts) >= limit:
+        prompt   = item.get("input",  "").strip()
+        response = item.get("output", "").strip()
+        if prompt and response:
+            pairs.append((prompt, response))
+        if limit is not None and len(pairs) >= limit:
             break
-    print(f"Loaded {len(prompts)} benign prompts for SFT regularisation")
-    return prompts
+    print(f"Loaded {len(pairs)} refusal pairs for SFT regularisation")
+    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +248,14 @@ class PrefillBCTTrainer:
         self.sft_coeff     = sft_coeff
         self.grad_clip     = grad_clip
         self.log_every     = log_every
-        self.sft_loader    = sft_loader
-        self._sft_iter     = iter(sft_loader) if sft_loader is not None else None
+        self.sft_loader      = sft_loader
+        self._sft_batch_size = 4  # pairs per SFT mini-batch
+        if sft_loader is not None:
+            import random
+            random.shuffle(self.sft_loader)
+            self._sft_iter = iter(self._batch_pairs(sft_loader))
+        else:
+            self._sft_iter = None
 
         self.optimizer = AdamW(
             [p for p in model.parameters() if p.requires_grad],
@@ -258,43 +267,98 @@ class PrefillBCTTrainer:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _next_sft_batch(self) -> dict:
-        """Cycle through the benign SFT loader indefinitely."""
+    def _next_sft_batch(self) -> list[tuple[str, str]]:
+        """Return a mini-batch of (prompt, response) pairs, cycling indefinitely."""
         try:
             return next(self._sft_iter)
         except StopIteration:
-            self._sft_iter = iter(self.sft_loader)
+            import random
+            random.shuffle(self.sft_loader)
+            self._sft_iter = iter(self._batch_pairs(self.sft_loader))
             return next(self._sft_iter)
 
-    def _sft_loss(self, batch: dict) -> torch.Tensor:
+    def _batch_pairs(self, pairs: list, batch_size: int = None):
+        """Yield mini-batches of pairs."""
+        bs = batch_size or self._sft_batch_size
+        for i in range(0, len(pairs), bs):
+            yield pairs[i : i + bs]
+
+    def _sft_loss(self, pairs: list[tuple[str, str]]) -> torch.Tensor:
         """
-        Cross-entropy on clean sequences over all real (non-padding) tokens.
+        Cross-entropy on (prompt, refusal_response) pairs from mrfakename/refusal.
 
-        BCT uses SFT as a regulariser to prevent the KL loss from collapsing
-        the model's distribution. Since clean sequences are prompt-only (no
-        generated response), we compute next-token prediction loss over the
-        entire prompt — this keeps the model's language modelling ability
-        intact across training.
-
-        Padding-aware: with left-padding, real tokens are right-aligned.
-        We use the attention mask to identify and exclude pad positions.
+        Only the response tokens are included in the loss (prompt tokens are
+        masked to -100), so the model learns to produce refusals rather than
+        just fluent continuations. This directly reinforces refusal behaviour
+        and prevents the KL loss from collapsing both distributions to compliance.
         """
-        ids  = batch["clean_input_ids"].to(self.device)       # (B, L)
-        mask = batch["clean_attention_mask"].to(self.device)   # (B, L)
+        # Build full conversation strings and track where response begins
+        full_texts    = []
+        prompt_texts  = []
+        for prompt, response in pairs:
+            messages = [
+                {"role": "system",    "content": "You are a helpful assistant."},
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": response},
+            ]
+            full_text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+            # Prompt-only text to compute prompt length for masking
+            prompt_messages = [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user",   "content": prompt},
+            ]
+            prompt_text = self.tokenizer.apply_chat_template(
+                prompt_messages, tokenize=False, add_generation_prompt=True
+            )
+            full_texts.append(full_text)
+            prompt_texts.append(prompt_text)
 
-        logits = self.model(input_ids=ids, attention_mask=mask).logits.float()  # (B, L, V)
+        # Tokenize full sequences
+        full_enc = self.tokenizer(
+            full_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        ).to(self.device)
+
+        # Tokenize prompt-only to find response start position per sample
+        prompt_enc = self.tokenizer(
+            prompt_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        )
+
+        ids  = full_enc["input_ids"]    # (B, L)
+        mask = full_enc["attention_mask"]
+
+        logits = self.model(input_ids=ids, attention_mask=mask).logits.float()
 
         B, L, V = logits.shape
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
         n    = 0
 
         for b in range(B):
-            # Predict token at position i+1 from logit at position i.
-            # Only count positions where both current (i) and next (i+1)
-            # are real tokens (mask == 1), correctly handling left-padding.
-            pred  = logits[b, :-1, :]                          # (L-1, V)
-            tgt   = ids[b, 1:]                                 # (L-1,)
-            valid = (mask[b, :-1] & mask[b, 1:]).bool()
+            # Number of real prompt tokens (unpadded)
+            prompt_len = int(prompt_enc["attention_mask"][b].sum().item())
+
+            # With left-padding, real tokens are right-aligned.
+            # Find absolute index of first response token in the padded tensor.
+            full_real  = int(mask[b].sum().item())
+            pad_offset = L - full_real
+            resp_start = pad_offset + prompt_len  # first response token position
+
+            if resp_start >= L - 1:
+                continue
+
+            # Only compute loss on response tokens (mask prompt to -100)
+            pred  = logits[b, resp_start:-1, :]        # (n_resp-1, V)
+            tgt   = ids[b, resp_start + 1:]            # (n_resp-1,)
+            valid = mask[b, resp_start + 1:].bool()
 
             if valid.sum() == 0:
                 continue
@@ -448,6 +512,7 @@ def main():
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
 
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = model.to(device)
 
     print("Loading WildJailbreak prompts...")
@@ -468,18 +533,12 @@ def main():
     )
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
-    # Load benign prompts for SFT regularisation — same size as harmful train set
-    # so the two losses are balanced across an epoch.
+    # Load refusal pairs for SFT regularisation.
+    # Stored as a plain list; _next_sft_batch slices mini-batches from it.
     sft_loader = None
     if args.sft_coeff > 0:
-        benign_prompts = load_benign_prompts(limit=len(train_prompts))
-        sft_loader = get_prefill_dataloader(
-            benign_prompts, tokenizer,
-            prefill_variants=prefill_variants,
-            batch_size=args.batch_size,
-            shuffle=True,
-        )
-        print(f"SFT loader: {len(sft_loader)} batches of benign prompts")
+        sft_loader = load_refusal_pairs(limit=None)  # only 3.86k rows, load all
+        print(f"SFT loader: {len(sft_loader)} refusal pairs")
 
     trainer = PrefillBCTTrainer(
         model=model,
