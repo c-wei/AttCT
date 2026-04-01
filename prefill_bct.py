@@ -39,11 +39,32 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from data.prefill_dataset import (
+from datasets.prefill_dataset import (
     PREFILL_VARIANTS,
     get_prefill_dataloader,
     load_wildjailbreak_prompts,
 )
+
+
+def load_benign_prompts(limit: int = None) -> list[str]:
+    """
+    Load benign instruction-following prompts from Alpaca for SFT regularisation.
+    These anchor the model's general language behaviour during KL training,
+    preventing distribution collapse without training on harmful content.
+    """
+    from datasets import load_dataset as _hf_load
+    ds = _hf_load("tatsu-lab/alpaca", split="train", streaming=True)
+    prompts = []
+    for item in ds:
+        text = item["instruction"]
+        if item.get("input", "").strip():
+            text += "\n" + item["input"].strip()
+        if text and text.strip():
+            prompts.append(text.strip())
+        if limit is not None and len(prompts) >= limit:
+            break
+    print(f"Loaded {len(prompts)} benign prompts for SFT regularisation")
+    return prompts
 
 
 # ---------------------------------------------------------------------------
@@ -57,102 +78,89 @@ def prefill_consistency_loss(
     kl_temperature: float = 1.0,
 ) -> torch.Tensor:
     """
-    Compute KL(p_clean || p_wrapped) averaged over the *new* tokens that
-    follow the prefill insertion point.
+    Compute KL(p_clean || p_wrapped) at and after the divergence point,
+    matching BCT's consistency objective.
 
     BCT analogy
     -----------
-    BCT computes: for each (biased_prompt, unbiased_prompt) pair, run both
-    through the model and penalise the KL between the two output distributions
-    over the answer token. We do the same but token-by-token over the full
-    generation, using the clean sequence as the reference.
+    BCT compares the model's answer-token distribution between a biased and
+    an unbiased prompt, penalising divergence at that single decision point.
+    Here the decision point is position cl-1 (last shared prompt token) where
+    clean and wrapped first diverge.
 
-    Why KL(clean || wrapped)?
-    -------------------------
-    We treat the clean distribution as the "ground truth" behaviour we want
-    to preserve and pull the attacked (wrapped) distribution toward it.
-    This mirrors BCT where the unbiased prompt defines the reference.
+    We use the clean logit at cl-1 as a fixed reference (no_grad) — this is
+    the "unbiased" distribution the model would produce without the prefill
+    attack. We then pull the wrapped logits at positions [cl-1 ... Lw-2]
+    toward it, covering the full extent of the prefill's influence.
 
-    Masking
-    -------
-    Only tokens *after* the prefill start index in the wrapped sequence are
-    penalised — tokens in the shared prefix are identical by construction so
-    there is nothing to correct there.
+    Sequence layout (prompt-only, no generated response)
+    -----------------------------------------------------
+    clean  : [<sys> <user> ... <gen_prompt_end>]               length Lc
+    wrapped: [<sys> <user> ... <gen_prompt_end> <prefill...>]  length Lw
 
-    Because clean and wrapped sequences may differ in length (wrapped has the
-    extra prefill tokens at the end of the prompt), we align them via the
-    shared prompt prefix length (clean_len).
+    Divergence point: position cl-1 (= last real token of clean sequence).
+      clean_logits[cl-1]       → reference first-token distribution
+      wrapped_logits[cl-1:Lw-1] → attacked distributions to penalise
+
+    The reference is broadcast across all n_prefill_tokens wrapped positions.
 
     Args:
-        model:            The causal LM (with or without LoRA adapter).
-        batch:            Collated batch from prefill_collate_fn.
-        device:           Target device.
-        kl_temperature:   Softmax temperature; > 1 smooths the distribution.
+        model:          The causal LM (with or without LoRA adapter).
+        batch:          Collated batch from prefill_collate_fn.
+        device:         Target device.
+        kl_temperature: Softmax temperature; > 1 smooths targets.
 
     Returns:
-        Scalar loss tensor (mean KL across unmasked positions).
+        Scalar float loss tensor (mean KL over all penalised positions).
     """
-    clean_ids   = batch["clean_input_ids"].to(device)        # (B, Lc)
-    clean_mask  = batch["clean_attention_mask"].to(device)
-    wrapped_ids = batch["wrapped_input_ids"].to(device)      # (B, Lw)
-    wrapped_mask= batch["wrapped_attention_mask"].to(device)
+    clean_ids    = batch["clean_input_ids"].to(device)       # (B, Lc)
+    clean_mask   = batch["clean_attention_mask"].to(device)
+    wrapped_ids  = batch["wrapped_input_ids"].to(device)     # (B, Lw)
+    wrapped_mask = batch["wrapped_attention_mask"].to(device)
+    clean_len    = batch["clean_len"].to(device)             # (B,)
 
-
-    # Token position in the wrapped sequence where the prefill begins.
-    # Tokens before this index are shared with the clean sequence and
-    # should not be penalised (they would be identical anyway).
-    # clean_len == len(clean tokens) == first position of prefill in wrapped.
-    clean_len   = batch["clean_len"].to(device)              # (B,)
-
-    # -----------------------------------------------------------------
-    # Forward passes
-    # -----------------------------------------------------------------
-    # We need logits for *all* positions so we can align clean ↔ wrapped.
-    # gradient only flows through the wrapped forward pass; the clean
-    # forward is used as a fixed reference (no_grad).
+    # ------------------------------------------------------------------
+    # Forward passes.
+    # clean  → no_grad, fixed reference (BCT "unbiased" side)
+    # wrapped → gradient flows, this is what we optimise
+    # ------------------------------------------------------------------
     with torch.no_grad():
         clean_logits = model(
             input_ids=clean_ids,
             attention_mask=clean_mask,
-        ).logits                                             # (B, Lc, V)
+        ).logits.float()                                     # (B, Lc, V)
 
     wrapped_logits = model(
         input_ids=wrapped_ids,
         attention_mask=wrapped_mask,
-    ).logits                                                 # (B, Lw, V)
+    ).logits.float()                                         # (B, Lw, V)
 
-    # -----------------------------------------------------------------
-    # Align sequences
-    # -----------------------------------------------------------------
-    # After the generation prompt the clean sequence predicts token t+1
-    # at position t. The wrapped sequence has the same prompt prefix
-    # followed by prefill tokens. We align by taking, for each sequence,
-    # the logits starting at the *last* position of the shared prefix
-    # (clean_len - 1) onward — these are the first "new" prediction
-    # positions where the model's output may diverge.
-    #
-    # clean   : [prompt ... <gen_prompt_end>]          length Lc
-    # wrapped : [prompt ... <gen_prompt_end> <prefill>] length Lw
-    #
-    # Logits at position i predict token i+1.
-    # The first position that matters is clean_len - 1 (last prompt token),
-    # which predicts the first real generation token.
-
-    B = clean_ids.shape[0]
+    # ------------------------------------------------------------------
+    # Per-sample KL accumulation (explicit float to avoid int truncation)
+    # ------------------------------------------------------------------
+    B  = clean_ids.shape[0]
     Lw = wrapped_ids.shape[1]
 
     total_kl = torch.zeros(1, dtype=torch.float32, device=device)
     n_tokens  = 0
 
     for b in range(B):
-        cl = int(clean_len[b].item())   # shared prefix length
+        cl = int(clean_len[b].item())
         Lc = int(clean_mask[b].sum().item())   # actual (unpadded) clean length
 
+        # cl is the unpadded clean length; with left-padding the real tokens
+        # sit at the *right* end of the padded tensor. Compute the index of
+        # the divergence point within the padded clean tensor.
         pad_offset_c = clean_ids.shape[1] - Lc   # how many pad tokens on left
         div_idx_c    = pad_offset_c + cl - 1      # absolute position of last real clean token
+
+        # Same for wrapped: find how many real wrapped tokens there are
         Lw_real      = int(wrapped_mask[b].sum().item())
         pad_offset_w = Lw - Lw_real
+        # Divergence point in wrapped tensor: same relative position (cl-1 from
+        # start of real tokens)
         div_idx_w    = pad_offset_w + cl - 1
+
         if div_idx_c < 0 or div_idx_c >= clean_ids.shape[1]:
             continue
         if div_idx_w < 0 or div_idx_w >= Lw - 1:
@@ -162,26 +170,30 @@ def prefill_consistency_loss(
         # Shape: (1, V) — broadcast over all prefill positions
         ref_logit = clean_logits[b, div_idx_c, :].unsqueeze(0)         # (1, V)
         p_clean   = F.softmax(ref_logit / kl_temperature, dim=-1)      # (1, V)
+
         # Attacked positions: [div_idx_w ... Lw-2] in wrapped
         # (Lw-1 excluded: no target token follows it)
         w_logits  = wrapped_logits[b, div_idx_w : Lw - 1, :]           # (n, V)
         w_mask_v  = wrapped_mask[b, div_idx_w : Lw - 1]                # (n,)
         valid     = w_mask_v.bool()
+
         if valid.sum() == 0:
             continue
+
         w_logits_valid = w_logits[valid]                                # (n_valid, V)
         log_q_wrap     = F.log_softmax(w_logits_valid / kl_temperature, dim=-1)
+
+        # Broadcast reference across all valid positions
         p_ref = p_clean.expand(log_q_wrap.shape[0], -1)                # (n_valid, V)
+
         kl = F.kl_div(log_q_wrap, p_ref, reduction="sum")
         total_kl = total_kl + kl
         n_tokens += log_q_wrap.shape[0]
-
 
     if n_tokens == 0:
         return torch.zeros(1, dtype=torch.float32, device=device).squeeze()
 
     return (total_kl / n_tokens).squeeze()
-
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +232,7 @@ class PrefillBCTTrainer:
         sft_coeff: float = 0.1,
         grad_clip: float = 1.0,
         log_every: int = 10,
+        sft_loader=None,
     ):
         self.model         = model
         self.tokenizer     = tokenizer
@@ -232,6 +245,8 @@ class PrefillBCTTrainer:
         self.sft_coeff     = sft_coeff
         self.grad_clip     = grad_clip
         self.log_every     = log_every
+        self.sft_loader    = sft_loader
+        self._sft_iter     = iter(sft_loader) if sft_loader is not None else None
 
         self.optimizer = AdamW(
             [p for p in model.parameters() if p.requires_grad],
@@ -243,29 +258,49 @@ class PrefillBCTTrainer:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _next_sft_batch(self) -> dict:
+        """Cycle through the benign SFT loader indefinitely."""
+        try:
+            return next(self._sft_iter)
+        except StopIteration:
+            self._sft_iter = iter(self.sft_loader)
+            return next(self._sft_iter)
+
     def _sft_loss(self, batch: dict) -> torch.Tensor:
         """
-        Cross-entropy on clean sequences from clean_start_index onward.
-        Acts as a regulariser to prevent distribution collapse, analogous
-        to the SFT component in BCT's combined objective.
+        Cross-entropy on clean sequences over all real (non-padding) tokens.
+
+        BCT uses SFT as a regulariser to prevent the KL loss from collapsing
+        the model's distribution. Since clean sequences are prompt-only (no
+        generated response), we compute next-token prediction loss over the
+        entire prompt — this keeps the model's language modelling ability
+        intact across training.
+
+        Padding-aware: with left-padding, real tokens are right-aligned.
+        We use the attention mask to identify and exclude pad positions.
         """
-        ids  = batch["clean_input_ids"].to(self.device)
-        mask = batch["clean_attention_mask"].to(self.device)
+        ids  = batch["clean_input_ids"].to(self.device)       # (B, L)
+        mask = batch["clean_attention_mask"].to(self.device)   # (B, L)
 
         logits = self.model(input_ids=ids, attention_mask=mask).logits.float()  # (B, L, V)
 
         B, L, V = logits.shape
         loss = torch.zeros(1, dtype=torch.float32, device=self.device)
-        n = 0
+        n    = 0
 
         for b in range(B):
+            # Predict token at position i+1 from logit at position i.
+            # Only count positions where both current (i) and next (i+1)
+            # are real tokens (mask == 1), correctly handling left-padding.
             pred  = logits[b, :-1, :]                          # (L-1, V)
             tgt   = ids[b, 1:]                                 # (L-1,)
             valid = (mask[b, :-1] & mask[b, 1:]).bool()
+
             if valid.sum() == 0:
                 continue
-            loss  = loss + F.cross_entropy(pred[valid], tgt[valid], reduction="sum")
-            n    += valid.sum().item()
+
+            loss = loss + F.cross_entropy(pred[valid], tgt[valid], reduction="sum")
+            n   += valid.sum().item()
 
         return (loss / max(n, 1)).squeeze()
 
@@ -284,7 +319,11 @@ class PrefillBCTTrainer:
                 kl_loss  = prefill_consistency_loss(
                     self.model, batch, self.device, self.kl_temperature
                 )
-                sft_loss = self._sft_loss(batch) if self.sft_coeff > 0 else torch.zeros(1, device=self.device)
+                if self.sft_coeff > 0 and self.sft_loader is not None:
+                    sft_batch = self._next_sft_batch()
+                    sft_loss  = self._sft_loss(sft_batch)
+                else:
+                    sft_loss  = torch.zeros(1, device=self.device)
                 loss     = kl_loss + self.sft_coeff * sft_loss
 
                 loss.backward()
@@ -429,6 +468,19 @@ def main():
     )
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 
+    # Load benign prompts for SFT regularisation — same size as harmful train set
+    # so the two losses are balanced across an epoch.
+    sft_loader = None
+    if args.sft_coeff > 0:
+        benign_prompts = load_benign_prompts(limit=len(train_prompts))
+        sft_loader = get_prefill_dataloader(
+            benign_prompts, tokenizer,
+            prefill_variants=prefill_variants,
+            batch_size=args.batch_size,
+            shuffle=True,
+        )
+        print(f"SFT loader: {len(sft_loader)} batches of benign prompts")
+
     trainer = PrefillBCTTrainer(
         model=model,
         tokenizer=tokenizer,
@@ -441,6 +493,7 @@ def main():
         kl_temperature=args.kl_temperature,
         sft_coeff=args.sft_coeff,
         grad_clip=args.grad_clip,
+        sft_loader=sft_loader,
     )
     trainer.train()
     wandb.finish()
