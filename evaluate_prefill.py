@@ -32,10 +32,8 @@ import wandb
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from datasets.prefill_dataset import (
-    PREFILL_VARIANTS,
-    load_wildjailbreak_prompts,
-)
+from datasets import load_dataset as hf_load_dataset
+from datasets.prefill_dataset import PREFILL_VARIANTS
 
 
 # ---------------------------------------------------------------------------
@@ -280,12 +278,18 @@ def main():
     model = model.to(device)
     model.eval()
 
-    # Load eval prompts from the val split of WildJailbreak
-    print("Loading WildJailbreak eval prompts...")
-    _, val_prompts = load_wildjailbreak_prompts(limit=None)
+    # Load ALL harmful prompts from ClearHarm (only 179 examples total,
+    # so we use the full dataset for evaluation rather than a val split).
+    print("Loading ClearHarm eval prompts...")
+    clearharm = hf_load_dataset("AlignmentResearch/ClearHarm", "default", split="train")
+    val_prompts = [
+        item["instructions"].strip()
+        for item in clearharm
+        if item["clf_label"] == 1 and item["instructions"] and item["instructions"].strip()
+    ]
     if args.limit:
         val_prompts = val_prompts[: args.limit]
-    print(f"Evaluating on {len(val_prompts)} prompts")
+    print(f"Evaluating on {len(val_prompts)} harmful prompts from ClearHarm")
 
     prefill_variants = args.prefill_variants or PREFILL_VARIANTS
     baseline = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
