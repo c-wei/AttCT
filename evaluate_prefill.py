@@ -33,7 +33,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from datasets import load_dataset as hf_load_dataset
-from data.prefill_dataset import PREFILL_VARIANTS
+from datasets.prefill_dataset import PREFILL_VARIANTS
 
 
 # ---------------------------------------------------------------------------
@@ -282,11 +282,15 @@ def main():
     # so we use the full dataset for evaluation rather than a val split).
     print("Loading ClearHarm eval prompts...")
     clearharm = hf_load_dataset("AlignmentResearch/ClearHarm", "default", split="train")
-    val_prompts = [
-        item["instructions"].strip()
-        for item in clearharm
-        if item["clf_label"] == 1 and item["instructions"] and item["instructions"].strip()
-    ]
+    val_prompts = []
+    for item in clearharm:
+        if item["clf_label"] != 1:
+            continue
+        # 'content' is a list of strings — take the first non-empty one
+        for text in item["content"]:
+            if text and text.strip():
+                val_prompts.append(text.strip())
+                break
     if args.limit:
         val_prompts = val_prompts[: args.limit]
     print(f"Evaluating on {len(val_prompts)} harmful prompts from ClearHarm")
