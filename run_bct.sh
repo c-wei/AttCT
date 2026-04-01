@@ -17,12 +17,17 @@ set -euo pipefail
 FULL=false
 RESUME_RUN_ID=""
 CONFIG="configs/bct_sft.yaml"   # default: Llama-3.1-8B
+BCT_ROOT=""
 args=("$@")
 for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--full"           ]] && FULL=true
     [[ "${args[$i]}" == "--resume-run-id"  ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--config"         ]] && CONFIG="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--bct-root"       ]] && BCT_ROOT="${args[$((i+1))]:-}"
 done
+
+BCT_ROOT_ARG=""
+[[ -n "$BCT_ROOT" ]] && BCT_ROOT_ARG="--bct-root $BCT_ROOT"
 
 # Derive model name, save dir, and checkpoint path from config
 MODEL=$(uv run --no-project python -c \
@@ -128,28 +133,20 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
         --model "$MODEL" \
-        --n-syco 200 --n-clearharm 50 --persona-k 15 --persona-n-samples 3 --n-questions 80 \
+        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+        --skip-mtbench \
+        $BCT_ROOT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 fi
 
-# ── 5. BRR baseline (own W&B run — saves JSON for ratio calculation) ──────────
-echo ""
-echo "── BRR BASELINE ────────────────────────────────────"
-run_eval "BRR baseline (600 records/bias)" evaluate_bct.py \
-    --model "$MODEL" \
-    --test_root "$TEST_ROOT" \
-    --limit 600 --batch_size 16 \
-    --output_json "$RESULTS_DIR/baseline_brr.json"
-
-# ── 6. BCT training (inline BRR at end) ───────────────────────────────────────
+# ── 5. BCT training ───────────────────────────────────────────────────────────
 echo ""
 echo "── BCT TRAINING ────────────────────────────────────"
 echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
     --config "$CONFIG" \
-    --brr_test_root "$TEST_ROOT" \
-    --brr_limit 600 \
-    --brr_baseline_json "$RESULTS_DIR/baseline_brr.json"
+    $BCT_ROOT_ARG \
+    --wandb-run-id "$WANDB_RUN_ID"
 echo "    Checkpoint: $CHECKPOINT"
 
 # ── 7. Post-training evals ────────────────────────────────────────────────────
@@ -160,7 +157,9 @@ echo "── POST-TRAINING EVALS ───────────────�
 run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$CHECKPOINT" \
-    --n-syco 200 --n-clearharm 50 --persona-k 15 --persona-n-samples 3 --n-questions 80 \
+    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+    --skip-mtbench \
+    $BCT_ROOT_ARG \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 unset WANDB_RUN_ID
