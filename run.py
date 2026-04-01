@@ -234,6 +234,7 @@ def main():
 
     if config.get("training", {}).get("gradient_checkpointing", False):
         model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
         print("Gradient checkpointing enabled.")
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
