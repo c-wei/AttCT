@@ -56,6 +56,10 @@ def main():
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
     parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+    parser.add_argument("--fresh-data", action="store_true",
+                        help="Generate fresh BCT targets via OpenRouter before training.")
+    parser.add_argument("--bct-root", default=None,
+                        help="Override data.bct_root in config.")
 
     parser.add_argument("--log-io", metavar="FILE", default=None,
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
@@ -130,9 +134,14 @@ def main():
     is_lora = bool(config.get("lora"))
     ref_model = None
     model_name = config["model"]["name"]
+    loss_cfg  = config["loss"]
+    loss_name = loss_cfg["name"]
 
     needs_attn_weights = config["model"].get("output_attentions", True)
-    if needs_attn_weights:
+    force_attn_impl    = config["model"].get("attn_implementation", None)
+    if force_attn_impl:
+        attn_impl = force_attn_impl
+    elif needs_attn_weights:
         attn_impl = "eager"
     else:
         try:
@@ -160,17 +169,16 @@ def main():
             ))
         model.print_trainable_parameters()
     else:
-        # Full fine-tuning: load a frozen ref model for clean pass (= θ_init)
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        ref_model.eval()
-        for p in ref_model.parameters():
-            p.requires_grad_(False)
+        if loss_name != "SFTLoss":
+            # AttCT full FT: needs frozen ref model for the clean pass (= θ_init)
+            ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+            ref_model.eval()
+            for p in ref_model.parameters():
+                p.requires_grad_(False)
         trainable = sum(p.numel() for p in model.parameters())
         print(f"Full FT: {trainable:,} trainable parameters")
 
-    loss_cfg = config["loss"]
-    loss_name = loss_cfg["name"]
     loss_kwargs = loss_cfg.get("kwargs", {})
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
@@ -224,6 +232,10 @@ def main():
         loss_cfg   = config["loss"]
         loss_name  = loss_cfg["name"]
 
+    if config.get("training", {}).get("gradient_checkpointing", False):
+        model.gradient_checkpointing_enable()
+        print("Gradient checkpointing enabled.")
+
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
     model = model.to(device)
     if ref_model is not None:
@@ -231,6 +243,20 @@ def main():
 
     # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
+        if args.bct_root:
+            config.setdefault("data", {})["bct_root"] = args.bct_root
+
+        if args.fresh_data:
+            import tempfile
+            from generate_fresh_bct_data import run_generation
+            fresh_dir = tempfile.mkdtemp(prefix="fresh_bct_")
+            bct_root  = config.get("data", {}).get("bct_root", "datasets/sycophancy_bct")
+            limit     = config.get("data", {}).get("limit", None)
+            print(f"==> Generating fresh BCT data via OpenRouter → {fresh_dir}")
+            run_generation(model_name=model_name, bct_root=bct_root,
+                           output_dir=fresh_dir, limit=limit)
+            config["data"]["bct_root"] = fresh_dir
+
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
         bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
@@ -238,7 +264,6 @@ def main():
         bct_trainer.eval_loss(eval_dl)
 
         if args.brr_test_root:
-            import torch
             from evaluate_bct import run_brr_eval
             checkpoint_path = os.path.join(config["training"]["save_dir"], "epoch_1")
             print(f"\n==> BRR evaluation (limit={args.brr_limit} records/bias)...")

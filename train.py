@@ -109,11 +109,21 @@ class Trainer:
         self.checkpoint_steps.discard(0)
         print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
-        self.optimizer = AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=train_cfg["learning_rate"],
-            weight_decay=train_cfg.get("weight_decay", 0.0),
-        )
+        optimizer_name = train_cfg.get("optimizer", "adamw").lower()
+        if optimizer_name == "paged_adamw_8bit":
+            from bitsandbytes.optim import PagedAdamW8bit
+            self.optimizer = PagedAdamW8bit(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=train_cfg["learning_rate"],
+                weight_decay=train_cfg.get("weight_decay", 0.0),
+            )
+            print("Optimizer: PagedAdamW8bit (bitsandbytes)")
+        else:
+            self.optimizer = AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=train_cfg["learning_rate"],
+                weight_decay=train_cfg.get("weight_decay", 0.0),
+            )
 
     def _forward(self, input_ids, attention_mask):
         import torch

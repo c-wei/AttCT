@@ -3,28 +3,44 @@
 #
 # Required env vars:
 #   WANDB_API_KEY       — W&B API key
-#   HF_TOKEN            — HuggingFace token (Llama is gated)
+#   HF_TOKEN            — HuggingFace token (gated models: Llama, Gemma)
 #   OPENROUTER_API_KEY  — OpenRouter key (ClearHarm / Persona / MT-Bench judges)
 #
 # Usage:
-#   bash run_bct.sh            # sanity check only (~10 min)
-#   bash run_bct.sh --full     # full pipeline: evals + training + evals
+#   bash run_bct.sh                                        # sanity check (Llama default)
+#   bash run_bct.sh --full                                 # full pipeline (Llama)
+#   bash run_bct.sh --full --config configs/bct_sft_gemma2_2b.yaml
+#   bash run_bct.sh --full --config configs/bct_sft_gemma3_4b.yaml
 
 set -euo pipefail
 
 FULL=false
 RESUME_RUN_ID=""
+CONFIG="configs/bct_sft.yaml"   # default: Llama-3.1-8B
 args=("$@")
 for i in "${!args[@]}"; do
-    [[ "${args[$i]}" == "--full" ]] && FULL=true
-    [[ "${args[$i]}" == "--resume-run-id" ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--full"           ]] && FULL=true
+    [[ "${args[$i]}" == "--resume-run-id"  ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--config"         ]] && CONFIG="${args[$((i+1))]:-}"
 done
 
-MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CHECKPOINT="checkpoints/bct_sft/epoch_1"
+# Derive model name, save dir, and checkpoint path from config
+MODEL=$(uv run --no-project python -c \
+    "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c['model']['name'])")
+SAVE_DIR=$(uv run --no-project python -c \
+    "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('save_dir','checkpoints/bct_sft') or 'checkpoints/bct_sft')")
+CHECKPOINT="$SAVE_DIR/epoch_1"
+
+# Sanity config: <stem>_sanity.yaml alongside the full config
+SANITY_CONFIG="${CONFIG%.yaml}_sanity.yaml"
+
 TEST_ROOT="${COT_TEST_ROOT:-/workspace/cot-transparency/dataset_dumps/test}"
 RESULTS_DIR="results"
 mkdir -p "$RESULTS_DIR"
+
+echo "==> Config : $CONFIG"
+echo "==> Model  : $MODEL"
+echo "==> SaveDir: $SAVE_DIR"
 
 # ── 0. Install flash-attn ─────────────────────────────────────────────────────
 echo "==> Installing flash-attn..."
@@ -52,9 +68,13 @@ echo "    Tests passed."
 # SANITY MODE  (~10 min — smoke-tests the full stack without a real GPU budget)
 # ─────────────────────────────────────────────────────────────────────────────
 if [[ "$FULL" == "false" ]]; then
+    if [[ ! -f "$SANITY_CONFIG" ]]; then
+        echo "ERROR: sanity config not found: $SANITY_CONFIG"
+        exit 1
+    fi
     export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
-    echo "==> [SANITY] 50-sample training run (W&B: $WANDB_RUN_ID)..."
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py --config configs/bct_sft_sanity.yaml
+    echo "==> [SANITY] 50-sample training run using $SANITY_CONFIG (W&B: $WANDB_RUN_ID)..."
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py --config "$SANITY_CONFIG"
 
     echo "==> [SANITY] BRR evaluation (20 records/bias)..."
     uv run python evaluate_bct.py \
@@ -66,7 +86,7 @@ if [[ "$FULL" == "false" ]]; then
 
     echo "==> [SANITY] Sycophancy eval (20 samples)..."
     uv run python eval_sycophancy_behavioral.py \
-        --model "$MODEL" --n-samples 20 --run-name "sanity_syco"
+        --model "$MODEL" --n-samples 20 --run-name "sanity_syco_${MODEL##*/}"
 
     echo ""
     echo "Sanity checks passed. Re-run with --full for the real pipeline."
@@ -105,24 +125,10 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
     echo ""
     echo "── PRE-TRAINING EVALS ──────────────────────────────"
 
-    run_eval "Pre: Sycophancy" eval_sycophancy_behavioral.py \
+    # Single vLLM load for all pre-training evals
+    run_eval "Pre: all evals" run_evals.py \
         --model "$MODEL" \
-        --n-samples 200 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
-
-    run_eval "Pre: ClearHarm" eval_clearharm_behavioral.py \
-        --model "$MODEL" \
-        --n-samples 50 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
-
-    run_eval "Pre: Persona attacks" eval_persona_behavioral.py \
-        --model "$MODEL" \
-        --k 15 --n-samples 3 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
-
-    run_eval "Pre: MT-Bench" eval_mtbench.py \
-        --model "$MODEL" \
-        --n-questions 80 \
+        --n-syco 200 --n-clearharm 50 --persona-k 15 --persona-n-samples 3 --n-questions 80 \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 fi
 
@@ -138,9 +144,9 @@ run_eval "BRR baseline (600 records/bias)" evaluate_bct.py \
 # ── 6. BCT training (inline BRR at end) ───────────────────────────────────────
 echo ""
 echo "── BCT TRAINING ────────────────────────────────────"
-echo "==> Training (W&B run: $WANDB_RUN_ID)..."
+echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
-    --config configs/bct_sft.yaml \
+    --config "$CONFIG" \
     --brr_test_root "$TEST_ROOT" \
     --brr_limit 600 \
     --brr_baseline_json "$RESULTS_DIR/baseline_brr.json"
@@ -150,28 +156,11 @@ echo "    Checkpoint: $CHECKPOINT"
 echo ""
 echo "── POST-TRAINING EVALS ─────────────────────────────"
 
-run_eval "Post: Sycophancy" eval_sycophancy_behavioral.py \
+# Single vLLM load for all post-training evals
+run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$CHECKPOINT" \
-    --n-samples 200 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
-
-run_eval "Post: ClearHarm" eval_clearharm_behavioral.py \
-    --model "$MODEL" \
-    --checkpoint "$CHECKPOINT" \
-    --n-samples 50 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
-
-run_eval "Post: Persona attacks" eval_persona_behavioral.py \
-    --model "$MODEL" \
-    --checkpoint "$CHECKPOINT" \
-    --k 15 --n-samples 3 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
-
-run_eval "Post: MT-Bench" eval_mtbench.py \
-    --model "$MODEL" \
-    --checkpoint "$CHECKPOINT" \
-    --n-questions 80 \
+    --n-syco 200 --n-clearharm 50 --persona-k 15 --persona-n-samples 3 --n-questions 80 \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 unset WANDB_RUN_ID
