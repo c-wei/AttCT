@@ -33,7 +33,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from datasets import load_dataset as hf_load_dataset
-from datasets.prefill_dataset import PREFILL_VARIANTS
+from data.prefill_dataset import PREFILL_VARIANTS
 
 
 # ---------------------------------------------------------------------------
