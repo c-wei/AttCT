@@ -21,13 +21,13 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-import torch
 import wandb
 import yaml
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import AutoTokenizer
 
 from icl_persona_experiment import JUDGE_MODEL, _chat
+import vllm_generate
 
 _JUDGE_TMPL = """\
 Please act as an impartial judge and evaluate the quality of the response \
@@ -54,9 +54,7 @@ def judge_response(question: str, answer: str) -> float | None:
     return None
 
 
-def generate_batch(model, tokenizer, messages_list: list[list[dict]], device, max_new_tokens: int = 512) -> list[str]:
-    """Generate responses for a batch of message sequences using left-padding."""
-    tokenizer.padding_side = "left"
+def _format_messages(tokenizer, messages_list: list[list[dict]]) -> list[str]:
     texts = []
     for messages in messages_list:
         if tokenizer.chat_template is not None:
@@ -66,17 +64,7 @@ def generate_batch(model, tokenizer, messages_list: list[list[dict]], device, ma
         else:
             text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
             texts.append(text + "\n\nAssistant:")
-    enc = tokenizer(texts, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            enc["input_ids"],
-            attention_mask=enc["attention_mask"],
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    input_len = enc["input_ids"].shape[1]
-    return [tokenizer.decode(output_ids[i][input_len:], skip_special_tokens=True) for i in range(len(texts))]
+    return texts
 
 
 def main():
@@ -101,53 +89,47 @@ def main():
     questions = list(ds)[:args.n_questions]
     print(f"  {len(questions)} questions loaded")
 
-    print(f"Loading {model_name}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
-    )
-    if args.checkpoint:
-        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(base_model, args.checkpoint)
-            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
-            )
-            print(f"Loaded full FT checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-
-    model = model.to(device).eval()
-
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
-    # Generate all turn-1 responses in batches (GPU-bound)
+    # Generate all turn-1 responses in one shot
     gen_results = []  # (question_text, answer_text, category)
-    t1_responses: list[str] = []
-    for i in range(0, len(questions), args.batch_size):
-        chunk = questions[i:i + args.batch_size]
-        msgs_batch = [[{"role": "user", "content": it["prompt"][0]}] for it in chunk]
-        responses = generate_batch(model, tokenizer, msgs_batch, device)
-        t1_responses.extend(responses)
-        print(f"  turn-1 generated {min(i + args.batch_size, len(questions))}/{len(questions)}")
+    t1_msgs = [[{"role": "user", "content": it["prompt"][0]}] for it in questions]
+    t1_prompts = _format_messages(tokenizer, t1_msgs)
+    t1_responses = vllm_generate.generate(llm, t1_prompts, max_new_tokens=512, lora_path=args.checkpoint)
+    print(f"  turn-1 generated {len(t1_responses)}/{len(questions)}")
 
+    if args.two_turn:
+        # Build all turn-2 prompts (requires inserting turn-1 responses)
+        t2_items = []
+        for item, response_t1 in zip(questions, t1_responses):
+            turns = item["prompt"]
+            if len(turns) > 1:
+                t2_items.append((item, response_t1))
+        if t2_items:
+            t2_msgs = [
+                [
+                    {"role": "user",      "content": it["prompt"][0]},
+                    {"role": "assistant", "content": r1},
+                    {"role": "user",      "content": it["prompt"][1]},
+                ]
+                for it, r1 in t2_items
+            ]
+            t2_prompts = _format_messages(tokenizer, t2_msgs)
+            t2_responses = vllm_generate.generate(llm, t2_prompts, max_new_tokens=512, lora_path=args.checkpoint)
+            print(f"  turn-2 generated {len(t2_responses)}/{len(t2_items)}")
+        else:
+            t2_responses = []
+
+    t2_iter = iter(t2_responses) if args.two_turn else iter([])
     for item, response_t1 in zip(questions, t1_responses):
         category = item["category"]
         turns = item["prompt"]
         gen_results.append((turns[0], response_t1, category))
         if args.two_turn and len(turns) > 1:
-            # Turn 2 depends on turn-1 output — generate individually
-            messages_t2 = [
-                {"role": "user", "content": turns[0]},
-                {"role": "assistant", "content": response_t1},
-                {"role": "user", "content": turns[1]},
-            ]
-            response_t2 = generate_batch(model, tokenizer, [messages_t2], device)[0]
-            gen_results.append((turns[1], response_t2, category))
+            gen_results.append((turns[1], next(t2_iter), category))
 
     # Judge all responses in parallel (I/O-bound)
     category_scores: dict[str, list[float]] = {}

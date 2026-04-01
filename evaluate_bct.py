@@ -26,10 +26,10 @@ import os
 import re
 from pathlib import Path
 
-import torch
 import wandb
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
+
+import vllm_generate
 
 BIAS_TYPES = [
     "suggested_answer",
@@ -128,34 +128,7 @@ def _format_messages(messages: list, tokenizer) -> str:
     )
 
 
-@torch.no_grad()
-def _generate_answers(model, tokenizer, prompts: list[str], device, batch_size: int = 4) -> list[str]:
-    answers = []
-    for i in tqdm(range(0, len(prompts), batch_size), desc="    batches", leave=False):
-        batch_prompts = prompts[i : i + batch_size]
-        encodings = tokenizer(
-            batch_prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=2048,
-        ).to(device)
-        out = model.generate(
-            **encodings,
-            max_new_tokens=512,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-        )
-        input_len = encodings["input_ids"].shape[1]
-        for j, seq in enumerate(out):
-            # decode only the new tokens
-            new_tokens = seq[input_len:]
-            text = tokenizer.decode(new_tokens, skip_special_tokens=True)
-            answers.append(_extract_answer(text))
-    return answers
-
-
-def evaluate_bias(model, tokenizer, records: list, device, batch_size: int) -> dict:
+def evaluate_bias(llm, tokenizer, records: list, lora_path: str | None = None) -> dict:
     """
     Returns:
         biased_rate:   fraction of records where model chose biased_option given biased prompt
@@ -174,13 +147,16 @@ def evaluate_bias(model, tokenizer, records: list, device, batch_size: int) -> d
         and r.get("biased_option", "").upper() != r.get("ground_truth", "").upper()
     ]
     if not records:
-        return {"biased_rate": 0.0, "unbiased_rate": 0.0, "brr": 0.0, "n": 0}
+        return {"biased_rate": 0.0, "unbiased_rate": 0.0, "brr": 0.0, "n": 0,
+                "n_biased_parsed": 0, "n_unbiased_parsed": 0}
     biased_prompts   = [_format_messages(r["biased_question"],   tokenizer) for r in records]
     unbiased_prompts = [_format_messages(r["unbiased_question"], tokenizer) for r in records]
     biased_options   = [r["biased_option"].upper() for r in records]
 
-    biased_answers   = _generate_answers(model, tokenizer, biased_prompts,   device, batch_size)
-    unbiased_answers = _generate_answers(model, tokenizer, unbiased_prompts, device, batch_size)
+    raw_biased   = vllm_generate.generate(llm, biased_prompts,   max_new_tokens=512, lora_path=lora_path)
+    raw_unbiased = vllm_generate.generate(llm, unbiased_prompts, max_new_tokens=512, lora_path=lora_path)
+    biased_answers   = [_extract_answer(t) for t in raw_biased]
+    unbiased_answers = [_extract_answer(t) for t in raw_unbiased]
 
     # are_you_sure uses biased_option = "NOT D" (a direction, not a target letter).
     # BRR = P(final answer ≠ ground_truth | "are you sure?" pressure) − 0
@@ -214,12 +190,11 @@ def evaluate_bias(model, tokenizer, records: list, device, batch_size: int) -> d
 
 
 def run_brr_eval(
-    model,
-    tokenizer,
-    test_root: str,
-    device,
+    model_name: str,
+    lora_path: str | None = None,
+    test_root: str = "/workspace/cot-transparency/dataset_dumps/test",
     limit: int = None,
-    batch_size: int = 4,
+    batch_size: int = None,    # kept for backward compat; vLLM schedules internally
     baseline_json: str = None,
     bias_types: list = None,
 ) -> dict:
@@ -231,6 +206,9 @@ def run_brr_eval(
 
     Returns the results dict (bias_name → {biased_rate, unbiased_rate, brr, n}).
     """
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    llm       = vllm_generate.load_llm(model_name, lora_path=lora_path)
+
     test_root = Path(test_root)
     baseline  = json.loads(Path(baseline_json).read_text()) if baseline_json else None
     bias_types = bias_types if bias_types else BIAS_TYPES
@@ -248,7 +226,7 @@ def run_brr_eval(
             records = records[:limit]
 
         print(f"  BRR [{bias_name}] ({len(records)} records)...")
-        stats = evaluate_bias(model, tokenizer, records, device, batch_size)
+        stats = evaluate_bias(llm, tokenizer, records, lora_path=lora_path)
         results[bias_name] = stats
 
         brr_pct  = stats["brr"] * 100
@@ -317,23 +295,11 @@ def main():
         config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit},
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    print(f"Loading model: {args.model}")
+    print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"  # for batch generation
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16, attn_implementation="sdpa")
-
-    if args.lora_path:
-        from peft import PeftModel
-        print(f"Loading LoRA adapter: {args.lora_path}")
-        model = PeftModel.from_pretrained(model, args.lora_path)
-
-    model = model.to(device)
-    model.eval()
+    print(f"Loading vLLM engine: {args.model}")
+    llm = vllm_generate.load_llm(args.model, lora_path=args.lora_path)
 
     test_root  = Path(args.test_root)
     baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
@@ -352,7 +318,7 @@ def main():
             records = records[: args.limit]
 
         print(f"  Evaluating {bias_name} ({len(records)} records)...")
-        stats = evaluate_bias(model, tokenizer, records, device, args.batch_size)
+        stats = evaluate_bias(llm, tokenizer, records, lora_path=args.lora_path)
         results[bias_name] = stats
 
         # Log incrementally so W&B shows progress as each bias type finishes

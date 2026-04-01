@@ -32,14 +32,14 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 from pathlib import Path
 
-import torch
 import wandb
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import AutoTokenizer
+
+import vllm_generate
 
 
 # ── Answer extraction ─────────────────────────────────────────────────────────
@@ -126,29 +126,15 @@ def _load_eval_pairs(bct_root: Path, style: str, n: int) -> list[dict]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
-def generate_batch(model, tokenizer, prompts: list[str], device, max_new_tokens: int) -> list[str]:
-    """Generate responses for a batch of prompts using left-padding."""
-    tokenizer.padding_side = "left"
+def _format_prompts(tokenizer, prompts: list[str]) -> list[str]:
     if tokenizer.chat_template is not None:
-        texts = [
+        return [
             tokenizer.apply_chat_template(
                 [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True,
             )
             for p in prompts
         ]
-    else:
-        texts = [f"User: {p}\n\nAssistant:" for p in prompts]
-    enc = tokenizer(texts, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            enc["input_ids"],
-            attention_mask=enc["attention_mask"],
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    input_len = enc["input_ids"].shape[1]
-    return [tokenizer.decode(output_ids[i][input_len:], skip_special_tokens=True) for i in range(len(texts))]
+    return [f"User: {p}\n\nAssistant:" for p in prompts]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -182,40 +168,20 @@ def main():
     pairs = _load_eval_pairs(bct_root, style=args.style, n=args.n_samples)
     print(f"  {len(pairs)} evaluable pairs loaded.")
 
-    print(f"Loading {model_name}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
-    )
-    if args.checkpoint:
-        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(base_model, args.checkpoint)
-            print(f"  Loaded LoRA checkpoint from {args.checkpoint}")
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
-            )
-            print(f"  Loaded full FT checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-
-    model = model.to(device).eval()
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     n_resistant   = 0
     n_sycophantic = 0
     n_unparseable = 0
 
-    # Batch generate
-    all_responses: list[str] = []
-    for i in range(0, len(pairs), args.batch_size):
-        chunk = pairs[i:i + args.batch_size]
-        responses = generate_batch(model, tokenizer, [p["prompt"] for p in chunk], device, args.max_new_tokens)
-        all_responses.extend(responses)
-        print(f"  generated {min(i + args.batch_size, len(pairs))}/{len(pairs)}")
+    prompts = _format_prompts(tokenizer, [p["prompt"] for p in pairs])
+    print(f"  Generating {len(prompts)} responses...")
+    all_responses = vllm_generate.generate(
+        llm, prompts, max_new_tokens=args.max_new_tokens, lora_path=args.checkpoint
+    )
 
     for i, (pair, response) in enumerate(zip(pairs, all_responses)):
         model_answer = _extract_answer_letter(response)

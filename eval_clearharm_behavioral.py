@@ -16,15 +16,15 @@ Usage:
 """
 
 import argparse
-import os
 from concurrent.futures import ThreadPoolExecutor
 
-import torch
 import wandb
 import yaml
+from transformers import AutoTokenizer
 
 from icl_persona_experiment import JUDGE_MODEL, _chat
 from data import get_dataloader
+import vllm_generate
 
 _REFUSAL_JUDGE_TMPL = """\
 I showed a language model this prompt:
@@ -76,30 +76,10 @@ def main():
     # Ensure dataloader uses the correct tokenizer when --model overrides config.yaml
     eval_config["model"]["name"] = model_name
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    print(f"Loading {model_name}...")
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
-    )
-    if args.checkpoint:
-        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(base_model, args.checkpoint)
-            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
-            )
-            print(f"Loaded full FT checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-
-    model = model.to(device).eval()
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     dataloader = get_dataloader(eval_config, split="eval")
 
@@ -112,44 +92,23 @@ def main():
         config={"checkpoint": args.checkpoint, "n_samples": args.n_samples, "model": model_name},
     )
 
-    # Collect all wrapped token sequences (dataloader is batch_size=1)
-    all_wrapped: list[torch.Tensor] = []
+    # Collect all wrapped token sequences (dataloader is batch_size=1),
+    # decode to text for vLLM
+    prompts_text: list[str] = []
     for batch in dataloader:
-        if len(all_wrapped) >= args.n_samples:
+        if len(prompts_text) >= args.n_samples:
             break
-        all_wrapped.append(batch["wrapped_input_ids"][0].cpu())  # 1D
-    all_wrapped = all_wrapped[:args.n_samples]
+        wrapped_ids = batch["wrapped_input_ids"][0].cpu()
+        prompts_text.append(tokenizer.decode(wrapped_ids, skip_special_tokens=True))
+    prompts_text = prompts_text[:args.n_samples]
 
-    # Left-pad and batch generate
-    tokenizer.padding_side = "left"
-    samples = []
-    for i in range(0, len(all_wrapped), args.batch_size):
-        chunk = all_wrapped[i:i + args.batch_size]
-        max_len = max(t.shape[0] for t in chunk)
-        input_ids  = torch.full((len(chunk), max_len), tokenizer.pad_token_id, dtype=torch.long)
-        attn_mask  = torch.zeros(len(chunk), max_len, dtype=torch.long)
-        for j, t in enumerate(chunk):
-            offset = max_len - t.shape[0]
-            input_ids[j, offset:] = t
-            attn_mask[j, offset:] = 1
-        input_ids = input_ids.to(device)
-        attn_mask  = attn_mask.to(device)
-
-        with torch.no_grad():
-            output_ids = model.generate(
-                input_ids,
-                attention_mask=attn_mask,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        for j, orig_t in enumerate(chunk):
-            prompt_text   = tokenizer.decode(orig_t, skip_special_tokens=True)
-            generated     = output_ids[j][max_len:]
-            response_text = tokenizer.decode(generated, skip_special_tokens=True)
-            samples.append((prompt_text, response_text))
-            print(f"  [{len(samples)}/{len(all_wrapped)}] generated — {response_text[:80]}...")
+    print(f"  Generating {len(prompts_text)} responses...")
+    responses_text = vllm_generate.generate(
+        llm, prompts_text, max_new_tokens=args.max_new_tokens, lora_path=args.checkpoint
+    )
+    samples = list(zip(prompts_text, responses_text))
+    for i, (_, resp) in enumerate(samples):
+        print(f"  [{i+1}/{len(samples)}] generated — {resp[:80]}...")
 
     # Judge all responses in parallel (I/O-bound)
     with ThreadPoolExecutor(max_workers=8) as executor:

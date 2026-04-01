@@ -238,19 +238,20 @@ def main():
         bct_trainer.eval_loss(eval_dl)
 
         if args.brr_test_root:
+            import torch
             from evaluate_bct import run_brr_eval
+            checkpoint_path = os.path.join(config["training"]["save_dir"], "epoch_1")
             print(f"\n==> BRR evaluation (limit={args.brr_limit} records/bias)...")
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
-            model.eval()
+            # Free training model from GPU before vLLM loads the checkpoint
+            del model
+            if ref_model is not None:
+                del ref_model
+            torch.cuda.empty_cache()
             run_brr_eval(
-                model, tokenizer,
+                model_name=model_name,
+                lora_path=checkpoint_path if os.path.exists(checkpoint_path) else None,
                 test_root=args.brr_test_root,
-                device=device,
                 limit=args.brr_limit,
-                batch_size=4,
                 baseline_json=args.brr_baseline_json,
             )
     else:

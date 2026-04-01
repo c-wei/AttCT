@@ -26,14 +26,12 @@ Metrics logged to W&B:
 
 import argparse
 import json
-import os
 import random
 import time
 from pathlib import Path
 
-import torch
 import wandb
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
 # Reuse judge logic, WildChat loader, and prompt constants from the full experiment.
 from gemma_frustration_experiment import (
@@ -42,35 +40,25 @@ from gemma_frustration_experiment import (
     load_wildchat_prompts,
     parallel_score_conversations,
 )
+import vllm_generate
 
 
-# ─── Local generation (takes explicit model/tokenizer instead of globals) ──────
+# ─── Local generation ──────────────────────────────────────────────────────────
 
 def _batch_generate(
-    model: AutoModelForCausalLM,
+    llm,
     tokenizer: AutoTokenizer,
     all_messages: list[list[dict]],
     max_new_tokens: int,
-    device: torch.device,
+    lora_path: str | None = None,
 ) -> list[str]:
     """Generate responses for a batch of conversation histories."""
     texts = [
         tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         for msgs in all_messages
     ]
-    inputs = tokenizer(texts, return_tensors="pt", padding=True).to(device)
-    input_len = inputs.input_ids.shape[1]
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=1.0,
-        )
-    return [
-        tokenizer.decode(output[input_len:], skip_special_tokens=True)
-        for output in output_ids
-    ]
+    return vllm_generate.generate(llm, texts, max_new_tokens=max_new_tokens,
+                                  temperature=1.0, lora_path=lora_path)
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
@@ -101,29 +89,14 @@ def main() -> None:
     model_name = args.model or default_model
 
     # ── Load model ────────────────────────────────────────────────────────────
-    print(f"Loading {model_name}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, device_map="auto",
-    )
-    if args.checkpoint:
-        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(base_model, args.checkpoint)
-            print(f"  Loaded LoRA checkpoint from {args.checkpoint}")
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, device_map="auto",
-            )
-            print(f"  Loaded full FT checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-    model.eval()
-
+    # NOTE: Gemma-3-27B at bfloat16 ≈ 54GB — exceeds a single A40 (48GB).
+    # Use tensor_parallel_size=2 on two A40s, or run on a single H100/A100 80GB.
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     # ── Load prompts ──────────────────────────────────────────────────────────
     prompts = load_wildchat_prompts(args.n_prompts, seed=args.seed)
@@ -150,7 +123,7 @@ def main() -> None:
             for chunk_start in range(0, args.n_samples, args.gen_batch_size):
                 chunk_indices = list(range(chunk_start, min(chunk_start + args.gen_batch_size, args.n_samples)))
                 chunk_msgs = [histories[i] for i in chunk_indices]
-                chunk_resps = _batch_generate(model, tokenizer, chunk_msgs, args.max_new_tokens, device)
+                chunk_resps = _batch_generate(llm, tokenizer, chunk_msgs, args.max_new_tokens, lora_path=args.checkpoint)
                 for i, resp in zip(chunk_indices, chunk_resps):
                     conv_responses[i].append(resp)
                     histories[i].append({"role": "assistant", "content": resp})
