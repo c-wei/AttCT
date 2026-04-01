@@ -284,7 +284,7 @@ class PrefillBCTTrainer:
                 kl_loss  = prefill_consistency_loss(
                     self.model, batch, self.device, self.kl_temperature
                 )
-                sft_loss = self._sft_loss(batch) if self.sft_coeff > 0 else torch.zeros(1)
+                sft_loss = self._sft_loss(batch) if self.sft_coeff > 0 else torch.zeros(1, device=self.device)
                 loss     = kl_loss + self.sft_coeff * sft_loss
 
                 loss.backward()
