@@ -178,11 +178,46 @@ def main():
         ref_model = ref_model.to(device)
 # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        # BRR eval for BCT (if --brr-eval-path provided)
+        brr_evaluator = None
+        if args.brr_eval_path is not None:
+            run_label = os.path.splitext(os.path.basename(args.config))[0]
+            brr_csv = os.path.join("results", f"{run_label}_brr.csv")
+            brr_evaluator = BRREvaluator(
+                model, tokenizer, device,
+                eval_path=args.brr_eval_path,
+                results_csv=brr_csv,
+                mmlu_max_samples=args.mmlu_max_samples,
+            )
+            print(f"BRR evaluator configured for BCT ({len(brr_evaluator.questions)} questions)")
+
+            # Pre-training BRR eval
+            print("\n=== Pre-training baseline (base model) ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                brr_evaluator.evaluate(stage="pre_train", step=0)
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                brr_evaluator.evaluate(stage="pre_train", step=0)
+
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
         bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
+
+        # Post-training BRR eval
+        if brr_evaluator is not None:
+            print("\n=== Post-training evaluation (trained model) ===")
+            model.eval()
+            max_steps = config["training"].get("max_steps", len(train_dl))
+            brr_evaluator.evaluate(stage="post_train", step=max_steps)
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:
