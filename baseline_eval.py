@@ -7,7 +7,8 @@ Usage:
         --bct-noncot datasets/sycophancy_bct/bct_non_cot.jsonl \
         --control-cot    datasets/sycophancy_bct/control_cot.jsonl \
         --control-noncot datasets/sycophancy_bct/control_non_cot.jsonl \
-        [--max-samples 500] [--log-path logs/baseline/beval_step_0.jsonl]
+        [--max-samples 500] [--mmlu-max-samples 200] [--gsm8k-max-samples 200]
+        [--log-path logs/baseline/beval_step_0.jsonl]
 """
 import argparse
 import torch
@@ -25,8 +26,14 @@ def main():
     parser.add_argument("--bct-noncot",      dest="bct_noncot_path",     required=True)
     parser.add_argument("--control-cot",     dest="control_cot_path",    required=True)
     parser.add_argument("--control-noncot",  dest="control_noncot_path", required=True)
-    parser.add_argument("--max-samples",     dest="max_samples", type=int, default=500)
-    parser.add_argument("--log-path",        dest="log_path", default="logs/baseline/beval_step_0.jsonl")
+    parser.add_argument("--max-samples",     dest="max_samples",     type=int, default=500)
+    parser.add_argument("--mmlu-max-samples", dest="mmlu_max_samples",  type=int, default=200,
+                        help="Number of MMLU test questions to evaluate (0 = disabled).")
+    parser.add_argument("--mmlu-subject",     dest="mmlu_subject",      default="all",
+                        help="MMLU subject config (default: 'all').")
+    parser.add_argument("--gsm8k-max-samples",dest="gsm8k_max_samples", type=int, default=200,
+                        help="Number of GSM8K test questions to evaluate (0 = disabled).")
+    parser.add_argument("--log-path",         dest="log_path", default="logs/baseline/beval_step_0.jsonl")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -38,6 +45,9 @@ def main():
         "control_cot_path":    args.control_cot_path,
         "control_noncot_path": args.control_noncot_path,
         "max_samples":         args.max_samples,
+        "mmlu_max_samples":    args.mmlu_max_samples,
+        "mmlu_subject":        args.mmlu_subject,
+        "gsm8k_max_samples":   args.gsm8k_max_samples,
     }
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

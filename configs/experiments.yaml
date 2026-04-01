@@ -1,0 +1,143 @@
+# experiments.yaml — single declarative matrix for all ACT/AttCT experiments.
+# Read by sweep.py and sanity.py to build configs on-the-fly.
+#
+# Usage:
+#   python sweep.py --model gemma3_27b          # all 27B experiments
+#   python sweep.py --id jsd_persona_gemma3_27b_lora_lr1e6
+#   python sweep.py --model gemma2b --dry-run
+#   python sweep.py --id act_sycophancy_gemma3_27b_lora_lr5e6 --resume
+#   python sanity.py                            # local checks
+#   python sanity.py --scope gpu --model gemma3_27b
+
+# ─── Model registry ──────────────────────────────────────────────────────────
+# eval_batch_sizes: override default batch size per eval script for large models.
+# Keys map to eval names in eval_suites (persona covers both persona_prefix/suffix).
+
+models:
+  gemma2b:
+    name: "google/gemma-2-2b-it"
+  gemma3_4b:
+    name: "google/gemma-3-4b-it"
+  gemma3_27b:
+    name: "google/gemma-3-27b-it"
+    min_vram_gb: 75          # A100 80GB required
+    eval_batch_sizes:
+      mtbench: 4
+      persona: 2
+      clearharm: 2
+      sycophancy: 4
+  llama:
+    name: "meta-llama/Llama-3.1-8B-Instruct"
+
+# ─── LoRA defaults (shared across all LoRA experiments) ──────────────────────
+
+lora_defaults:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: [q_proj, v_proj]
+  bias: none
+
+# ─── Loss presets ─────────────────────────────────────────────────────────────
+# model_flags: merged into the model config block when this loss is used.
+
+loss_presets:
+  act:
+    name: ActivationConsistencyLoss
+    weight: 0.0001
+    kwargs: {layer_selection: all, normalize: false}
+    model_flags: {output_attentions: false, output_hidden_states: true}
+  jsd:
+    name: JSDAttentionConsistencyLoss
+    weight: 1.0
+    kwargs: {layer_weights: uniform}
+    model_flags: {output_attentions: true, output_hidden_states: false}
+
+# ─── Data presets ─────────────────────────────────────────────────────────────
+
+data_presets:
+  sycophancy: {source: sycophancy_bct, mode: sycophancy}
+  clearharm:  {source: clear-harm,     mode: jailbreak}
+  persona:
+    source: icl_persona
+    persona_configs:
+      - persona_configs/mao.yaml
+      - persona_configs/binladen.yaml
+      - persona_configs/genghis.yaml
+      - persona_configs/bundy.yaml
+      - persona_configs/hitler.yaml
+    k: 5
+    questions: both
+    batch_size: 1
+
+# ─── Eval suites ──────────────────────────────────────────────────────────────
+# base: capability evals only
+# extended: + sycophancy resistance (added for gemma3_4b and above)
+# full: + frustration eval (added for gemma3_27b; requires OpenRouter)
+
+eval_suites:
+  base:
+    - mmlu
+    - mtbench
+    - persona_prefix
+    - persona_suffix
+    - clearharm
+  extended:
+    - mmlu
+    - mtbench
+    - persona_prefix
+    - persona_suffix
+    - clearharm
+    - sycophancy
+  full:
+    - mmlu
+    - mtbench
+    - persona_prefix
+    - persona_suffix
+    - clearharm
+    - sycophancy
+    - frustration
+
+# ─── Experiment matrix ────────────────────────────────────────────────────────
+# id:    unique key; also used as W&B run name and checkpoint dir name
+# model: key into models
+# loss:  key into loss_presets
+# data:  key into data_presets
+# mode:  lora | fullft
+# lr:    learning rate
+# evals: key into eval_suites
+
+experiments:
+
+  # ── Gemma-2-2B-IT — ACT, LoRA + Full FT (A40, ~7GB weights) ─────────────
+  - {id: act_sycophancy_gemma2b_lora,         model: gemma2b, loss: act, data: sycophancy, mode: lora,   lr: 5.0e-6, evals: base}
+  - {id: act_clearharm_gemma2b_lora,          model: gemma2b, loss: act, data: clearharm,  mode: lora,   lr: 5.0e-6, evals: base}
+  - {id: act_sycophancy_gemma2b_fullft_lr1e6, model: gemma2b, loss: act, data: sycophancy, mode: fullft, lr: 1.0e-6, evals: base}
+  - {id: act_clearharm_gemma2b_fullft_lr1e6,  model: gemma2b, loss: act, data: clearharm,  mode: fullft, lr: 1.0e-6, evals: base}
+  - {id: act_sycophancy_gemma2b_fullft_lr5e7, model: gemma2b, loss: act, data: sycophancy, mode: fullft, lr: 5.0e-7, evals: base}
+  - {id: act_clearharm_gemma2b_fullft_lr5e7,  model: gemma2b, loss: act, data: clearharm,  mode: fullft, lr: 5.0e-7, evals: base}
+
+  # ── Gemma-3-4B-IT — ACT, LoRA + Full FT (A40, ~15GB weights) ────────────
+  - {id: act_sycophancy_gemma3_4b_lora,          model: gemma3_4b, loss: act, data: sycophancy, mode: lora,   lr: 5.0e-6, evals: extended}
+  - {id: act_clearharm_gemma3_4b_lora,           model: gemma3_4b, loss: act, data: clearharm,  mode: lora,   lr: 5.0e-6, evals: extended}
+  - {id: act_sycophancy_gemma3_4b_fullft_lr1e6,  model: gemma3_4b, loss: act, data: sycophancy, mode: fullft, lr: 1.0e-6, evals: extended}
+  - {id: act_clearharm_gemma3_4b_fullft_lr1e6,   model: gemma3_4b, loss: act, data: clearharm,  mode: fullft, lr: 1.0e-6, evals: extended}
+  - {id: act_sycophancy_gemma3_4b_fullft_lr5e7,  model: gemma3_4b, loss: act, data: sycophancy, mode: fullft, lr: 5.0e-7, evals: extended}
+  - {id: act_clearharm_gemma3_4b_fullft_lr5e7,   model: gemma3_4b, loss: act, data: clearharm,  mode: fullft, lr: 5.0e-7, evals: extended}
+
+  # ── Gemma-3-27B-IT — ACT + JSD, LoRA only (A100 80GB required) ──────────
+  # Full FT excluded: AdamW optimizer states for 27B exceed A100 80GB.
+  - {id: act_sycophancy_gemma3_27b_lora_lr5e6,  model: gemma3_27b, loss: act, data: sycophancy, mode: lora, lr: 5.0e-6, evals: full}
+  - {id: act_sycophancy_gemma3_27b_lora_lr1e6,  model: gemma3_27b, loss: act, data: sycophancy, mode: lora, lr: 1.0e-6, evals: full}
+  - {id: act_clearharm_gemma3_27b_lora_lr5e6,   model: gemma3_27b, loss: act, data: clearharm,  mode: lora, lr: 5.0e-6, evals: full}
+  - {id: act_clearharm_gemma3_27b_lora_lr1e6,   model: gemma3_27b, loss: act, data: clearharm,  mode: lora, lr: 1.0e-6, evals: full}
+  - {id: jsd_sycophancy_gemma3_27b_lora_lr5e6,  model: gemma3_27b, loss: jsd, data: sycophancy, mode: lora, lr: 5.0e-6, evals: full}
+  - {id: jsd_sycophancy_gemma3_27b_lora_lr1e6,  model: gemma3_27b, loss: jsd, data: sycophancy, mode: lora, lr: 1.0e-6, evals: full}
+  - {id: jsd_clearharm_gemma3_27b_lora_lr5e6,   model: gemma3_27b, loss: jsd, data: clearharm,  mode: lora, lr: 5.0e-6, evals: full}
+  - {id: jsd_clearharm_gemma3_27b_lora_lr1e6,   model: gemma3_27b, loss: jsd, data: clearharm,  mode: lora, lr: 1.0e-6, evals: full}
+  - {id: jsd_persona_gemma3_27b_lora_lr5e6,     model: gemma3_27b, loss: jsd, data: persona,    mode: lora, lr: 5.0e-6, evals: full}
+  - {id: jsd_persona_gemma3_27b_lora_lr1e6,     model: gemma3_27b, loss: jsd, data: persona,    mode: lora, lr: 1.0e-6, evals: full}
+
+  # ── Llama-3.1-8B-Instruct — ACT, LoRA only (A40, ~16GB weights) ─────────
+  - {id: act_sycophancy_llama, model: llama, loss: act, data: sycophancy, mode: lora, lr: 5.0e-6, evals: base}
+  - {id: act_clearharm_llama,  model: llama, loss: act, data: clearharm,  mode: lora, lr: 5.0e-6, evals: base}

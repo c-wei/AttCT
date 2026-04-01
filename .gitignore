@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .env
 results/
+CLAUDE.md
+logs.tar.xz
+logs/
 wandb/
 checkpoints/
-CLAUDE.md
+.DS_Store

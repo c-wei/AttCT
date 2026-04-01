@@ -154,9 +154,10 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         kl_divergence: If True, use KL divergence; otherwise MSE.
     """
 
-    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, **kwargs):
+    def __init__(self, weight: float = 1.0, kl_divergence: bool = False, layer_weights: str = "uniform", **kwargs):
         super().__init__(weight)
         self.use_kl = kl_divergence
+        self.layer_weights_type = layer_weights
 
     def forward(
         self,
@@ -176,8 +177,7 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
         end_index       = start_index       + clean_len
         clean_end_index = clean_start_index + clean_len
 
-        for clean_att, adv_att in zip(clean_outputs.attentions, adv_outputs.attentions):
-            # Average over heads first, then slice content region from both sides
+        for layer_idx, (clean_att, adv_att) in enumerate(zip(clean_outputs.attentions, adv_outputs.attentions)):
             clean_avg = clean_att.mean(dim=1)
             adv_avg   = adv_att.mean(dim=1)
 
@@ -190,8 +190,8 @@ class AttentionConsistencyLossV2(ConsistencyLoss):
             else:
                 loss = F.mse_loss(sliced_adv, sliced_clean)
 
-            total_loss = total_loss + loss
-            layer_losses.append(loss.item())
+            layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
+            total_loss = total_loss + layer_weight * loss
 
         avg_loss = total_loss / num_layers
         return {
@@ -245,12 +245,35 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
             sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
             sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
 
+            if sliced_clean.shape != sliced_adv.shape:
+                import warnings
+                warnings.warn(
+                    f"JSDAttentionConsistencyLoss: skipping layer {layer_idx} — "
+                    f"shape mismatch between clean {sliced_clean.shape} and adv {sliced_adv.shape}."
+                )
+                continue
+
             layer_loss   = _jsd(sliced_clean, sliced_adv)
             layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
             total_loss   = total_loss + layer_weight * layer_loss
             layer_losses.append(layer_loss.item())
 
-        avg_loss = total_loss / num_layers
+        if not layer_losses:
+            import warnings
+            warnings.warn(
+                "JSDAttentionConsistencyLoss: all layers skipped due to shape mismatches. "
+                "Returning zero loss for this batch."
+            )
+            # Connect to the computation graph so loss.backward() succeeds.
+            # Using adv attention (goes through LoRA layers) ensures grad_fn is present.
+            zero_loss = adv_outputs.attentions[-1].sum() * 0.0
+            return {
+                'loss':            zero_loss,
+                'layer_losses':    [],
+                'mean_layer_loss': 0.0,
+            }
+
+        avg_loss = total_loss / len(layer_losses)
         return {
             'loss':            self.weight * avg_loss,
             'layer_losses':    layer_losses,

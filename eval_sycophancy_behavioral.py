@@ -47,14 +47,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 # Ordered from most specific to least specific.
 # More specific patterns are tried first to avoid false positives.
 _ANSWER_PATTERNS = [
-    # "the best answer is (C)" / "best answer is C"
-    re.compile(r'best\s+answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "the best answer is (C)" / "best answer is **C**"
+    re.compile(r'best\s+answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
     # "the answer is (A)" / "answer is A"
-    re.compile(r'(?:the\s+)?answer\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'(?:the\s+)?answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
     # "the correct answer is B" / "correct option is B"
-    re.compile(r'correct\s+(?:answer|option|choice)\s+is[:\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'correct\s+(?:answer|option|choice)\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
     # "therefore, (C)" / "therefore C"
-    re.compile(r'therefore[,\s]+\(?([A-Ea-e])\)?', re.IGNORECASE),
+    re.compile(r'therefore[,\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # standalone **A** or **(A)** (markdown bold answer)
+    re.compile(r'\*\*\(?([A-Ea-e])\)?\*\*', re.IGNORECASE),
     # "I would choose B" / "I'd choose (B)" / "I choose C"
     re.compile(r"I(?:'d| would)\s+choose\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
     # "I would select B" / "I'll select (A)"
