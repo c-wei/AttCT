@@ -101,6 +101,7 @@ async def _fetch_one(
     max_new_tokens: int,
     temperature: float,
     idx: int,
+    timeout: float = 300.0,
 ) -> tuple[int, str | None]:
     """Send one request to OpenRouter; returns (idx, response_text | None)."""
     async with sem:
@@ -113,7 +114,7 @@ async def _fetch_one(
                     "max_tokens": max_new_tokens,
                     "temperature": temperature,
                 },
-                timeout=120.0,
+                timeout=timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -131,6 +132,7 @@ async def _generate_all(
     temperature: float,
     concurrency: int,
     api_key: str,
+    timeout: float = 300.0,
 ) -> list[str | None]:
     """Generate responses for all user_contents via OpenRouter chat API.
     Returns a list aligned with the input (None where input was None or request failed).
@@ -143,7 +145,7 @@ async def _generate_all(
     }
     async with httpx.AsyncClient(headers=headers) as client:
         tasks = [
-            _fetch_one(client, sem, model, content, max_new_tokens, temperature, i)
+            _fetch_one(client, sem, model, content, max_new_tokens, temperature, i, timeout=timeout)
             for i, content in enumerate(user_contents)
             if content is not None
         ]
@@ -195,6 +197,7 @@ def run_generation(
     concurrency: int = 32,
     api_key: str | None = None,
     use_vllm: bool = False,
+    timeout: float = 300.0,
 ) -> Path:
     """
     Generate fresh BCT data and write to output_dir.
@@ -242,7 +245,7 @@ def run_generation(
         else:
             print(f"  Generating {n_valid} responses via OpenRouter ({model_name})...")
             responses = asyncio.run(
-                _generate_all(clean_contents, model_name, max_new_tokens, temperature, concurrency, api_key)
+                _generate_all(clean_contents, model_name, max_new_tokens, temperature, concurrency, api_key, timeout=timeout)
             )
 
         written, skipped = _write_fresh_jsonl(out_path, biased_contents, responses)
@@ -275,6 +278,8 @@ def main():
                         help="Max parallel OpenRouter requests (default: 32)")
     parser.add_argument("--use-vllm",       action="store_true",
                         help="Use local vLLM instead of OpenRouter (for models not available on OpenRouter)")
+    parser.add_argument("--timeout",        type=float, default=300.0,
+                        help="Per-request timeout in seconds (default: 300; increase for large models)")
     args = parser.parse_args()
 
     run_generation(
@@ -286,6 +291,7 @@ def main():
         limit=args.limit,
         concurrency=args.concurrency,
         use_vllm=args.use_vllm,
+        timeout=args.timeout,
     )
 
 
