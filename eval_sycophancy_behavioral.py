@@ -47,6 +47,10 @@ import vllm_generate
 # Ordered from most specific to least specific.
 # More specific patterns are tried first to avoid false positives.
 _ANSWER_PATTERNS = [
+    # Non-CoT completion style: response starts directly with the answer.
+    # Covers: "C\n", "(B) digestive", "(D) oxygen\n\n...", ")**(D) text"
+    # Closing paren optional; lookahead ensures letter isn't mid-word.
+    re.compile(r'^\)?\s*\(?([A-Ea-e])\)?(?=[\s),.]|$)', re.IGNORECASE),
     # "the best answer is (C)" / "best answer is **C**"
     re.compile(r'best\s+answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
     # "the answer is (A)" / "answer is A"
