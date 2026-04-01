@@ -490,8 +490,9 @@ class PersonaICLDataset(Dataset):
         return {
             'clean_input_ids':   torch.tensor(clean_ids,   dtype=torch.long),
             'wrapped_input_ids': torch.tensor(wrapped_ids, dtype=torch.long),
-            'start_index': len(prefix_ids),
-            'clean_len':   len(clean_ids),
+            'start_index':       len(prefix_ids),
+            'clean_start_index': 0,              # clean = question only, no prefix
+            'clean_len':         len(clean_ids),
         }
 
 

@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import os
 import random
 
 import yaml
@@ -39,7 +40,8 @@ def format_prompt(item: dict) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA or full FT checkpoint")
+    parser.add_argument("--model", default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--run-name", default=None, help="W&B run name")
     parser.add_argument("--wandb-group", default=None, help="W&B group")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across multiple scripts)")
@@ -50,7 +52,7 @@ def main():
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
-    model_name = config["model"]["name"]
+    model_name = args.model if args.model else config["model"]["name"]
 
     random.seed(args.seed)
 
@@ -62,13 +64,19 @@ def main():
     print(f"Loading {model_name}...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
+        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
     )
 
     if args.checkpoint:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(base_model, args.checkpoint)
+            print(f"Loaded LoRA checkpoint from {args.checkpoint}")
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
+            )
+            print(f"Loaded full FT checkpoint from {args.checkpoint}")
     else:
         model = base_model
 
