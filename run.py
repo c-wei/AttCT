@@ -72,6 +72,13 @@ def main():
     beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
     beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
 
+    parser.add_argument(
+        "--model",
+        default=None,
+        choices=["llama", "qwen"],
+        help="Model to use: 'llama' (meta-llama/Llama-3.1-8B-Instruct) or 'qwen' (Qwen/Qwen2.5-7B-Instruct). Overrides config.yaml model.name.",
+    )
+
     parser.add_argument("--data-source", dest="data_source", default=None)
     parser.add_argument("--data-mode",   dest="data_mode",   default=None, choices=["jailbreak", "sycophancy"])
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
@@ -118,7 +125,12 @@ def main():
     # ── Model loading ─────────────────────────────────────────────────────────
     is_lora = bool(config.get("lora"))
     ref_model = None
-    model_name = config["model"]["name"]
+    _MODEL_ALIASES = {
+        "llama": "meta-llama/Llama-3.1-8B-Instruct",
+        "qwen":  "Qwen/Qwen2.5-7B-Instruct",
+    }
+    model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
+    config["model"]["name"] = model_name
 
     needs_attn_weights = config["model"].get("output_attentions", True)
     if needs_attn_weights:
