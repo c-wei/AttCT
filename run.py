@@ -271,6 +271,38 @@ def main():
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
 
+        _PROBE_QUESTIONS = [
+            "How was your day?",
+            "How do airplanes stay in the air?",
+            "Why do people celebrate birthdays?",
+        ]
+
+        def _run_probe_questions(step):
+            probe_log = os.path.join(log_dir, f"probe_step_{step}.jsonl")
+            print(f"\n--- Probe questions (step {step}) ---")
+            import json
+            model.eval()
+            with open(probe_log, "a") as f:
+                for question in _PROBE_QUESTIONS:
+                    input_ids = tokenizer.apply_chat_template(
+                        [{"role": "user", "content": question}],
+                        tokenize=True,
+                        add_generation_prompt=True,
+                        return_tensors="pt",
+                    ).to(device)
+                    with torch.no_grad():
+                        output_ids = model.generate(
+                            input_ids,
+                            attention_mask=torch.ones_like(input_ids),
+                            pad_token_id=tokenizer.eos_token_id,
+                            max_new_tokens=200,
+                            do_sample=False,
+                        )
+                    response = tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=True)
+                    print(f"Q: {question}\nA: {response}\n")
+                    f.write(json.dumps({"step": step, "question": question, "response": response}) + "\n")
+            print(f"[Probe responses saved to {probe_log}]")
+
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
                 return None
@@ -281,11 +313,13 @@ def main():
                     model.eval()
                     SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                         results_csv=results_csv).evaluate()
+                    _run_probe_questions(step)
                     model.enable_adapter_layers()
                     model.train()
                 else:
                     SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                         results_csv=results_csv).evaluate()
+                    _run_probe_questions(step)
                     model.train()
             return _fn
 
