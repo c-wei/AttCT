@@ -76,7 +76,7 @@ def main():
         "--model",
         default=None,
         choices=["llama", "qwen"],
-        help="Model to use: 'llama' (meta-llama/Llama-3.1-8B-Instruct) or 'qwen' (Qwen/Qwen2.5-7B-Instruct). Overrides config.yaml model.name.",
+        help="Model to use: 'llama' (meta-llama/Llama-3.1-8B-Instruct) or 'qwen' (Qwen/Qwen3-8B). Overrides config.yaml model.name.",
     )
 
     parser.add_argument("--data-source", dest="data_source", default=None)
@@ -127,7 +127,7 @@ def main():
     ref_model = None
     _MODEL_ALIASES = {
         "llama": "meta-llama/Llama-3.1-8B-Instruct",
-        "qwen":  "Qwen/Qwen2.5-7B-Instruct",
+        "qwen":  "Qwen/Qwen3-8B",
     }
     model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
     config["model"]["name"] = model_name
