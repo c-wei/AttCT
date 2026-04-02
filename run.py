@@ -263,14 +263,6 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
-        def make_checkpoint_fn(evaluator):
-            if evaluator is None or args.no_checkpoint:
-                return None
-            def _fn(step):
-                log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
-                evaluator.evaluate(global_step=step, log_path=log_path)
-            return _fn
-
         is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
         is_sanity = config.get("data", {}).get("limit") is not None
 
@@ -278,6 +270,26 @@ def main():
             from evaluate_sycophancy import SycophancyEvaluator
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+
+        def make_checkpoint_fn():
+            if is_sanity or args.no_checkpoint:
+                return None
+            def _fn(step):
+                print(f"\n=== Checkpoint eval — sycophancy eval (step {step}) ===")
+                if is_lora:
+                    model.disable_adapter_layers()
+                    model.eval()
+                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                        results_csv=results_csv).evaluate()
+                    model.enable_adapter_layers()
+                    model.train()
+                else:
+                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                        results_csv=results_csv).evaluate()
+                    model.train()
+            return _fn
+
+        if not is_sanity:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
@@ -289,12 +301,6 @@ def main():
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
                                     results_csv=results_csv).evaluate()
-
-        if behavioral_evaluator is not None and not is_sanity and not args.no_checkpoint:
-            print("\n=== Pre-training baseline (base model) — behavioral eval ===")
-            _pre_log_path = os.path.join(log_dir, "beval_step_0.jsonl")
-            behavioral_evaluator.evaluate(global_step=0, log_path=_pre_log_path)
-            model.train()
 
         attct_dl = get_dataloader(config, split="train")
 
@@ -330,7 +336,7 @@ def main():
                 ref_model=ref_model,
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
-                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+                checkpoint_fn=make_checkpoint_fn(),
             ).train()
         else:
             Trainer(
@@ -342,7 +348,7 @@ def main():
                 ref_model=ref_model,
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
-                checkpoint_fn=make_checkpoint_fn(behavioral_evaluator),
+                checkpoint_fn=make_checkpoint_fn(),
             ).train()
 
         if not args.skip_eval:
