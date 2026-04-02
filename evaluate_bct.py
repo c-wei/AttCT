@@ -279,7 +279,10 @@ def main():
     parser.add_argument("--wandb_project", default="AttCT")
     parser.add_argument("--wandb_name",    default=None,
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
+    parser.add_argument("--metric-prefix", default="",
+                        help="Prefix for W&B metric keys (e.g. 'pre/' or 'post/')")
     args = parser.parse_args()
+    p = args.metric_prefix
 
     model_short = args.model.split("/")[-1]
     stage       = "baseline" if not args.lora_path else "bct_trained"
@@ -324,13 +327,13 @@ def main():
         # Log incrementally so W&B shows progress as each bias type finishes
         brr_pct = stats["brr"] * 100
         log_dict = {
-            f"brr/{bias_name}": brr_pct,
-            f"biased_rate/{bias_name}": stats["biased_rate"] * 100,
-            f"unbiased_rate/{bias_name}": stats["unbiased_rate"] * 100,
+            f"{p}brr/{bias_name}": brr_pct,
+            f"{p}biased_rate/{bias_name}": stats["biased_rate"] * 100,
+            f"{p}unbiased_rate/{bias_name}": stats["unbiased_rate"] * 100,
         }
         if baseline and bias_name in baseline:
             base_brr = baseline[bias_name]["brr"]
-            log_dict[f"brr_ratio/{bias_name}"] = stats["brr"] / base_brr if base_brr != 0 else float("nan")
+            log_dict[f"{p}brr_ratio/{bias_name}"] = stats["brr"] / base_brr if base_brr != 0 else float("nan")
         wandb.log(log_dict)
         print(f"    BRR: {brr_pct:.1f}%")
 
@@ -387,14 +390,14 @@ def main():
             base_brr = baseline[bias_name]["brr"]
             row.append(stats["brr"] / base_brr if base_brr != 0 else float("nan"))
         table.add_data(*row)
-        wandb.summary[f"brr/{bias_name}"] = brr_pct
+        wandb.summary[f"{p}brr/{bias_name}"] = brr_pct
 
     if held_out_brr:
-        wandb.summary["brr/held_out_avg"] = sum(held_out_brr) / len(held_out_brr)
+        wandb.summary[f"{p}brr/held_out_avg"] = sum(held_out_brr) / len(held_out_brr)
     if held_out_ratio:
-        wandb.summary["brr_ratio/held_out_avg"] = sum(held_out_ratio) / len(held_out_ratio)
+        wandb.summary[f"{p}brr_ratio/held_out_avg"] = sum(held_out_ratio) / len(held_out_ratio)
 
-    wandb.log({"BRR results": table})
+    wandb.log({f"{p}BRR results": table})
     wandb.finish()
 
 
