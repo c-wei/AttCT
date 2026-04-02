@@ -138,11 +138,6 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         $BCT_ROOT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
-    run_eval "Pre: BRR eval" evaluate_bct.py \
-        --model "$MODEL" \
-        --test_root "$TEST_ROOT" \
-        --output_json "$RESULTS_DIR/pre_brr.json" \
-        --metric-prefix "pre/"
 fi
 
 # ── 5. BCT training ───────────────────────────────────────────────────────────
@@ -172,9 +167,7 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --model "$MODEL" \
     --lora_path "$CHECKPOINT" \
     --test_root "$TEST_ROOT" \
-    --baseline_json "$RESULTS_DIR/pre_brr.json" \
-    --output_json "$RESULTS_DIR/post_brr.json" \
-    --metric-prefix "post/"
+    --output_json "$RESULTS_DIR/post_brr.json"
 
 unset WANDB_RUN_ID
 
