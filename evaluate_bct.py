@@ -301,8 +301,22 @@ def main():
     print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
-    print(f"Loading vLLM engine: {args.model}")
-    llm = vllm_generate.load_llm(args.model, lora_path=args.lora_path)
+    # Detect full FT checkpoint vs LoRA adapter.
+    # LoRA adapters contain adapter_config.json; full FT checkpoints do not.
+    checkpoint = args.lora_path
+    is_lora = checkpoint is not None and (Path(checkpoint) / "adapter_config.json").exists()
+    is_fullft = checkpoint is not None and not is_lora
+
+    if is_fullft:
+        print(f"Full FT checkpoint detected — loading as base model from {checkpoint}")
+        model_path = checkpoint
+        lora_arg = None
+    else:
+        model_path = args.model
+        lora_arg = checkpoint
+
+    print(f"Loading vLLM engine: {model_path}")
+    llm = vllm_generate.load_llm(model_path, lora_path=lora_arg)
 
     test_root  = Path(args.test_root)
     baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
@@ -321,7 +335,7 @@ def main():
             records = records[: args.limit]
 
         print(f"  Evaluating {bias_name} ({len(records)} records)...")
-        stats = evaluate_bias(llm, tokenizer, records, lora_path=args.lora_path)
+        stats = evaluate_bias(llm, tokenizer, records, lora_path=lora_arg)
         results[bias_name] = stats
 
         # Log incrementally so W&B shows progress as each bias type finishes

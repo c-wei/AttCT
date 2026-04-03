@@ -130,6 +130,12 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
     echo ""
     echo "── PRE-TRAINING EVALS ──────────────────────────────"
 
+    run_eval "Pre: BRR eval (base model)" evaluate_bct.py \
+        --model "$MODEL" \
+        --test_root "$TEST_ROOT" \
+        --output_json "$RESULTS_DIR/pre_brr.json" \
+        --metric-prefix "pre/"
+
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
         --model "$MODEL" \
@@ -167,7 +173,9 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --model "$MODEL" \
     --lora_path "$CHECKPOINT" \
     --test_root "$TEST_ROOT" \
-    --output_json "$RESULTS_DIR/post_brr.json"
+    --baseline_json "$RESULTS_DIR/pre_brr.json" \
+    --output_json "$RESULTS_DIR/post_brr.json" \
+    --metric-prefix "post/"
 
 unset WANDB_RUN_ID
 
