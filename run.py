@@ -80,7 +80,8 @@ def main():
     )
 
     parser.add_argument("--data-source", dest="data_source", default=None)
-    parser.add_argument("--data-mode",   dest="data_mode",   default=None, choices=["jailbreak", "sycophancy"])
+    parser.add_argument("--data-mode",   dest="data_mode",   required=True, choices=["jailbreak", "sycophancy"],
+                        help="Training mode: 'jailbreak' or 'sycophancy'. Must be supplied explicitly.")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
     parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
     parser.add_argument("--max-steps",     dest="max_steps",     default=None, type=int,
@@ -226,10 +227,7 @@ def main():
             config.setdefault("data", {})["source"] = args.data_source
         elif args.control_cot_path is not None:
             config.setdefault("data", {})["source"] = args.control_cot_path
-        if args.data_mode is not None:
-            config.setdefault("data", {})["mode"] = args.data_mode
-        elif args.control_cot_path is not None and args.data_source is None:
-            config.setdefault("data", {})["mode"] = "sycophancy"
+        config.setdefault("data", {})["mode"] = args.data_mode
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
 
@@ -278,7 +276,7 @@ def main():
         is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
         is_sanity = config.get("data", {}).get("limit") is not None
 
-        if not is_sanity:
+        if not is_sanity and is_sycophancy:
             from evaluate_sycophancy import SycophancyEvaluator
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
@@ -319,23 +317,25 @@ def main():
             if is_sanity or args.no_checkpoint:
                 return None
             def _fn(step):
-                print(f"\n=== Checkpoint eval — sycophancy eval (step {step}) ===")
+                print(f"\n=== Checkpoint eval (step {step}) ===")
                 if is_lora:
                     model.disable_adapter_layers()
                     model.eval()
-                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                        results_csv=results_csv).evaluate()
+                    if is_sycophancy:
+                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                            results_csv=results_csv).evaluate()
                     _run_probe_questions(step)
                     model.enable_adapter_layers()
                     model.train()
                 else:
-                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                        results_csv=results_csv).evaluate()
+                    if is_sycophancy:
+                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                            results_csv=results_csv).evaluate()
                     _run_probe_questions(step)
                     model.train()
             return _fn
 
-        if not is_sanity:
+        if not is_sanity and is_sycophancy:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
@@ -404,7 +404,7 @@ def main():
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
                       metric_prefix=args.metric_prefix).evaluate()
 
-        if not is_sanity:
+        if not is_sanity and is_sycophancy:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
