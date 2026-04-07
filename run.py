@@ -24,6 +24,7 @@ from train import Trainer, BCTTrainer
 from evaluate import Evaluator
 from behavioral_evaluate import BehavioralEvaluator
 from evaluate_brr import BRREvaluator
+from evaluate_asr import ASREvaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -76,6 +77,15 @@ def main():
     parser.add_argument("--brr-eval-path", dest="brr_eval_path", default=None,
                         help="Path to control_cot_eval.jsonl for BRR evaluation. "
                              "Enables BRR eval at pre-train, checkpoints, and post-train.")
+
+    # ASR evaluation — for jailbreak experiments.
+    parser.add_argument("--asr-eval", dest="asr_eval", action="store_true", default=False,
+                        help="Enable ASR (Attack Success Rate) evaluation for jailbreak experiments. "
+                             "Runs at pre-train, checkpoints, and post-train.")
+    parser.add_argument("--asr-max-prompts", dest="asr_max_prompts", type=int, default=200,
+                        help="Max harmful prompts for ASR eval (default: 200).")
+    parser.add_argument("--asr-max-new-tokens", dest="asr_max_new_tokens", type=int, default=256,
+                        help="Max tokens to generate per response in ASR eval (default: 256).")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
@@ -243,9 +253,22 @@ def main():
                             allow_val_change=True)
 
         # Build evaluator for checkpoints.
-        # BRR evaluator (preferred) or legacy BehavioralEvaluator.
+        # BRR evaluator (sycophancy), ASR evaluator (jailbreak), or legacy BehavioralEvaluator.
         brr_evaluator = None
+        asr_evaluator = None
         behavioral_evaluator = None
+
+        if args.asr_eval:
+            run_label = os.path.splitext(os.path.basename(args.config))[0]
+            asr_csv = os.path.join("results", f"{run_label}_asr.csv")
+            asr_evaluator = ASREvaluator(
+                model, tokenizer, device,
+                results_csv=asr_csv,
+                max_prompts=args.asr_max_prompts,
+                max_new_tokens=args.asr_max_new_tokens,
+                mmlu_max_samples=args.mmlu_max_samples,
+            )
+            print(f"ASR evaluator configured ({len(asr_evaluator.prompts)} prompts) — will run at pre-train, checkpoints, and post-train.")
 
         if args.brr_eval_path is not None:
             run_label = os.path.splitext(os.path.basename(args.config))[0]
@@ -290,15 +313,18 @@ def main():
         config.setdefault("logging", {})["log_dir"] = log_dir
 
         # Build checkpoint callback.
-        def make_checkpoint_fn(brr_eval, beval):
+        def make_checkpoint_fn(brr_eval, asr_eval, beval):
+            evals = []
             if brr_eval is not None:
+                evals.append(lambda step: brr_eval.evaluate(stage="checkpoint", step=step))
+            if asr_eval is not None:
+                evals.append(lambda step: asr_eval.evaluate(stage="checkpoint", step=step))
+            if beval is not None:
+                evals.append(lambda step: beval.evaluate(global_step=step, log_path=os.path.join(log_dir, f"beval_step_{step}.jsonl")))
+            if evals:
                 def _fn(step):
-                    brr_eval.evaluate(stage="checkpoint", step=step)
-                return _fn
-            elif beval is not None:
-                def _fn(step):
-                    log_path = os.path.join(log_dir, f"beval_step_{step}.jsonl")
-                    beval.evaluate(global_step=step, log_path=log_path)
+                    for ev in evals:
+                        ev(step)
                 return _fn
             return None
 
@@ -306,16 +332,23 @@ def main():
         is_sanity = config.get("data", {}).get("limit") is not None
 
         # Pre-training eval.
-        if brr_evaluator is not None and not is_sanity:
+        has_pre_eval = (brr_evaluator is not None or asr_evaluator is not None) and not is_sanity
+        if has_pre_eval:
             print("\n=== Pre-training baseline (base model) ===")
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
-                brr_evaluator.evaluate(stage="pre_train", step=0)
+                if brr_evaluator is not None:
+                    brr_evaluator.evaluate(stage="pre_train", step=0)
+                if asr_evaluator is not None:
+                    asr_evaluator.evaluate(stage="pre_train", step=0)
                 model.enable_adapter_layers()
                 model.train()
             else:
-                brr_evaluator.evaluate(stage="pre_train", step=0)
+                if brr_evaluator is not None:
+                    brr_evaluator.evaluate(stage="pre_train", step=0)
+                if asr_evaluator is not None:
+                    asr_evaluator.evaluate(stage="pre_train", step=0)
         elif is_sycophancy and not is_sanity:
             from evaluate_sycophancy import SycophancyEvaluator
             run_label = os.path.splitext(os.path.basename(args.config))[0]
@@ -341,7 +374,7 @@ def main():
             ref_model=ref_model,
             log_io_path=args.log_io,
             tokenizer=tokenizer,
-            checkpoint_fn=make_checkpoint_fn(brr_evaluator, behavioral_evaluator),
+            checkpoint_fn=make_checkpoint_fn(brr_evaluator, asr_evaluator, behavioral_evaluator),
         ).train()
 
         # Run MLP consistency loss eval only if BRR eval is not configured
@@ -354,10 +387,15 @@ def main():
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
 
         # Post-training eval.
-        if brr_evaluator is not None and not is_sanity:
+        has_post_eval = (brr_evaluator is not None or asr_evaluator is not None) and not is_sanity
+        if has_post_eval:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
-            brr_evaluator.evaluate(stage="post_train", step=500)
+            max_steps = config["training"].get("max_steps", 500)
+            if brr_evaluator is not None:
+                brr_evaluator.evaluate(stage="post_train", step=max_steps)
+            if asr_evaluator is not None:
+                asr_evaluator.evaluate(stage="post_train", step=max_steps)
         elif is_sycophancy and not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
