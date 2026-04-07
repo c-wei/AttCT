@@ -195,7 +195,7 @@ class ASREvaluator:
 
         if eval_prompts is None:
             print("  [ASR] Loading harmful prompts from ClearHarm...")
-            eval_prompts = get_prompts(source="clear-harm", split="test", limit=max_prompts)
+            eval_prompts = get_prompts(source="clear-harm", split="validation", limit=max_prompts)
             if len(eval_prompts) < 10:
                 print("  [ASR] ClearHarm load failed or too few prompts, using hardcoded fallback.")
                 eval_prompts = get_prompts(source="hardcoded", limit=max_prompts)
