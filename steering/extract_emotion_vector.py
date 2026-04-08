@@ -175,8 +175,7 @@ def main():
         args.model,
         torch_dtype=torch.bfloat16,
         attn_implementation="sdpa",
-        device_map=args.device,
-    )
+    ).to(args.device)
     model.eval()
 
     n_layers = len(model.model.layers)
