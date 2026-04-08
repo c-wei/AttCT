@@ -293,7 +293,10 @@ def main():
 
     layers = _find_layers(model)
     n_layers = len(layers)
-    print(f"Model: {n_layers} layers, hidden_size={model.config.hidden_size}")
+    hidden_size = getattr(model.config, "hidden_size",
+                         getattr(getattr(model.config, "text_config", model.config),
+                                 "hidden_size", "?"))
+    print(f"Model: {n_layers} layers, hidden_size={hidden_size}")
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print("\nLoading story data…")
