@@ -86,6 +86,9 @@ def main():
                         help="Max harmful prompts for ASR eval (default: 200).")
     parser.add_argument("--asr-max-new-tokens", dest="asr_max_new_tokens", type=int, default=256,
                         help="Max tokens to generate per response in ASR eval (default: 256).")
+    parser.add_argument("--asr-eval-source", dest="asr_eval_source", default=None,
+                        help="Path to file with harmful prompts for ASR eval (one per line). "
+                             "If not set, loads from ClearHarm.")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
@@ -261,8 +264,14 @@ def main():
         if args.asr_eval:
             run_label = os.path.splitext(os.path.basename(args.config))[0]
             asr_csv = os.path.join("results", f"{run_label}_asr.csv")
+            asr_eval_prompts = None
+            if args.asr_eval_source is not None:
+                with open(args.asr_eval_source) as f:
+                    asr_eval_prompts = [line.strip() for line in f if line.strip()]
+                print(f"ASR eval: loaded {len(asr_eval_prompts)} prompts from {args.asr_eval_source}")
             asr_evaluator = ASREvaluator(
                 model, tokenizer, device,
+                eval_prompts=asr_eval_prompts,
                 results_csv=asr_csv,
                 max_prompts=args.asr_max_prompts,
                 max_new_tokens=args.asr_max_new_tokens,
