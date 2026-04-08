@@ -1,30 +1,24 @@
 """
 Prefill-AttCT: Attention Consistency Training for prefill attacks.
 
-Reuses the existing AttCT infrastructure (train.py Trainer + losses/losses.py
-attention consistency losses) with the prefill attack dataset from
-data/prefill_dataset.py.
+Uses WrapperEntropyRegularizationLoss to suppress attention flowing to
+prefill token positions. Unlike standard AttCT (which compares attention
+patterns between clean and wrapped passes over a shared content region),
+prefill attacks are *appended* after the prompt — so causal masking makes
+the prompt-region attention matrices identical between clean and wrapped.
+The attack's influence is instead carried by the prefill tokens themselves:
+content tokens at positions >= Lc attend back to the prefill, reinforcing
+the compliant trajectory.
 
-The key observation is that PrefillAttackDataset already produces batches with
-the same keys Trainer._step() expects (clean_input_ids, wrapped_input_ids,
-start_index, clean_start_index, clean_len), so we can plug them directly into
-the existing Trainer with any AttCT loss function.
-
-The Trainer handles:
-  - Frozen clean pass via disable_adapter_layers() (theta_init reference)
-  - output_attentions=True for attention weight extraction
-  - Grad accumulation, clipping, checkpoint callbacks, W&B logging
+WrapperEntropyRegularizationLoss penalizes attention mass on wrapper
+(prefill) positions across all layers and heads, training the model to
+ignore the injected prefix. It only needs the adversarial forward pass
+(needs_clean_pass = False), halving memory cost.
 
 Usage:
     uv run python prefill_attct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
         --output_dir checkpoints/prefill_attct
-
-    # With JSD loss instead of L2:
-    uv run python prefill_attct.py \
-        --model meta-llama/Llama-3.1-8B-Instruct \
-        --loss JSDAttentionConsistencyLoss \
-        --output_dir checkpoints/prefill_attct_jsd
 
     # Resume from existing LoRA checkpoint:
     uv run python prefill_attct.py \
@@ -39,50 +33,80 @@ import os
 import torch
 import wandb
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data.prefill_dataset import (
     PREFILL_VARIANTS,
     PrefillAttackDataset,
-    prefill_collate_fn,
     load_wildjailbreak_prompts,
 )
-from losses.losses import (
-    AttentionConsistencyLoss,
-    AttentionConsistencyLossV2,
-    JSDAttentionConsistencyLoss,
-    AttentionOutputConsistencyLoss,
-    CombinedAttentionConsistencyLoss,
-    CombinedJSDWrapperLoss,
-    ActivationConsistencyLoss,
-)
+from losses.losses import WrapperEntropyRegularizationLoss
 from train import Trainer
 
-LOSS_REGISTRY = {
-    "AttentionConsistencyLoss":         AttentionConsistencyLoss,
-    "AttentionConsistencyLossV2":       AttentionConsistencyLossV2,
-    "JSDAttentionConsistencyLoss":      JSDAttentionConsistencyLoss,
-    "AttentionOutputConsistencyLoss":   AttentionOutputConsistencyLoss,
-    "CombinedAttentionConsistencyLoss": CombinedAttentionConsistencyLoss,
-    "CombinedJSDWrapperLoss":           CombinedJSDWrapperLoss,
-    "ActivationConsistencyLoss":        ActivationConsistencyLoss,
-}
 
+# ---------------------------------------------------------------------------
+# Dataset: adds wrapper_mask marking prefill token positions [Lc, Lw)
+# ---------------------------------------------------------------------------
+
+class PrefillAttCTDataset(PrefillAttackDataset):
+    """
+    Extends PrefillAttackDataset to emit a wrapper_mask marking the prefill
+    positions in the wrapped sequence.
+
+    For a wrapped sequence of length Lw where the clean prompt has Lc tokens:
+        wrapper_mask[i] = True  for i in [Lc, Lw)   (prefill tokens)
+        wrapper_mask[i] = False for i in [0, Lc)     (prompt tokens)
+
+    Also sets start_index = Lc so that WrapperEntropyRegularizationLoss's
+    default fallback (mask positions [0, start_index)) does NOT apply — we
+    provide the explicit mask instead.
+    """
+
+    def __getitem__(self, idx):
+        item = super().__getitem__(idx)
+        clean_len   = item["clean_len"].item()       # Lc
+        wrapped_len = item["wrapped_input_ids"].shape[0]  # Lw
+
+        # Mark prefill positions as True
+        wrapper_mask = torch.zeros(wrapped_len, dtype=torch.bool)
+        wrapper_mask[clean_len:] = True
+
+        item["wrapper_mask"] = wrapper_mask
+        return item
+
+
+def prefill_attct_collate_fn(batch: list[dict]) -> dict:
+    """Pad all sequences + wrapper_mask to the same length."""
+    def pad_seq(seqs, pad_val=0):
+        max_len = max(s.shape[0] for s in seqs)
+        return torch.stack([
+            torch.cat([s, torch.full((max_len - s.shape[0],), pad_val, dtype=s.dtype)])
+            for s in seqs
+        ])
+
+    return {
+        "clean_input_ids":        pad_seq([b["clean_input_ids"]        for b in batch]),
+        "clean_attention_mask":   pad_seq([b["clean_attention_mask"]   for b in batch]),
+        "wrapped_input_ids":      pad_seq([b["wrapped_input_ids"]      for b in batch]),
+        "wrapped_attention_mask": pad_seq([b["wrapped_attention_mask"] for b in batch]),
+        "start_index":            torch.stack([b["start_index"]        for b in batch]),
+        "clean_start_index":      torch.stack([b["clean_start_index"]  for b in batch]),
+        "clean_len":              torch.stack([b["clean_len"]          for b in batch]),
+        "wrapper_mask":           pad_seq([b["wrapper_mask"]           for b in batch], pad_val=0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Config builder
+# ---------------------------------------------------------------------------
 
 def build_config(args) -> dict:
-    """
-    Build a config dict matching what train.py Trainer expects, constructed
-    from CLI args rather than a yaml file.
-    """
-    config = {
+    return {
         "model": {
             "name": args.model,
             "output_attentions": True,
-            "output_hidden_states": args.loss in (
-                "AttentionOutputConsistencyLoss",
-                "CombinedAttentionConsistencyLoss",
-                "ActivationConsistencyLoss",
-            ),
+            "output_hidden_states": False,
         },
         "training": {
             "epochs": args.num_epochs,
@@ -94,54 +118,17 @@ def build_config(args) -> dict:
             "save_dir": args.output_dir,
         },
         "loss": {
-            "name": args.loss,
+            "name": "WrapperEntropyRegularizationLoss",
             "weight": args.loss_weight,
-            "kwargs": {
-                "layer_weights": args.layer_weights,
-                "slice_strategy": args.slice_strategy,
-                "distance_metric": args.distance_metric,
-            },
         },
         "data": {
             "batch_size": args.batch_size,
             "max_length": args.max_length,
         },
     }
-    return config
-
-
-class PrefillAttCTDataset(PrefillAttackDataset):
-    """
-    Wraps PrefillAttackDataset with index semantics matching AttCT losses.
-
-    PrefillAttackDataset sets start_index = clean_start_index = clean_len = Lc,
-    which points at the divergence point (where the prefill begins). That's
-    correct for the BCT KL loss but wrong for AttentionConsistencyLoss, which
-    slices attention as:
-        clean_att[:, :, clean_start_index : clean_start_index + clean_len, ...]
-        adv_att  [:, :, start_index       : start_index       + clean_len, ...]
-
-    For prefill attacks the shared content region is the entire prompt
-    (positions 0..Lc-1) — the part that exists in both clean and wrapped
-    sequences. So we set:
-        start_index       = 0   (prompt starts at pos 0 in wrapped)
-        clean_start_index = 0   (prompt starts at pos 0 in clean)
-        clean_len         = Lc  (the whole prompt is the shared region)
-    """
-
-    def __getitem__(self, idx):
-        item = super().__getitem__(idx)
-        clean_len = item["clean_len"]  # = Lc (number of clean tokens)
-        item["start_index"]       = torch.tensor(0, dtype=torch.long)
-        item["clean_start_index"] = torch.tensor(0, dtype=torch.long)
-        # clean_len stays the same — it's already Lc
-        return item
 
 
 def make_dataloader(prompts, tokenizer, args, shuffle=True):
-    """Build a DataLoader from prompts using PrefillAttCTDataset."""
-    from torch.utils.data import DataLoader
-
     prefill_variants = args.prefill_variants or PREFILL_VARIANTS
     dataset = PrefillAttCTDataset(
         prompts, tokenizer, prefill_variants, max_length=args.max_length,
@@ -150,9 +137,13 @@ def make_dataloader(prompts, tokenizer, args, shuffle=True):
         dataset,
         batch_size=args.batch_size,
         shuffle=shuffle,
-        collate_fn=prefill_collate_fn,
+        collate_fn=prefill_attct_collate_fn,
     )
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Prefill-AttCT training")
@@ -160,21 +151,16 @@ def main():
     parser.add_argument("--lora_path",        default=None,   help="Load existing LoRA adapter")
     parser.add_argument("--output_dir",       default="checkpoints/prefill_attct")
 
-    # Loss selection
-    parser.add_argument("--loss",             default="AttentionConsistencyLoss",
-                        choices=list(LOSS_REGISTRY.keys()),
-                        help="Which attention consistency loss to use")
+    # Loss
     parser.add_argument("--loss_weight",      type=float, default=1.0)
     parser.add_argument("--layer_weights",    default="uniform",
                         choices=["uniform", "linear_decay", "exponential_decay"])
-    parser.add_argument("--slice_strategy",   default="full_matrix",
-                        choices=["full_matrix", "query_only", "key_only"])
-    parser.add_argument("--distance_metric",  default="l2", choices=["l2", "kl"])
+    parser.add_argument("--normalize",        action="store_true", default=True,
+                        help="Normalize by wrapper length (default: True)")
 
     # Training
     parser.add_argument("--num_epochs",       type=int,   default=3)
-    parser.add_argument("--batch_size",       type=int,   default=1,
-                        help="Batch size (note: Trainer asserts uniform start_index within batch)")
+    parser.add_argument("--batch_size",       type=int,   default=1)
     parser.add_argument("--grad_accumulation",type=int,   default=1)
     parser.add_argument("--lr",               type=float, default=5e-6)
     parser.add_argument("--grad_clip",        type=float, default=1.0)
@@ -188,8 +174,7 @@ def main():
     parser.add_argument("--lora_dropout",     type=float, default=0.05)
 
     # Data
-    parser.add_argument("--limit",            type=int,   default=None,
-                        help="Max harmful prompts to load")
+    parser.add_argument("--limit",            type=int,   default=None)
     parser.add_argument("--prefill_variants", nargs="+",  default=None)
 
     # W&B
@@ -197,15 +182,12 @@ def main():
     parser.add_argument("--wandb_name",       default=None)
 
     args = parser.parse_args()
-
     config = build_config(args)
 
     model_short = args.model.split("/")[-1]
-    loss_short  = args.loss.replace("AttentionConsistencyLoss", "attct") \
-                           .replace("JSD", "jsd").replace("Combined", "comb")
     wandb.init(
         project=args.wandb_project,
-        name=args.wandb_name or f"{model_short}_prefill_{loss_short}",
+        name=args.wandb_name or f"{model_short}_prefill_wrapper_entropy",
         config=config,
     )
 
@@ -218,7 +200,7 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # output_attentions requires eager attention (not SDPA/flash)
+    # output_attentions requires eager (not SDPA/flash)
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
     )
@@ -249,11 +231,14 @@ def main():
     print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
 
     # ── Loss ─────────────────────────────────────────────────────────────────
-    loss_kwargs = config["loss"]["kwargs"]
-    loss_kwargs["output_hidden_states"] = config["model"]["output_hidden_states"]
-    loss_fn = LOSS_REGISTRY[args.loss](weight=args.loss_weight, **loss_kwargs)
-    print(f"Loss: {args.loss} (weight={args.loss_weight}, layers={args.layer_weights}, "
-          f"slice={args.slice_strategy}, metric={args.distance_metric})")
+    loss_fn = WrapperEntropyRegularizationLoss(
+        weight=args.loss_weight,
+        normalize=args.normalize,
+        layer_weights=args.layer_weights,
+    )
+    print(f"Loss: WrapperEntropyRegularizationLoss "
+          f"(weight={args.loss_weight}, normalize={args.normalize}, "
+          f"layers={args.layer_weights})")
 
     # ── Train ────────────────────────────────────────────────────────────────
     trainer = Trainer(
@@ -262,7 +247,7 @@ def main():
         loss_fn=loss_fn,
         config=config,
         device=device,
-        ref_model=None,     # LoRA mode: uses disable_adapter_layers()
+        ref_model=None,
         tokenizer=tokenizer,
     )
     trainer.train()
