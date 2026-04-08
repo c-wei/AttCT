@@ -237,16 +237,27 @@ def call_openrouter(prompt: str, model: str = "anthropic/claude-sonnet-4-5") -> 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
 def parse_stories(text: str) -> list[str]:
-    """Parse [story N] blocks from model response."""
-    # Match [story 1], [story 2], etc.
-    pattern = r'\[story\s+\d+\](.*?)(?=\[story\s+\d+\]|\Z)'
-    matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
-    stories = [m.strip() for m in matches if m.strip()]
-    if not stories:
-        # Fallback: split on blank lines, take non-empty chunks
-        chunks = [c.strip() for c in re.split(r'\n\s*\n', text) if c.strip()]
-        stories = chunks
-    return stories
+    """Parse story blocks from model response, trying several tag formats."""
+    patterns = [
+        r'\[story\s+\d+\](.*?)(?=\[story\s+\d+\]|\Z)',          # [story 1]
+        r'\*\*Story\s+\d+[:\.]?\*\*(.*?)(?=\*\*Story\s+\d+|\Z)', # **Story 1**
+        r'Story\s+\d+[:\.]?\s*\n(.*?)(?=Story\s+\d+[:\.]|\Z)',   # Story 1:
+        r'#{1,3}\s*Story\s+\d+(.*?)(?=#{1,3}\s*Story\s+\d+|\Z)', # ## Story 1
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        stories = [m.strip() for m in matches if m.strip()]
+        if stories:
+            return stories
+
+    # Last resort: split on triple blank lines only (keeps multi-paragraph stories intact)
+    chunks = [c.strip() for c in re.split(r'\n\s*\n\s*\n', text) if c.strip()]
+    if chunks:
+        return chunks
+
+    # Absolute fallback: double blank lines — log a warning
+    print("  WARNING: using double-blank-line fallback parser — may over-split stories")
+    return [c.strip() for c in re.split(r'\n\s*\n', text) if c.strip()]
 
 
 def parse_dialogues(text: str) -> list[str]:
@@ -292,6 +303,11 @@ def generate_stories_for_emotion(
                 try:
                     raw = call_openrouter(prompt)
                     stories = parse_stories(raw)
+                    # Cap to prevent fallback over-splitting
+                    max_stories = n_stories_per_call + 2
+                    if len(stories) > max_stories:
+                        print(f"  WARNING: got {len(stories)} stories for {topic[:40]!r}, capping at {max_stories}")
+                        stories = stories[:max_stories]
                     print(f"  {emotion} / {topic[:50]!r} → {len(stories)} stories")
                     for story in stories:
                         f.write(json.dumps({"emotion": emotion, "topic": topic, "story": story}) + "\n")
