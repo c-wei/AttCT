@@ -20,6 +20,24 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+
+def _find_layers(model) -> torch.nn.ModuleList:
+    candidates = [
+        lambda m: m.model.layers,
+        lambda m: m.model.language_model.layers,
+        lambda m: m.language_model.model.layers,
+        lambda m: m.transformer.h,
+        lambda m: m.model.decoder.layers,
+    ]
+    for fn in candidates:
+        try:
+            layers = fn(model)
+            if isinstance(layers, torch.nn.ModuleList) and len(layers) > 0:
+                return layers
+        except AttributeError:
+            continue
+    raise AttributeError(f"Could not find decoder layers in {type(model).__name__}")
+
 EMOTIONS = [
     "frustrated", "happy", "inspired", "loving", "proud",
     "calm", "desperate", "angry", "guilty", "sad", "afraid", "surprised",
@@ -60,7 +78,7 @@ def get_next_token_probs(
     """
     handle = None
     if hook_fn is not None and target_layer is not None:
-        handle = model.model.layers[target_layer].register_forward_hook(hook_fn)
+        handle = _find_layers(model)[target_layer].register_forward_hook(hook_fn)
 
     try:
         enc = tokenizer(prompt, return_tensors="pt").to(device)

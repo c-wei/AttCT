@@ -26,6 +26,30 @@ STEERING_DIR = Path(__file__).parent
 DATA_DIR = STEERING_DIR / "data"
 
 
+# ── Model introspection ───────────────────────────────────────────────────────
+
+def _find_layers(model) -> torch.nn.ModuleList:
+    """Find the decoder layer ModuleList regardless of model architecture."""
+    candidates = [
+        lambda m: m.model.layers,                    # Llama, Gemma 1/2, Mistral
+        lambda m: m.model.language_model.layers,     # Gemma 3 (multimodal wrapper)
+        lambda m: m.language_model.model.layers,     # some multimodal variants
+        lambda m: m.transformer.h,                   # GPT-2 style
+        lambda m: m.model.decoder.layers,            # OPT
+    ]
+    for fn in candidates:
+        try:
+            layers = fn(model)
+            if isinstance(layers, torch.nn.ModuleList) and len(layers) > 0:
+                return layers
+        except AttributeError:
+            continue
+    raise AttributeError(
+        f"Could not find decoder layers in {type(model).__name__}. "
+        f"Top-level submodules: {[n for n, _ in model.named_children()]}"
+    )
+
+
 # ── Activation extraction ─────────────────────────────────────────────────────
 
 def extract_activations(
@@ -33,6 +57,7 @@ def extract_activations(
     tokenizer: AutoTokenizer,
     texts: list[str],
     target_layer: int,
+    layers: torch.nn.ModuleList,
     start_token: int = 50,
     batch_size: int = 1,
     device: str = "cuda",
@@ -50,7 +75,7 @@ def extract_activations(
         captured["hidden"] = output[0].detach().cpu().float()
         return output
 
-    handle = model.model.layers[target_layer].register_forward_hook(hook_fn)
+    handle = layers[target_layer].register_forward_hook(hook_fn)
 
     all_vecs = []
     try:
@@ -178,7 +203,8 @@ def main():
     ).to(args.device)
     model.eval()
 
-    n_layers = len(model.model.layers)
+    layers = _find_layers(model)
+    n_layers = len(layers)
     target_layer = int(n_layers * 2 / 3)
     print(f"Model has {n_layers} layers. Target layer: {target_layer} (~2/3 depth)")
 
@@ -214,7 +240,7 @@ def main():
     for emotion, texts in emotion_texts.items():
         print(f"  [{emotion}]")
         acts = extract_activations(
-            model, tokenizer, texts, target_layer,
+            model, tokenizer, texts, target_layer, layers,
             start_token=args.start_token,
             batch_size=args.batch_size,
             device=args.device,
@@ -227,7 +253,7 @@ def main():
 
     print("\nExtracting neutral activations…")
     neutral_activations = extract_activations(
-        model, tokenizer, neutral_texts, target_layer,
+        model, tokenizer, neutral_texts, target_layer, layers,
         start_token=args.start_token,
         batch_size=args.batch_size,
         device=args.device,
