@@ -64,7 +64,7 @@ def extract_activations(
                 max_length=1024,
             ).to(device)
 
-            with torch.no_grad():
+            with torch.inference_mode():
                 model(**enc)
 
             h = captured["hidden"]  # [batch, seq_len, hidden_dim]
@@ -158,7 +158,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="google/gemma-3-27b-it")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--start-token", type=int, default=50,
                         help="Average residual stream from this token position onward")
     parser.add_argument("--variance-threshold", type=float, default=0.50,
