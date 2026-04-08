@@ -189,6 +189,8 @@ def main():
                         help="Average residual stream from this token position onward")
     parser.add_argument("--variance-threshold", type=float, default=0.50,
                         help="Fraction of neutral variance to project out")
+    parser.add_argument("--output-suffix", type=str, default="",
+                        help="Suffix for output filenames, e.g. '_base' → all_emotion_vectors_base.pt")
     args = parser.parse_args()
 
     # ── Load model ────────────────────────────────────────────────────────────
@@ -285,15 +287,18 @@ def main():
             print(f"  {e:12s}: {cos:+.4f}{marker}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
+    s = args.output_suffix  # e.g. "" or "_base"
+
     if v_frustrated is not None:
-        torch.save(torch.tensor(v_frustrated, dtype=torch.float32),
-                   STEERING_DIR / "frustration_vector.pt")
-        print(f"\nSaved frustration_vector.pt")
+        fname = f"frustration_vector{s}.pt"
+        torch.save(torch.tensor(v_frustrated, dtype=torch.float32), STEERING_DIR / fname)
+        print(f"\nSaved {fname}")
 
     all_vectors_pt = {e: torch.tensor(v, dtype=torch.float32)
                       for e, v in normalized_vectors.items()}
-    torch.save(all_vectors_pt, STEERING_DIR / "all_emotion_vectors.pt")
-    print(f"Saved all_emotion_vectors.pt ({len(all_vectors_pt)} emotions)")
+    fname = f"all_emotion_vectors{s}.pt"
+    torch.save(all_vectors_pt, STEERING_DIR / fname)
+    print(f"Saved {fname} ({len(all_vectors_pt)} emotions)")
 
     meta = {
         "model": args.model,
@@ -307,9 +312,10 @@ def main():
         "emotions": present_emotions,
         "emotion_cosine_sims": cosine_sims,
     }
-    with open(STEERING_DIR / "frustration_meta.json", "w") as f:
+    fname = f"frustration_meta{s}.json"
+    with open(STEERING_DIR / fname, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"Saved frustration_meta.json")
+    print(f"Saved {fname}")
 
     print("\nDone.")
 

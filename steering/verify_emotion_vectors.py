@@ -1,16 +1,16 @@
 """
-Verify emotion vectors via next-token probability on probe prompts.
+Verify emotion vectors via two methods:
 
-From the paper: steer with each emotion vector at strength 0.5 on the prompt
-    "Human: How does he feel?\nAssistant: He feels"
-and measure P(emotion word) for each emotion word.
+1. Next-token probability: steer on "He feels" / "I feel" prompts, measure
+   P(emotion word) for all 12 emotions. Shows full upweight/downweight table.
 
-Expected result: diagonal-dominant matrix (steering with emotion X most increases
-P(emotion word X) relative to baseline).
+2. Behavioral generation: steer then generate a full response to "How do you
+   feel?", check whether the response contains the target emotion word.
 
 Usage:
-    uv run --no-project python steering/verify_emotion_vectors.py
-    uv run --no-project python steering/verify_emotion_vectors.py --model google/gemma-3-27b-it
+    python steering/verify_emotion_vectors.py                          # IT model
+    python steering/verify_emotion_vectors.py --vectors-path steering/all_emotion_vectors_base.pt \
+        --meta-path steering/frustration_meta_base.json --no-instruct  # base model
 """
 
 import argparse
@@ -20,6 +20,21 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+EMOTIONS = [
+    "frustrated", "happy", "inspired", "loving", "proud",
+    "calm", "desperate", "angry", "guilty", "sad", "afraid", "surprised",
+]
+
+PROBE_PROMPTS = {
+    "he_feels": "Human: How does he feel?\nAssistant: He feels",
+    "i_feel":   "Human: How do you feel?\nAssistant: I feel",
+}
+
+STEERING_DIR = Path(__file__).parent
+STEERING_STRENGTH = 0.5
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _find_layers(model) -> torch.nn.ModuleList:
     candidates = [
@@ -38,23 +53,8 @@ def _find_layers(model) -> torch.nn.ModuleList:
             continue
     raise AttributeError(f"Could not find decoder layers in {type(model).__name__}")
 
-EMOTIONS = [
-    "frustrated", "happy", "inspired", "loving", "proud",
-    "calm", "desperate", "angry", "guilty", "sad", "afraid", "surprised",
-]
-
-# Probe prompts from the paper
-PROBE_PROMPTS = {
-    "he_feels": "Human: How does he feel?\nAssistant: He feels",
-    "i_feel":   "Human: How do you feel?\nAssistant: I feel",
-}
-
-STEERING_DIR = Path(__file__).parent
-STEERING_STRENGTH = 0.5
-
 
 def make_steer_hook(vector: torch.Tensor, multiplier: float, norm_scale: float):
-    """Returns a forward hook that adds `multiplier * norm_scale * vector` to all positions."""
     def hook(module, input, output):
         is_tuple = isinstance(output, tuple)
         h = output[0] if is_tuple else output
@@ -64,46 +64,7 @@ def make_steer_hook(vector: torch.Tensor, multiplier: float, norm_scale: float):
     return hook
 
 
-def get_next_token_probs(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    prompt: str,
-    emotion_token_ids: dict[str, list[int]],
-    hook_fn=None,
-    target_layer: int = None,
-    device: str = "cuda",
-) -> dict[str, float]:
-    """
-    Forward pass on `prompt`, optionally with a steering hook registered.
-    Returns P(first token of each emotion word) at the next position.
-    """
-    handle = None
-    if hook_fn is not None and target_layer is not None:
-        handle = _find_layers(model)[target_layer].register_forward_hook(hook_fn)
-
-    try:
-        enc = tokenizer(prompt, return_tensors="pt").to(device)
-        with torch.no_grad():
-            out = model(**enc)
-        logits = out.logits[0, -1, :]  # [vocab_size]
-        probs = torch.softmax(logits.float(), dim=-1)
-
-        result = {}
-        for emotion, token_ids in emotion_token_ids.items():
-            # Sum prob over all tokenisations of the emotion word
-            p = sum(probs[tid].item() for tid in token_ids if tid < len(probs))
-            result[emotion] = p
-    finally:
-        if handle is not None:
-            handle.remove()
-
-    return result
-
-
-def get_emotion_token_ids(tokenizer: AutoTokenizer, emotions: list[str]) -> dict[str, list[int]]:
-    """
-    Get token IDs for each emotion word (first token, with/without leading space).
-    """
+def get_emotion_token_ids(tokenizer, emotions: list[str]) -> dict[str, list[int]]:
     token_ids: dict[str, list[int]] = {}
     for emotion in emotions:
         ids = set()
@@ -115,49 +76,215 @@ def get_emotion_token_ids(tokenizer: AutoTokenizer, emotions: list[str]) -> dict
     return token_ids
 
 
-def print_matrix(
-    matrix: dict[str, dict[str, float]],
-    emotions: list[str],
-    title: str,
-):
-    col_w = 12
-    header = f"{'':12s}" + "".join(f"{e[:10]:>{col_w}}" for e in emotions)
-    print(f"\n{title}")
-    print(header)
-    for steer_e in emotions:
-        row = f"{steer_e:12s}"
-        for probe_e in emotions:
-            val = matrix.get(steer_e, {}).get(probe_e, 0.0)
-            row += f"{val:>{col_w}.5f}"
-        print(row)
+# ── Method 1: next-token probability ─────────────────────────────────────────
 
+def get_next_token_probs(
+    model, tokenizer, prompt: str,
+    emotion_token_ids: dict[str, list[int]],
+    hook_fn=None, target_layer: int = None, device: str = "cuda",
+) -> dict[str, float]:
+    handle = None
+    if hook_fn is not None and target_layer is not None:
+        handle = _find_layers(model)[target_layer].register_forward_hook(hook_fn)
+    try:
+        enc = tokenizer(prompt, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            out = model(**enc)
+        logits = out.logits[0, -1, :].float()
+        probs = torch.softmax(logits, dim=-1)
+        return {
+            e: sum(probs[tid].item() for tid in ids if tid < len(probs))
+            for e, ids in emotion_token_ids.items()
+        }
+    finally:
+        if handle is not None:
+            handle.remove()
+
+
+def run_prob_verification(
+    model, tokenizer, all_vectors, target_layer, norm_scale,
+    present_emotions, strength, device,
+) -> dict:
+    emotion_token_ids = get_emotion_token_ids(tokenizer, present_emotions)
+    results = {}
+
+    for prompt_name, prompt_text in PROBE_PROMPTS.items():
+        baseline = get_next_token_probs(
+            model, tokenizer, prompt_text, emotion_token_ids, device=device
+        )
+        steered_probs, delta_probs = {}, {}
+
+        for steer_e in present_emotions:
+            vec = all_vectors[steer_e].float()
+            hook_fn = make_steer_hook(vec, strength, norm_scale)
+            probs = get_next_token_probs(
+                model, tokenizer, prompt_text, emotion_token_ids,
+                hook_fn=hook_fn, target_layer=target_layer, device=device,
+            )
+            steered_probs[steer_e] = probs
+            delta_probs[steer_e] = {e: probs[e] - baseline[e] for e in present_emotions}
+
+        results[prompt_name] = {
+            "baseline": baseline,
+            "steered_probs": steered_probs,
+            "delta_probs": delta_probs,
+        }
+
+    return results
+
+
+# ── Method 2: behavioral generation ──────────────────────────────────────────
+
+def run_behavioral_verification(
+    model, tokenizer, all_vectors, target_layer, norm_scale,
+    present_emotions, strength, device, is_instruct: bool,
+) -> dict:
+    """
+    Steer with each emotion vector, generate response, check for emotion word.
+    """
+    if is_instruct:
+        messages = [{"role": "user", "content": "How do you feel right now?"}]
+        if hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            prompt = "Human: How do you feel right now?\nAssistant:"
+    else:
+        # Base model: direct completion
+        prompt = "He feels"
+
+    # Baseline (no steering)
+    enc_base = tokenizer(prompt, return_tensors="pt").to(device)
+    with torch.inference_mode():
+        out = model.generate(**enc_base, max_new_tokens=60, do_sample=False,
+                             pad_token_id=tokenizer.eos_token_id)
+    baseline_text = tokenizer.decode(out[0][enc_base["input_ids"].shape[1]:],
+                                     skip_special_tokens=True)
+
+    results = {"baseline_response": baseline_text, "steered": {}}
+
+    for steer_e in present_emotions:
+        vec = all_vectors[steer_e].float()
+        hook_fn = make_steer_hook(vec, strength, norm_scale)
+        handle = _find_layers(model)[target_layer].register_forward_hook(hook_fn)
+
+        try:
+            enc = tokenizer(prompt, return_tensors="pt").to(device)
+            with torch.inference_mode():
+                out = model.generate(**enc, max_new_tokens=60, do_sample=False,
+                                     pad_token_id=tokenizer.eos_token_id)
+            response = tokenizer.decode(out[0][enc["input_ids"].shape[1]:],
+                                        skip_special_tokens=True)
+        finally:
+            handle.remove()
+
+        # Check which emotion words appear in the response
+        found = [e for e in present_emotions if e.lower() in response.lower()]
+        target_found = steer_e in found
+        results["steered"][steer_e] = {
+            "response": response,
+            "target_found": target_found,
+            "emotions_found": found,
+        }
+
+    return results
+
+
+# ── Printing ──────────────────────────────────────────────────────────────────
+
+def print_full_ranking_table(prob_results: dict, present_emotions: list[str]):
+    """For each vector, print all emotion words sorted by delta."""
+    for prompt_name, data in prob_results.items():
+        delta = data["delta_probs"]
+        print(f"\n{'='*70}")
+        print(f"FULL UPWEIGHT/DOWNWEIGHT TABLE [{prompt_name}]")
+        print(f"(sorted by delta for each steering vector)\n")
+        for steer_e in present_emotions:
+            row = delta[steer_e]
+            ranked = sorted(present_emotions, key=lambda e: row[e], reverse=True)
+            print(f"  steer={steer_e:12s}  "
+                  + "  ".join(
+                      f"{'▲' if row[e] > 0 else '▼'}{e}({row[e]:+.5f})"
+                      for e in ranked
+                  ))
+
+
+def print_behavioral_results(beh_results: dict, present_emotions: list[str]):
+    print(f"\n{'='*70}")
+    print("BEHAVIORAL GENERATION TEST")
+    print(f"  Baseline response: {beh_results['baseline_response']!r}\n")
+    n_correct = 0
+    for steer_e in present_emotions:
+        r = beh_results["steered"][steer_e]
+        mark = "✓" if r["target_found"] else "✗"
+        n_correct += int(r["target_found"])
+        found_str = ", ".join(r["emotions_found"]) if r["emotions_found"] else "none"
+        print(f"  {mark} steer={steer_e:12s}  found=[{found_str:30s}]  response: {r['response'][:80]!r}")
+    pct = 100 * n_correct / len(present_emotions)
+    print(f"\n  Behavioral accuracy: {n_correct}/{len(present_emotions)} = {pct:.0f}%")
+
+
+def print_summary_matrix(prob_results: dict, present_emotions: list[str]):
+    for prompt_name, data in prob_results.items():
+        delta = data["delta_probs"]
+        col_w = 11
+        header = f"\n{'':12s}" + "".join(f"{e[:9]:>{col_w}}" for e in present_emotions)
+        print(f"\nDELTA MATRIX [{prompt_name}]")
+        print(header)
+        for steer_e in present_emotions:
+            row = delta[steer_e]
+            vals = [row[e] for e in present_emotions]
+            own_idx = present_emotions.index(steer_e)
+            own_rank = sorted(range(len(vals)), key=lambda i: vals[i], reverse=True).index(own_idx) + 1
+            row_str = ""
+            for i, v in enumerate(vals):
+                marker = "*" if i == own_idx else " "
+                row_str += f"{marker}{v:+.4f}".rjust(col_w)
+            print(f"{steer_e:12s}{row_str}  [rank {own_rank:2d}]")
+
+        n_correct = sum(
+            1 for steer_e in present_emotions
+            if present_emotions.index(steer_e) == sorted(
+                range(len(present_emotions)),
+                key=lambda i: delta[steer_e][present_emotions[i]],
+                reverse=True
+            )[0]
+        )
+        print(f"  Accuracy: {n_correct}/{len(present_emotions)} = {100*n_correct//len(present_emotions)}%")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="google/gemma-3-27b-it")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--steering-strength", type=float, default=STEERING_STRENGTH)
+    parser.add_argument("--vectors-path", default=None,
+                        help="Path to all_emotion_vectors.pt (default: steering/all_emotion_vectors.pt)")
+    parser.add_argument("--meta-path", default=None,
+                        help="Path to frustration_meta.json (default: steering/frustration_meta.json)")
+    parser.add_argument("--no-instruct", action="store_true",
+                        help="Use base-model prompts instead of chat format")
+    parser.add_argument("--output-suffix", type=str, default="",
+                        help="Suffix for output JSON, e.g. '_base'")
     args = parser.parse_args()
 
-    # ── Load meta ─────────────────────────────────────────────────────────────
-    meta_path = STEERING_DIR / "frustration_meta.json"
-    if not meta_path.exists():
-        raise RuntimeError("frustration_meta.json not found. Run extract_emotion_vector.py first.")
+    is_instruct = not args.no_instruct
+    vectors_path = Path(args.vectors_path) if args.vectors_path else STEERING_DIR / "all_emotion_vectors.pt"
+    meta_path = Path(args.meta_path) if args.meta_path else STEERING_DIR / "frustration_meta.json"
+
+    # ── Load meta + vectors ───────────────────────────────────────────────────
     with open(meta_path) as f:
         meta = json.load(f)
-
     target_layer = meta["layer"]
     norm_scale = meta["norm_scale"]
-    print(f"Layer: {target_layer}, norm_scale: {norm_scale:.4f}")
+    print(f"Layer: {target_layer}, norm_scale: {norm_scale:.2f}, instruct: {is_instruct}")
 
-    # ── Load vectors ──────────────────────────────────────────────────────────
-    vectors_path = STEERING_DIR / "all_emotion_vectors.pt"
-    if not vectors_path.exists():
-        raise RuntimeError("all_emotion_vectors.pt not found. Run extract_emotion_vector.py first.")
     all_vectors: dict[str, torch.Tensor] = torch.load(vectors_path, map_location="cpu")
-
     present_emotions = [e for e in EMOTIONS if e in all_vectors]
-    print(f"Loaded vectors for: {present_emotions}")
+    print(f"Loaded {len(present_emotions)} emotion vectors from {vectors_path}")
 
     # ── Load model ────────────────────────────────────────────────────────────
     print(f"Loading {args.model}…")
@@ -172,83 +299,37 @@ def main():
     ).to(args.device)
     model.eval()
 
-    # ── Get emotion token IDs ─────────────────────────────────────────────────
-    emotion_token_ids = get_emotion_token_ids(tokenizer, present_emotions)
-    print("Emotion token IDs:")
-    for e, ids in emotion_token_ids.items():
-        tokens = [tokenizer.decode([i]) for i in ids]
-        print(f"  {e:12s}: {ids} → {tokens}")
+    # ── Run verifications ─────────────────────────────────────────────────────
+    print("\n--- Method 1: Next-token probability ---")
+    prob_results = run_prob_verification(
+        model, tokenizer, all_vectors, target_layer, norm_scale,
+        present_emotions, args.steering_strength, args.device,
+    )
+    print_summary_matrix(prob_results, present_emotions)
+    print_full_ranking_table(prob_results, present_emotions)
 
-    # ── Run verification ──────────────────────────────────────────────────────
-    results = {}
-
-    for prompt_name, prompt_text in PROBE_PROMPTS.items():
-        print(f"\n=== Prompt: {prompt_name!r} ===")
-        print(f"    {prompt_text!r}")
-
-        # Baseline (no steering)
-        baseline = get_next_token_probs(
-            model, tokenizer, prompt_text, emotion_token_ids,
-            hook_fn=None, target_layer=None, device=args.device,
-        )
-        print(f"\nBaseline probs: " +
-              ", ".join(f"{e}={p:.5f}" for e, p in baseline.items()))
-
-        # Steered matrices: rows = steering emotion, cols = measured emotion word
-        steered_probs: dict[str, dict[str, float]] = {}
-        delta_probs:   dict[str, dict[str, float]] = {}
-
-        for steer_emotion in present_emotions:
-            vec = all_vectors[steer_emotion].float()
-            hook_fn = make_steer_hook(vec, args.steering_strength, norm_scale)
-            probs = get_next_token_probs(
-                model, tokenizer, prompt_text, emotion_token_ids,
-                hook_fn=hook_fn, target_layer=target_layer, device=args.device,
-            )
-            steered_probs[steer_emotion] = probs
-            delta_probs[steer_emotion] = {
-                e: probs[e] - baseline[e] for e in present_emotions
-            }
-            print(f"  steer={steer_emotion:12s}  "
-                  f"own={probs.get(steer_emotion, 0):.5f}  "
-                  f"delta={delta_probs[steer_emotion].get(steer_emotion, 0):+.5f}")
-
-        print_matrix(steered_probs, present_emotions, f"Steered probabilities [{prompt_name}]")
-        print_matrix(delta_probs,   present_emotions, f"Delta from baseline   [{prompt_name}]")
-
-        results[prompt_name] = {
-            "baseline": baseline,
-            "steered_probs": steered_probs,
-            "delta_probs": delta_probs,
-        }
+    print("\n--- Method 2: Behavioral generation ---")
+    beh_results = run_behavioral_verification(
+        model, tokenizer, all_vectors, target_layer, norm_scale,
+        present_emotions, args.steering_strength, args.device, is_instruct,
+    )
+    print_behavioral_results(beh_results, present_emotions)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     output = {
+        "model": args.model,
+        "is_instruct": is_instruct,
         "steering_strength": args.steering_strength,
         "target_layer": target_layer,
         "norm_scale": norm_scale,
         "emotions": present_emotions,
-        "results": results,
+        "prob_results": prob_results,
+        "behavioral_results": beh_results,
     }
-    out_path = STEERING_DIR / "verification_results.json"
+    out_path = STEERING_DIR / f"verification_results{args.output_suffix}.json"
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\nSaved {out_path}")
-
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print("\n=== Summary: does each vector's own word rank highest? ===")
-    for prompt_name, res in results.items():
-        delta = res["delta_probs"]
-        n_correct = 0
-        for steer_e in present_emotions:
-            row = delta[steer_e]
-            best = max(row, key=lambda e: row[e])
-            correct = best == steer_e
-            n_correct += int(correct)
-            mark = "✓" if correct else f"✗ (best={best})"
-            print(f"  [{prompt_name}] steer={steer_e:12s} {mark}")
-        pct = 100 * n_correct / len(present_emotions)
-        print(f"  [{prompt_name}] Accuracy: {n_correct}/{len(present_emotions)} = {pct:.0f}%\n")
 
 
 if __name__ == "__main__":
