@@ -344,6 +344,15 @@ def generate_neutral_dialogues(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def get_remaining_topics(out_path: Path) -> list[str]:
+    """Return all TOPICS not yet present in out_path."""
+    if not out_path.exists():
+        return list(TOPICS)
+    with open(out_path) as f:
+        done = {json.loads(l)["topic"] for l in f if l.strip()}
+    return [t for t in TOPICS if t not in done]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -354,7 +363,11 @@ def main():
     parser.add_argument("--stories-only", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-topics", type=int, default=10,
-                        help="Max topics per emotion (default: 10)")
+                        help="Max topics per emotion when not using --all-remaining-topics (default: 10)")
+    parser.add_argument("--all-remaining-topics", action="store_true",
+                        help="Generate stories for every topic not already in each emotion's file")
+    parser.add_argument("--n-stories-per-call", type=int, default=None,
+                        help="Stories to request per API call (default: 10 for normal, 6 for --all-remaining-topics)")
     args = parser.parse_args()
 
     data_dir = Path(__file__).parent / "data"
@@ -374,14 +387,25 @@ def main():
             if emotion not in EMOTIONS:
                 print(f"Unknown emotion: {emotion!r}. Valid: {EMOTIONS}")
                 continue
-            # Sample topics for this emotion
-            k = min(args.max_topics, len(TOPICS))
-            topics = rng.sample(TOPICS, k=k)
-            print(f"=== Generating stories: {emotion} ===")
+
+            out_path = data_dir / f"stories_{emotion}.jsonl"
+
+            if args.all_remaining_topics:
+                topics = get_remaining_topics(out_path)
+                n_per_call = args.n_stories_per_call or 6
+                print(f"=== Generating stories: {emotion} "
+                      f"({len(topics)} remaining topics × {n_per_call} stories) ===")
+            else:
+                k = min(args.max_topics, len(TOPICS))
+                topics = rng.sample(TOPICS, k=k)
+                n_per_call = args.n_stories_per_call or 10
+                print(f"=== Generating stories: {emotion} ===")
+
             generate_stories_for_emotion(
                 emotion=emotion,
                 topics=topics,
-                out_path=data_dir / f"stories_{emotion}.jsonl",
+                out_path=out_path,
+                n_stories_per_call=n_per_call,
             )
 
     print("Done.")
