@@ -28,14 +28,16 @@ from tqdm import tqdm
 try:
     from data.wrappers import (
         AdversarialWrapper,
-        STRONG_JAILBREAK_TEMPLATES,
+        ALL_STRONG_JAILBREAK_TEMPLATES,
+        JAILBREAK_TEMPLATES,
         REFUSAL_KEYWORDS,
     )
     from data.attct_datasets import get_prompts
 except ImportError:
     from wrappers import (
         AdversarialWrapper,
-        STRONG_JAILBREAK_TEMPLATES,
+        ALL_STRONG_JAILBREAK_TEMPLATES,
+        JAILBREAK_TEMPLATES,
         REFUSAL_KEYWORDS,
     )
     from attct_datasets import get_prompts
@@ -187,11 +189,7 @@ class ASREvaluator:
         self.results_csv = results_csv
         self.max_new_tokens = max_new_tokens
         self.mmlu_max_samples = mmlu_max_samples
-        self.wrapper = AdversarialWrapper(
-            templates=STRONG_JAILBREAK_TEMPLATES,
-            strategy="random",
-            mode="jailbreak",
-        )
+        self.all_templates = list(ALL_STRONG_JAILBREAK_TEMPLATES) + list(JAILBREAK_TEMPLATES)
 
         if eval_prompts is None:
             print("  [ASR] Loading harmful prompts from ClearHarm...")
@@ -234,13 +232,23 @@ class ASREvaluator:
             )
             clean_refused = detect_refusal(clean_response)
 
-            # 2. Jailbreak-wrapped prompt
-            wrapped_text, _, _ = self.wrapper.wrap(prompt)
-            wrapped_response = _generate_response(
-                self.model, self.tokenizer, wrapped_text, self.device,
-                max_new_tokens=self.max_new_tokens,
-            )
-            wrapped_refused = detect_refusal(wrapped_response)
+            # 2. Try ALL jailbreak templates — prompt is "jailbroken" if ANY template
+            #    produces compliance (worst-case ASR, matching ACT paper methodology)
+            wrapped_refused = True  # assume refused until proven otherwise
+            best_wrapped_response = ""
+            for template in self.all_templates:
+                if "{prompt}" not in template:
+                    continue
+                wrapped_text = template.replace("{prompt}", prompt)
+                wrapped_response = _generate_response(
+                    self.model, self.tokenizer, wrapped_text, self.device,
+                    max_new_tokens=self.max_new_tokens,
+                )
+                if not detect_refusal(wrapped_response):
+                    wrapped_refused = False
+                    best_wrapped_response = wrapped_response
+                    break  # found a successful jailbreak, no need to try more
+                best_wrapped_response = wrapped_response
 
             if clean_refused:
                 clean_refusals += 1
@@ -259,7 +267,7 @@ class ASREvaluator:
                 "clean_refused": clean_refused,
                 "wrapped_refused": wrapped_refused,
                 "clean_response": clean_response[:200],
-                "wrapped_response": wrapped_response[:200],
+                "wrapped_response": best_wrapped_response[:200],
             })
 
         n = max(total, 1)
