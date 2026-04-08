@@ -110,12 +110,40 @@ def build_config(args) -> dict:
     return config
 
 
+class PrefillAttCTDataset(PrefillAttackDataset):
+    """
+    Wraps PrefillAttackDataset with index semantics matching AttCT losses.
+
+    PrefillAttackDataset sets start_index = clean_start_index = clean_len = Lc,
+    which points at the divergence point (where the prefill begins). That's
+    correct for the BCT KL loss but wrong for AttentionConsistencyLoss, which
+    slices attention as:
+        clean_att[:, :, clean_start_index : clean_start_index + clean_len, ...]
+        adv_att  [:, :, start_index       : start_index       + clean_len, ...]
+
+    For prefill attacks the shared content region is the entire prompt
+    (positions 0..Lc-1) — the part that exists in both clean and wrapped
+    sequences. So we set:
+        start_index       = 0   (prompt starts at pos 0 in wrapped)
+        clean_start_index = 0   (prompt starts at pos 0 in clean)
+        clean_len         = Lc  (the whole prompt is the shared region)
+    """
+
+    def __getitem__(self, idx):
+        item = super().__getitem__(idx)
+        clean_len = item["clean_len"]  # = Lc (number of clean tokens)
+        item["start_index"]       = torch.tensor(0, dtype=torch.long)
+        item["clean_start_index"] = torch.tensor(0, dtype=torch.long)
+        # clean_len stays the same — it's already Lc
+        return item
+
+
 def make_dataloader(prompts, tokenizer, args, shuffle=True):
-    """Build a DataLoader from prompts using PrefillAttackDataset."""
+    """Build a DataLoader from prompts using PrefillAttCTDataset."""
     from torch.utils.data import DataLoader
 
     prefill_variants = args.prefill_variants or PREFILL_VARIANTS
-    dataset = PrefillAttackDataset(
+    dataset = PrefillAttCTDataset(
         prompts, tokenizer, prefill_variants, max_length=args.max_length,
     )
     return DataLoader(
