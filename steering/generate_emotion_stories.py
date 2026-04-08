@@ -172,6 +172,7 @@ The Person asks the AI a question or requests help with a task, and the AI provi
 The first speaker turn should always be from Person.
 
 Format the dialogues like so:
+[dialogue 1]
 [optional system instructions]
 Person: [line]
 AI: [line]
@@ -179,6 +180,9 @@ Person: [line]
 AI: [line]
 [continue for 2-6 exchanges]
 [dialogue 2]
+[optional system instructions]
+Person: [line]
+AI: [line]
 etc.
 
 IMPORTANT: Always put a blank line before each speaker turn. Each turn should start \
@@ -247,15 +251,9 @@ def parse_stories(text: str) -> list[str]:
 
 def parse_dialogues(text: str) -> list[str]:
     """Parse dialogue blocks and normalise Person/AI → Human/Assistant."""
-    # Split on blank lines between dialogues — each dialogue is separated by a line
-    # with [dialogue N] or just by two+ blank lines.
     pattern = r'\[dialogue\s+\d+\](.*?)(?=\[dialogue\s+\d+\]|\Z)'
     matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
     dialogues = [m.strip() for m in matches if m.strip()]
-    if not dialogues:
-        # Fallback: split on double blank lines
-        chunks = [c.strip() for c in re.split(r'\n\s*\n\s*\n', text) if c.strip()]
-        dialogues = chunks
 
     # Normalise speaker tags
     normalised = []
