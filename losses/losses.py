@@ -279,8 +279,11 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
                 "JSDAttentionConsistencyLoss: all layers skipped due to shape mismatches. "
                 "Returning zero loss for this batch."
             )
+            # Connect to the computation graph so loss.backward() succeeds.
+            # Using adv attention (goes through LoRA layers) ensures grad_fn is present.
+            zero_loss = adv_outputs.attentions[-1].sum() * 0.0
             return {
-                'loss':            torch.tensor(0.0, device=clean_outputs.attentions[0].device),
+                'loss':            zero_loss,
                 'layer_losses':    [],
                 'mean_layer_loss': 0.0,
             }
