@@ -14,7 +14,9 @@ import json
 import os
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -138,9 +140,15 @@ Write {n_stories} different stories based on the following premise.
 Topic: {topic}
 The story should follow a character who is feeling {emotion}.
 
-Format the stories like so:
+Separate each story with a line containing only "---" (three dashes). Format like so:
 [story 1]
+<content of story 1>
+
+---
 [story 2]
+<content of story 2>
+
+---
 etc.
 
 The paragraphs should each be a fresh start, with no continuity. Try to make them \
@@ -237,26 +245,39 @@ def call_openrouter(prompt: str, model: str = "anthropic/claude-sonnet-4-5") -> 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
 def parse_stories(text: str) -> list[str]:
-    """Parse story blocks from model response, trying several tag formats."""
-    patterns = [
-        r'\[story\s+\d+\](.*?)(?=\[story\s+\d+\]|\Z)',          # [story 1]
-        r'\*\*Story\s+\d+[:\.]?\*\*(.*?)(?=\*\*Story\s+\d+|\Z)', # **Story 1**
-        r'Story\s+\d+[:\.]?\s*\n(.*?)(?=Story\s+\d+[:\.]|\Z)',   # Story 1:
-        r'#{1,3}\s*Story\s+\d+(.*?)(?=#{1,3}\s*Story\s+\d+|\Z)', # ## Story 1
+    """Parse story blocks from model response, trying several formats."""
+    # 1. --- separator (explicit in our prompt)
+    if re.search(r'\n---+\n', text):
+        chunks = re.split(r'\n---+\n', text)
+        # Strip any leading [story N] label from each chunk
+        stories = []
+        for c in chunks:
+            c = re.sub(r'^\s*\[story\s+\d+\]\s*', '', c, flags=re.IGNORECASE).strip()
+            if c:
+                stories.append(c)
+        if stories:
+            return stories
+
+    # 2. [story N] / **Story N** / Story N: / ## Story N tags
+    tag_patterns = [
+        r'\[story\s+\d+\](.*?)(?=\[story\s+\d+\]|\Z)',
+        r'\*\*Story\s+\d+[:\.]?\*\*(.*?)(?=\*\*Story\s+\d+|\Z)',
+        r'Story\s+\d+[:\.]?\s*\n(.*?)(?=Story\s+\d+[:\.]|\Z)',
+        r'#{1,3}\s*Story\s+\d+(.*?)(?=#{1,3}\s*Story\s+\d+|\Z)',
     ]
-    for pattern in patterns:
+    for pattern in tag_patterns:
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
         stories = [m.strip() for m in matches if m.strip()]
         if stories:
             return stories
 
-    # Last resort: split on triple blank lines only (keeps multi-paragraph stories intact)
+    # 3. Triple blank lines (keeps multi-paragraph stories intact)
     chunks = [c.strip() for c in re.split(r'\n\s*\n\s*\n', text) if c.strip()]
-    if chunks:
+    if len(chunks) > 1:
         return chunks
 
-    # Absolute fallback: double blank lines — log a warning
-    print("  WARNING: using double-blank-line fallback parser — may over-split stories")
+    # 4. Double blank lines — over-splits but cap in caller prevents damage
+    print("  WARNING: using double-blank-line fallback parser")
     return [c.strip() for c in re.split(r'\n\s*\n', text) if c.strip()]
 
 
@@ -277,48 +298,71 @@ def parse_dialogues(text: str) -> list[str]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
+def _fetch_stories_for_topic(
+    emotion: str, topic: str, n_stories_per_call: int, max_retries: int,
+) -> tuple[str, list[str]]:
+    """Fetch and parse stories for one topic. Returns (topic, stories)."""
+    prompt = STORY_SYSTEM_PROMPT.format(
+        n_stories=n_stories_per_call, topic=topic, emotion=emotion,
+    )
+    for attempt in range(max_retries):
+        try:
+            raw = call_openrouter(prompt)
+            stories = parse_stories(raw)
+            max_cap = n_stories_per_call + 2
+            if len(stories) > max_cap:
+                stories = stories[:max_cap]
+            return topic, stories
+        except Exception as e:
+            wait = 2 ** attempt
+            print(f"  ERROR {emotion}/{topic[:30]!r} attempt {attempt+1}: {e}. Retrying in {wait}s…")
+            time.sleep(wait)
+    return topic, []
+
+
 def generate_stories_for_emotion(
     emotion: str,
     topics: list[str],
     out_path: Path,
     n_stories_per_call: int = 10,
     max_retries: int = 3,
+    workers: int = 1,
 ):
-    """Generate 100 stories (10 topics × 10 stories each) for one emotion."""
+    """Generate stories for one emotion, optionally in parallel across topics."""
     existing: list[dict] = []
     if out_path.exists():
         with open(out_path) as f:
             existing = [json.loads(l) for l in f if l.strip()]
     done_topics = {r["topic"] for r in existing}
 
-    with open(out_path, "a") as f:
-        for topic in topics:
-            if topic in done_topics:
-                print(f"  [skip] {emotion} / {topic[:50]!r}")
-                continue
-            prompt = STORY_SYSTEM_PROMPT.format(
-                n_stories=n_stories_per_call, topic=topic, emotion=emotion
-            )
-            for attempt in range(max_retries):
-                try:
-                    raw = call_openrouter(prompt)
-                    stories = parse_stories(raw)
-                    # Cap to prevent fallback over-splitting
-                    max_stories = n_stories_per_call + 2
-                    if len(stories) > max_stories:
-                        print(f"  WARNING: got {len(stories)} stories for {topic[:40]!r}, capping at {max_stories}")
-                        stories = stories[:max_stories]
-                    print(f"  {emotion} / {topic[:50]!r} → {len(stories)} stories")
-                    for story in stories:
-                        f.write(json.dumps({"emotion": emotion, "topic": topic, "story": story}) + "\n")
-                    f.flush()
-                    break
-                except Exception as e:
-                    wait = 2 ** attempt
-                    print(f"  ERROR attempt {attempt+1}: {e}. Retrying in {wait}s…")
-                    time.sleep(wait)
-            else:
-                print(f"  FAILED after {max_retries} attempts: {emotion} / {topic}")
+    pending = [t for t in topics if t not in done_topics]
+    for t in topics:
+        if t in done_topics:
+            print(f"  [skip] {emotion} / {t[:50]!r}")
+
+    if not pending:
+        return
+
+    write_lock = threading.Lock()
+
+    def process(topic: str):
+        t, stories = _fetch_stories_for_topic(
+            emotion, topic, n_stories_per_call, max_retries,
+        )
+        if not stories:
+            print(f"  FAILED: {emotion} / {t[:50]!r}")
+            return
+        print(f"  {emotion} / {t[:50]!r} → {len(stories)} stories")
+        with write_lock:
+            with open(out_path, "a") as f:
+                for story in stories:
+                    f.write(json.dumps({"emotion": emotion, "topic": t, "story": story}) + "\n")
+                f.flush()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(process, t) for t in pending]
+        for fut in as_completed(futures):
+            fut.result()  # re-raise any exceptions
 
 
 def generate_neutral_dialogues(
@@ -384,6 +428,8 @@ def main():
                         help="Generate stories for every topic not already in each emotion's file")
     parser.add_argument("--n-stories-per-call", type=int, default=None,
                         help="Stories to request per API call (default: 10 for normal, 6 for --all-remaining-topics)")
+    parser.add_argument("--workers", type=int, default=5,
+                        help="Parallel API calls per emotion (default: 5)")
     args = parser.parse_args()
 
     data_dir = Path(__file__).parent / "data"
@@ -422,6 +468,7 @@ def main():
                 topics=topics,
                 out_path=out_path,
                 n_stories_per_call=n_per_call,
+                workers=args.workers,
             )
 
     print("Done.")
