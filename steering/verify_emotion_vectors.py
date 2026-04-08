@@ -267,6 +267,8 @@ def main():
                         help="Path to frustration_meta.json (default: steering/frustration_meta.json)")
     parser.add_argument("--no-instruct", action="store_true",
                         help="Use base-model prompts instead of chat format")
+    parser.add_argument("--skip-behavioral", action="store_true",
+                        help="Skip behavioral generation test, only run next-token probability")
     parser.add_argument("--output-suffix", type=str, default="",
                         help="Suffix for output JSON, e.g. '_base'")
     args = parser.parse_args()
@@ -308,12 +310,16 @@ def main():
     print_summary_matrix(prob_results, present_emotions)
     print_full_ranking_table(prob_results, present_emotions)
 
-    print("\n--- Method 2: Behavioral generation ---")
-    beh_results = run_behavioral_verification(
-        model, tokenizer, all_vectors, target_layer, norm_scale,
-        present_emotions, args.steering_strength, args.device, is_instruct,
-    )
-    print_behavioral_results(beh_results, present_emotions)
+    beh_results = None
+    if not args.skip_behavioral:
+        print("\n--- Method 2: Behavioral generation ---")
+        beh_results = run_behavioral_verification(
+            model, tokenizer, all_vectors, target_layer, norm_scale,
+            present_emotions, args.steering_strength, args.device, is_instruct,
+        )
+        print_behavioral_results(beh_results, present_emotions)
+    else:
+        print("\n--- Method 2: Behavioral generation (skipped) ---")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     output = {
