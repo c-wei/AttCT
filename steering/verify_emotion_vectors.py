@@ -56,10 +56,11 @@ STEERING_STRENGTH = 0.5
 def make_steer_hook(vector: torch.Tensor, multiplier: float, norm_scale: float):
     """Returns a forward hook that adds `multiplier * norm_scale * vector` to all positions."""
     def hook(module, input, output):
-        h = output[0]  # [batch, seq_len, hidden_dim]
+        is_tuple = isinstance(output, tuple)
+        h = output[0] if is_tuple else output
         delta = (multiplier * norm_scale * vector).to(h.device, h.dtype)
         h = h + delta.unsqueeze(0).unsqueeze(0)
-        return (h,) + output[1:]
+        return (h,) + output[1:] if is_tuple else h
     return hook
 
 

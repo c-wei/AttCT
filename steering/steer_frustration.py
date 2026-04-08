@@ -53,10 +53,11 @@ DEFAULT_MULTIPLIERS = [0.0, 0.5, 1.0, 1.5, 2.0]
 def make_steer_hook(vector: torch.Tensor, multiplier: float, norm_scale: float):
     """Forward hook: add multiplier * norm_scale * vector to all residual stream positions."""
     def hook(module, input, output):
-        h = output[0]  # [batch, seq_len, hidden_dim]
+        is_tuple = isinstance(output, tuple)
+        h = output[0] if is_tuple else output
         delta = (multiplier * norm_scale * vector).to(h.device, h.dtype)
         h = h + delta.unsqueeze(0).unsqueeze(0)
-        return (h,) + output[1:]
+        return (h,) + output[1:] if is_tuple else h
     return hook
 
 

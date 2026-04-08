@@ -71,8 +71,9 @@ def extract_activations(
     captured: dict[str, torch.Tensor] = {}
 
     def hook_fn(module, input, output):
-        # output[0] is hidden_states: [batch, seq_len, hidden_dim]
-        captured["hidden"] = output[0].detach().cpu().float()
+        # output may be a tuple (hidden_states, ...) or a bare tensor
+        h = output if isinstance(output, torch.Tensor) else output[0]
+        captured["hidden"] = h.detach().cpu().float()
         return output
 
     handle = layers[target_layer].register_forward_hook(hook_fn)
