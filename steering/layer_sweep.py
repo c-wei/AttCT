@@ -276,6 +276,8 @@ def main():
                         help="Last layer to test inclusive (default: n_layers-1)")
     parser.add_argument("--layer-stride", type=int, default=1,
                         help="Test every N-th layer within the range (default: 1)")
+    parser.add_argument("--output-suffix", type=str, default="",
+                        help="Suffix for output JSON, e.g. '_base' → layer_sweep_results_base.json")
     args = parser.parse_args()
 
     print(f"Loading {args.model}…")
@@ -418,7 +420,7 @@ def main():
         print(f"2/3-depth rule (layer {ref_layer}): "
               f"accuracy={ref_result['accuracy']:.1%}, {ref_result['n_correct']}/{ref_result['n_total']}")
 
-    out_path = STEERING_DIR / "layer_sweep_results.json"
+    out_path = STEERING_DIR / f"layer_sweep_results{args.output_suffix}.json"
     with open(out_path, "w") as f:
         json.dump({
             "model": args.model,
