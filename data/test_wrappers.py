@@ -308,4 +308,18 @@ class TestIntegration:
     def test_mode_default_is_jailbreak(self):
         wrapper = AdversarialWrapper()
         assert wrapper.mode == "jailbreak"
+
+    def test_extra_templates_appended(self):
+        base = ["Base {prompt}"]
+        extra = ["Extra1 {prompt}", "Extra2 {prompt}"]
+        wrapper = AdversarialWrapper(templates=base, extra_templates=extra, strategy="sequential")
+        assert wrapper.templates == base + extra
+
+    def test_extra_templates_wrap_works(self):
+        """wrap() must not crash for any extra template."""
+        extra = ["Prefix {prompt} Suffix", "{prompt} end"]
+        wrapper = AdversarialWrapper(templates=extra, strategy="sequential")
+        for _ in range(len(extra)):
+            wrapped, start, length = wrapper.wrap("hello")
+            assert wrapped[start:start + length] == "hello"
         assert wrapper.templates == STRONG_JAILBREAK_TEMPLATES

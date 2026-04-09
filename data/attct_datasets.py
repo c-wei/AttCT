@@ -155,7 +155,10 @@ def _detect_injection_point(template: str) -> str:
     ]
     for marker, replacement in markers:
         if marker in template:
-            return template.replace(marker, replacement, 1)
+            normalized = template.replace(marker, replacement, 1)
+            # Remove any additional {prompt} occurrences so wrap() can split on exactly one.
+            parts = normalized.split("{prompt}", 1)
+            return parts[0] + "{prompt}" + parts[1].replace("{prompt}", "")
     return template + "\n\n{prompt}"
 
 
@@ -194,10 +197,13 @@ def _load_in_the_wild_templates(
         if not item.get("jailbreak"):
             continue
         raw = str(item["prompt"]).strip()
-        if not raw or raw in seen:
+        if not raw:
             continue
-        seen.add(raw)
-        templates.append(_detect_injection_point(raw))
+        normalized = _detect_injection_point(raw)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        templates.append(normalized)
         if limit and len(templates) >= limit:
             break
 
@@ -242,6 +248,8 @@ def _load_cot_transparency_pairs(
         raise FileNotFoundError(f"No JSONL files found under {root}")
 
     for path in jsonl_files:
+        if bias_names and path.parent.name not in bias_names:
+            continue
         with path.open("r") as f:
             for line in f:
                 line = line.strip()
@@ -250,9 +258,6 @@ def _load_cot_transparency_pairs(
                 try:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
-                    continue
-
-                if bias_names and obj.get("bias_name") not in bias_names:
                     continue
 
                 unbiased = obj.get("unbiased_question", [])
@@ -390,6 +395,8 @@ def get_prompts(
         # are loaded separately and passed to AttCTDataset via extra_templates.
         # get_prompts() returns only the clean prompts here.
         try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
             clearharm_split = "train" if split in ("eval", "validation") else split
             print(f"--> Loading AlignmentResearch/ClearHarm for in-the-wild source...")
             ds = _hf_load_dataset("AlignmentResearch/ClearHarm", "rep40", split=clearharm_split, streaming=True)
@@ -504,6 +511,13 @@ class AttCTDataset(Dataset):
         self.paired_biased = paired_biased or []
 
         if pre_paired:
+            if not paired_biased:
+                raise ValueError("pre_paired=True requires paired_biased to be provided")
+            if len(paired_biased) != len(prompts):
+                raise ValueError(
+                    f"pre_paired=True requires paired_biased and prompts to have the same length, "
+                    f"got {len(paired_biased)} vs {len(prompts)}"
+                )
             self.wrapper = None
         elif wrapper is not None:
             self.wrapper = wrapper
@@ -582,8 +596,14 @@ class AttCTDataset(Dataset):
                     tokenize=False,
                     add_generation_prompt=True,
                 )
-                # The content we track boundaries for is the first user turn
-                tracked_content = biased_messages[0]["content"]
+                # Track the clean text within the biased sequence so that
+                # start_index and clean_len refer to the same span, matching
+                # what downstream losses expect. Skip if clean text is absent.
+                if clean_text not in biased_messages[0]["content"]:
+                    raise ValueError(
+                        f"clean_text not found in biased first message at idx={idx}; skipping"
+                    )
+                tracked_content = clean_text
             else:
                 wrapped_text, _, _ = self.wrapper.wrap(clean_text)
                 wrapped_formatted = self.tokenizer.apply_chat_template(
@@ -596,7 +616,8 @@ class AttCTDataset(Dataset):
             if self.pre_paired:
                 biased_messages = self.paired_biased[idx]
                 wrapped_formatted = " ".join(m["content"] for m in biased_messages)
-                tracked_content = biased_messages[0]["content"]
+                biased_first_content = biased_messages[0]["content"]
+                tracked_content = clean_text if clean_text in biased_first_content else biased_first_content
             else:
                 wrapped_text, _, _ = self.wrapper.wrap(clean_text)
                 wrapped_formatted = wrapped_text

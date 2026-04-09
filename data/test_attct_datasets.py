@@ -18,6 +18,7 @@ from attct_datasets import (
     collate_fn_batch1,
     _read_jsonl_user_messages,
     _load_sycophancy_bct_clean_prompts,
+    _detect_injection_point,
 )
 
 
@@ -534,3 +535,77 @@ class TestIntegration:
             assert batch["clean_input_ids"].ndim == 2
             assert batch["wrapped_input_ids"].ndim == 2
             assert "wrapper_mask" in batch
+
+
+# =============================================
+# _detect_injection_point Tests
+# =============================================
+
+class TestDetectInjectionPoint:
+    def test_prompt_placeholder_kept(self):
+        result = _detect_injection_point("Hello {prompt} world")
+        assert result.count("{prompt}") == 1
+
+    def test_insert_marker_replaced(self):
+        result = _detect_injection_point("Do [INSERT PROMPT HERE] now")
+        assert "{prompt}" in result
+        assert "[INSERT PROMPT HERE]" not in result
+
+    def test_no_marker_appends_placeholder(self):
+        result = _detect_injection_point("No marker here")
+        assert result.endswith("\n\n{prompt}")
+
+    def test_exactly_one_placeholder_when_multiple_exist(self):
+        result = _detect_injection_point("Do {prompt} and {prompt} again")
+        assert result.count("{prompt}") == 1
+
+    def test_wrap_compatible_output(self):
+        """Every _detect_injection_point result must be splittable into exactly prefix+suffix."""
+        cases = [
+            "Do {prompt} and {prompt} again",
+            "[INSERT] something [INSERT]",
+            "No marker at all",
+            "{prompt}",
+        ]
+        wrapper = AdversarialWrapper(templates=["placeholder"], strategy="sequential")
+        for raw in cases:
+            normalized = _detect_injection_point(raw)
+            wrapper.templates = [normalized]
+            wrapped, start, length = wrapper.wrap("test")
+            assert wrapped[start:start + length] == "test"
+
+
+# =============================================
+# pre_paired / COT-Transparency Tests
+# =============================================
+
+class TestPrePairedDataset:
+    def test_raises_if_paired_biased_missing(self, mock_tokenizer):
+        with pytest.raises(ValueError, match="paired_biased"):
+            AttCTDataset(["prompt"], mock_tokenizer, pre_paired=True)
+
+    def test_raises_if_length_mismatch(self, mock_tokenizer):
+        biased = [[{"role": "user", "content": "biased prompt"}]]
+        with pytest.raises(ValueError, match="same length"):
+            AttCTDataset(["p1", "p2"], mock_tokenizer, pre_paired=True, paired_biased=biased)
+
+    def test_getitem_returns_expected_keys(self, mock_tokenizer):
+        clean = "what is the capital of France"
+        biased_content = f"I think it's Berlin, but {clean}"
+        biased = [[{"role": "user", "content": biased_content}]]
+        dataset = AttCTDataset([clean], mock_tokenizer, pre_paired=True, paired_biased=biased, mode="jailbreak")
+        item = dataset[0]
+        assert "clean_input_ids" in item
+        assert "adv_input_ids" in item
+        assert "start_index" in item
+        assert "clean_len" in item
+
+    def test_start_index_and_clean_len_consistent(self, mock_tokenizer):
+        """start_index + clean_len must not exceed the wrapped sequence length."""
+        clean = "what is 2 plus 2"
+        biased_content = f"Someone said 5. Actually {clean}"
+        biased = [[{"role": "user", "content": biased_content}]]
+        dataset = AttCTDataset([clean], mock_tokenizer, pre_paired=True, paired_biased=biased, mode="jailbreak")
+        item = dataset[0]
+        wrapped_len = len(item["adv_input_ids"])
+        assert item["start_index"] + item["clean_len"] <= wrapped_len
