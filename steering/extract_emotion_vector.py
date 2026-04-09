@@ -56,44 +56,45 @@ class _EarlyExit(Exception):
     pass
 
 
-def extract_activations(
+def extract_activations_batched(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    texts: list[str],
+    all_texts: list[str],
+    all_labels: list[str],
     target_layer: int,
     layers: torch.nn.ModuleList,
     start_token: int = 50,
     batch_size: int = 8,
     device: str = "cuda",
-) -> np.ndarray:
+) -> dict[str, np.ndarray]:
     """
-    Run texts through the model, capture residual stream at target_layer,
-    average from token `start_token` onward.
+    Single pass over all texts (all emotions + neutral together).
+    Uses an early-exit hook to abort after target_layer, skipping deeper layers.
 
-    Uses an early-exit hook to abort the forward pass after target_layer,
-    skipping all deeper layers for a ~30% speedup.
-
-    Returns: np.ndarray of shape [len(texts), hidden_dim]
+    Returns: dict label → [n_texts, hidden_dim] array
     """
     captured: dict[str, torch.Tensor] = {}
 
     def hook_fn(module, input, output):
         h = output if isinstance(output, torch.Tensor) else output[0]
         captured["hidden"] = h.detach().cpu().float()
-        raise _EarlyExit()  # abort — we have what we need
+        raise _EarlyExit()
 
     handle = layers[target_layer].register_forward_hook(hook_fn)
 
-    all_vecs = []
+    label_vecs: dict[str, list[np.ndarray]] = {}
+    n_batches = (len(all_texts) + batch_size - 1) // batch_size
+
     try:
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i : i + batch_size]
+        for i in range(0, len(all_texts), batch_size):
+            batch_texts  = all_texts[i : i + batch_size]
+            batch_labels = all_labels[i : i + batch_size]
             enc = tokenizer(
                 batch_texts,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=1024,
+                max_length=512,
             ).to(device)
 
             with torch.inference_mode():
@@ -102,20 +103,21 @@ def extract_activations(
                 except _EarlyExit:
                     pass
 
-            h = captured["hidden"]  # [batch, seq_len, hidden_dim]
+            h = captured["hidden"]       # [batch, seq_len, hidden_dim]
             attn_mask = enc["attention_mask"].cpu().float()
-            for b in range(h.shape[0]):
+            for b, label in enumerate(batch_labels):
                 seq_len = int(attn_mask[b].sum().item())
                 effective_start = min(start_token, seq_len - 1)
-                vec = h[b, effective_start:seq_len, :].mean(dim=0)
-                all_vecs.append(vec.numpy())
+                vec = h[b, effective_start:seq_len, :].mean(dim=0).numpy()
+                label_vecs.setdefault(label, []).append(vec)
 
-            if (i // batch_size + 1) % 20 == 0:
-                print(f"    {i + len(batch_texts)}/{len(texts)} done")
+            batch_idx = i // batch_size + 1
+            if batch_idx % 50 == 0 or batch_idx == n_batches:
+                print(f"    [{i + len(batch_texts)}/{len(all_texts)}]")
     finally:
         handle.remove()
 
-    return np.stack(all_vecs, axis=0)  # [n_texts, hidden_dim]
+    return {label: np.stack(vecs) for label, vecs in label_vecs.items()}
 
 
 # ── Emotion vector computation ────────────────────────────────────────────────
@@ -255,32 +257,28 @@ def main():
     neutral_texts = [r["dialogue"] for r in neutral_records]
     print(f"  neutral: {len(neutral_texts)} dialogues")
 
-    # ── Extract activations ───────────────────────────────────────────────────
-    print("\nExtracting emotion activations…")
-    emotion_activations: dict[str, np.ndarray] = {}
-    all_norms = []
+    # ── Single-pass extraction (all emotions + neutral together) ─────────────
+    print(f"\nExtracting activations (single pass, layer {target_layer})…")
+    all_texts  = [t for e, texts in emotion_texts.items() for t in texts]
+    all_labels = [e for e, texts in emotion_texts.items() for _ in texts]
+    all_texts  += neutral_texts
+    all_labels += ["__neutral__"] * len(neutral_texts)
+    print(f"  Total texts: {len(all_texts)}")
 
-    for emotion, texts in emotion_texts.items():
-        print(f"  [{emotion}]")
-        acts = extract_activations(
-            model, tokenizer, texts, target_layer, layers,
-            start_token=args.start_token,
-            batch_size=args.batch_size,
-            device=args.device,
-        )  # [n_stories, hidden_dim]
-        emotion_activations[emotion] = acts
-        all_norms.extend(np.linalg.norm(acts, axis=1).tolist())
-
-    norm_scale = float(np.mean(all_norms))
-    print(f"\nResidual stream norm_scale at layer {target_layer}: {norm_scale:.4f}")
-
-    print("\nExtracting neutral activations…")
-    neutral_activations = extract_activations(
-        model, tokenizer, neutral_texts, target_layer, layers,
+    result = extract_activations_batched(
+        model, tokenizer, all_texts, all_labels,
+        target_layer, layers,
         start_token=args.start_token,
         batch_size=args.batch_size,
         device=args.device,
-    )  # [n_neutral, hidden_dim]
+    )
+
+    emotion_activations = {e: result[e] for e in emotion_texts if e in result}
+    neutral_activations = result.get("__neutral__", np.zeros((1, 1)))
+
+    all_norms = [n for e in emotion_activations for n in np.linalg.norm(emotion_activations[e], axis=1).tolist()]
+    norm_scale = float(np.mean(all_norms))
+    print(f"  norm_scale at layer {target_layer}: {norm_scale:.4f}")
 
     # ── Compute emotion vectors ───────────────────────────────────────────────
     present_emotions = list(emotion_activations.keys())
