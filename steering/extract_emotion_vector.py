@@ -194,6 +194,10 @@ def main():
     parser.add_argument("--subtract-story-pca", type=int, default=0,
                         help="Remove top-N PCs of all story activations before computing vectors "
                              "(0 = disabled, try 3-5). Removes common narrative/format confounds.")
+    parser.add_argument("--stories-override", nargs=2, action="append", default=[],
+                        metavar=("EMOTION", "PATH"),
+                        help="Override story file for a specific emotion, e.g. "
+                             "--stories-override frustrated data/stories_frustrated_highsalience.jsonl")
     args = parser.parse_args()
 
     # ── Load model ────────────────────────────────────────────────────────────
@@ -215,16 +219,18 @@ def main():
     print(f"Model has {n_layers} layers. Target layer: {target_layer} (~2/3 depth)")
 
     # ── Load stories ──────────────────────────────────────────────────────────
+    overrides = {emotion: Path(path) for emotion, path in args.stories_override}
     emotion_texts: dict[str, list[str]] = {}
     for emotion in EMOTIONS:
-        path = DATA_DIR / f"stories_{emotion}.jsonl"
+        path = overrides.get(emotion, DATA_DIR / f"stories_{emotion}.jsonl")
         if not path.exists():
             print(f"WARNING: {path} not found, skipping {emotion}")
             continue
         with open(path) as f:
             records = [json.loads(l) for l in f if l.strip()]
         texts = [r["story"] for r in records]
-        print(f"  {emotion}: {len(texts)} stories")
+        label = f" (override: {path.name})" if emotion in overrides else ""
+        print(f"  {emotion}: {len(texts)} stories{label}")
         emotion_texts[emotion] = texts
 
     if not emotion_texts:
