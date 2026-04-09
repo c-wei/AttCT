@@ -191,6 +191,9 @@ def main():
                         help="Fraction of neutral variance to project out")
     parser.add_argument("--output-suffix", type=str, default="",
                         help="Suffix for output filenames, e.g. '_base' → all_emotion_vectors_base.pt")
+    parser.add_argument("--subtract-story-pca", type=int, default=0,
+                        help="Remove top-N PCs of all story activations before computing vectors "
+                             "(0 = disabled, try 3-5). Removes common narrative/format confounds.")
     args = parser.parse_args()
 
     # ── Load model ────────────────────────────────────────────────────────────
@@ -266,6 +269,22 @@ def main():
     present_emotions = list(emotion_activations.keys())
     print(f"\nComputing emotion vectors for: {present_emotions}")
     raw_vectors = compute_emotion_vectors(emotion_activations)
+
+    # ── Optional: subtract top PCs of all story activations ──────────────────
+    if args.subtract_story_pca > 0:
+        print(f"\nSubtracting top {args.subtract_story_pca} PCs of all story activations…")
+        all_story_acts = np.vstack(list(emotion_activations.values()))
+        n_comp = min(args.subtract_story_pca, all_story_acts.shape[0] - 1)
+        story_pca = PCA(n_components=n_comp)
+        story_pca.fit(all_story_acts)
+        var = story_pca.explained_variance_ratio_
+        print(f"  Story PCs variance explained: " + ", ".join(f"PC{i+1}={v:.1%}" for i, v in enumerate(var)))
+        story_pcs = story_pca.components_[:args.subtract_story_pca]
+        for e in raw_vectors:
+            v = raw_vectors[e]
+            for pc in story_pcs:
+                v = v - np.dot(v, pc) * pc
+            raw_vectors[e] = v
 
     # ── Project out neutral PCs ───────────────────────────────────────────────
     projected_vectors, n_pcs, var_explained = project_out_neutral_pcs(

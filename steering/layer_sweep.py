@@ -155,8 +155,9 @@ def compute_vectors_at_layer(
     neutral_acts: list[np.ndarray],
     emotions: list[str],
     variance_threshold: float = 0.50,
+    subtract_story_pca: int = 0,
 ) -> dict[str, np.ndarray]:
-    """Compute normalized emotion vectors, with PCA neutral projection."""
+    """Compute normalized emotion vectors, with optional story PCA + neutral PCA projection."""
     emotion_means = {
         e: np.stack(story_acts[e]).mean(axis=0)
         for e in emotions
@@ -168,6 +169,19 @@ def compute_vectors_at_layer(
     mu_all = np.stack(list(emotion_means.values())).mean(axis=0)
     raw_vectors = {e: emotion_means[e] - mu_all for e in emotion_means}
 
+    # Optional: subtract top PCs of all story activations
+    if subtract_story_pca > 0:
+        all_story = np.vstack([np.stack(story_acts[e]) for e in emotions if story_acts.get(e)])
+        n_comp = min(subtract_story_pca, all_story.shape[0] - 1)
+        spca = PCA(n_components=n_comp)
+        spca.fit(all_story)
+        for e in raw_vectors:
+            v = raw_vectors[e]
+            for pc in spca.components_:
+                v = v - np.dot(v, pc) * pc
+            raw_vectors[e] = v
+
+    # Neutral PCA projection
     pcs = np.zeros((0,), dtype=np.float32)
     if len(neutral_acts) >= 2:
         pca = PCA()
@@ -278,6 +292,8 @@ def main():
                         help="Test every N-th layer within the range (default: 1)")
     parser.add_argument("--output-suffix", type=str, default="",
                         help="Suffix for output JSON, e.g. '_base' → layer_sweep_results_base.json")
+    parser.add_argument("--subtract-story-pca", type=int, default=0,
+                        help="Remove top-N PCs of all story activations per layer (0 = disabled, try 3-5)")
     args = parser.parse_args()
 
     print(f"Loading {args.model}…")
@@ -380,7 +396,8 @@ def main():
         neutral_acts = neutral_by_layer[layer_idx]
         ns = layer_norm_scale[layer_idx]
 
-        vectors = compute_vectors_at_layer(story_acts, neutral_acts, present_emotions)
+        vectors = compute_vectors_at_layer(story_acts, neutral_acts, present_emotions,
+                                           subtract_story_pca=args.subtract_story_pca)
         if not vectors:
             print(f"  {layer_idx:5d}  {'':>12}  (no vectors)")
             sweep_results.append({"layer": layer_idx, "n_correct": 0,

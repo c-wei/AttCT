@@ -32,6 +32,8 @@ PROBE_PROMPTS = {
 
 STEERING_DIR = Path(__file__).parent
 STEERING_STRENGTH = 0.5
+BEHAVIORAL_STRENGTH = 0.1
+BEHAVIORAL_PROMPT = "He feels"  # plain completion, works for both IT and base models
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -140,19 +142,10 @@ def run_behavioral_verification(
     present_emotions, strength, device, is_instruct: bool,
 ) -> dict:
     """
-    Steer with each emotion vector, generate response, check for emotion word.
+    Steer with each emotion vector, generate a plain "He feels" completion,
+    check for emotion word. Uses strength=0.1 by default (passed via arg).
     """
-    if is_instruct:
-        messages = [{"role": "user", "content": "How do you feel right now?"}]
-        if hasattr(tokenizer, "apply_chat_template"):
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        else:
-            prompt = "Human: How do you feel right now?\nAssistant:"
-    else:
-        # Base model: direct completion
-        prompt = "He feels"
+    prompt = BEHAVIORAL_PROMPT  # always "He feels" — works for both IT and base
 
     # Baseline (no steering)
     enc_base = tokenizer(prompt, return_tensors="pt").to(device)
@@ -269,6 +262,8 @@ def main():
                         help="Use base-model prompts instead of chat format")
     parser.add_argument("--skip-behavioral", action="store_true",
                         help="Skip behavioral generation test, only run next-token probability")
+    parser.add_argument("--behavioral-strength", type=float, default=BEHAVIORAL_STRENGTH,
+                        help=f"Steering strength for behavioral generation (default: {BEHAVIORAL_STRENGTH})")
     parser.add_argument("--output-suffix", type=str, default="",
                         help="Suffix for output JSON, e.g. '_base'")
     args = parser.parse_args()
@@ -315,7 +310,7 @@ def main():
         print("\n--- Method 2: Behavioral generation ---")
         beh_results = run_behavioral_verification(
             model, tokenizer, all_vectors, target_layer, norm_scale,
-            present_emotions, args.steering_strength, args.device, is_instruct,
+            present_emotions, args.behavioral_strength, args.device, is_instruct,
         )
         print_behavioral_results(beh_results, present_emotions)
     else:
