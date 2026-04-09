@@ -207,6 +207,8 @@ def main():
                         metavar=("EMOTION", "PATH"),
                         help="Override story file for a specific emotion, e.g. "
                              "--stories-override frustrated data/stories_frustrated_highsalience.jsonl")
+    parser.add_argument("--high-salience", action="store_true",
+                        help="Use stories_{emotion}_highsalience.jsonl for all emotions")
     args = parser.parse_args()
 
     # ── Load model ────────────────────────────────────────────────────────────
@@ -229,6 +231,10 @@ def main():
 
     # ── Load stories ──────────────────────────────────────────────────────────
     overrides = {emotion: Path(path) for emotion, path in args.stories_override}
+    if args.high_salience:
+        for emotion in EMOTIONS:
+            if emotion not in overrides:
+                overrides[emotion] = DATA_DIR / f"stories_{emotion}_highsalience.jsonl"
     emotion_texts: dict[str, list[str]] = {}
     for emotion in EMOTIONS:
         path = overrides.get(emotion, DATA_DIR / f"stories_{emotion}.jsonl")
