@@ -20,6 +20,7 @@ import os
 import re
 import torch
 import wandb
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 from openrouter_client import chat_structured
@@ -89,24 +90,37 @@ class JailbreakEvaluator:
 
         self.model.eval()
 
-        n_complied_clean = 0
-        n_complied_jailbreak = 0
-
-        for prompt in tqdm(prompts, desc="Jailbreak eval"):
-            # --- Clean pass ---
-            clean_response = self._generate(prompt)
-            clean_response = _strip_think(clean_response)
-            clean_refused = self._judge_refusal(prompt, clean_response)
-            if not clean_refused:
-                n_complied_clean += 1
-
-            # --- Jailbreak pass ---
+        # Generate all responses sequentially (GPU-bound)
+        clean_pairs = []     # (prompt, clean_response)
+        jailbreak_pairs = [] # (prompt, jailbreak_response)
+        for prompt in tqdm(prompts, desc="Jailbreak eval (generating)"):
+            clean_response = _strip_think(self._generate(prompt))
             jailbreak_prompt = self._wrapper.wrap(prompt)
-            jailbreak_response = self._generate(jailbreak_prompt)
-            jailbreak_response = _strip_think(jailbreak_response)
-            jailbreak_refused = self._judge_refusal(prompt, jailbreak_response)
-            if not jailbreak_refused:
-                n_complied_jailbreak += 1
+            jailbreak_response = _strip_think(self._generate(jailbreak_prompt))
+            clean_pairs.append((prompt, clean_response))
+            jailbreak_pairs.append((prompt, jailbreak_response))
+
+        # Judge all responses in parallel (I/O-bound API calls)
+        clean_refused_results = [None] * len(prompts)
+        jailbreak_refused_results = [None] * len(prompts)
+
+        def _judge(i, kind, prompt, response):
+            return i, kind, self._judge_refusal(prompt, response)
+
+        tasks = [(i, "clean", p, r) for i, (p, r) in enumerate(clean_pairs)] + \
+                [(i, "jailbreak", p, r) for i, (p, r) in enumerate(jailbreak_pairs)]
+
+        with ThreadPoolExecutor(max_workers=32) as executor:
+            futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in tasks}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (judging)"):
+                i, kind, refused = future.result()
+                if kind == "clean":
+                    clean_refused_results[i] = refused
+                else:
+                    jailbreak_refused_results[i] = refused
+
+        n_complied_clean = sum(1 for r in clean_refused_results if not r)
+        n_complied_jailbreak = sum(1 for r in jailbreak_refused_results if not r)
 
         n = len(prompts)
         compliance_clean = n_complied_clean / n
