@@ -53,8 +53,9 @@ def _find_layers(model) -> torch.nn.ModuleList:
     raise AttributeError(f"Could not find decoder layers in {type(model).__name__}")
 
 
-def load_stories(emotion: str, max_stories: int = None) -> list[str]:
-    path = DATA_DIR / f"stories_{emotion}.jsonl"
+def load_stories(emotion: str, max_stories: int = None, path: Path = None) -> list[str]:
+    if path is None:
+        path = DATA_DIR / f"stories_{emotion}.jsonl"
     if not path.exists():
         return []
     stories = []
@@ -294,6 +295,8 @@ def main():
                         help="Suffix for output JSON, e.g. '_base' → layer_sweep_results_base.json")
     parser.add_argument("--subtract-story-pca", type=int, default=0,
                         help="Remove top-N PCs of all story activations per layer (0 = disabled, try 3-5)")
+    parser.add_argument("--high-salience", action="store_true",
+                        help="Use stories_{emotion}_highsalience.jsonl for all emotions")
     args = parser.parse_args()
 
     print(f"Loading {args.model}…")
@@ -320,10 +323,12 @@ def main():
     print("\nLoading story data…")
     emotion_stories: dict[str, list[str]] = {}
     for e in args.emotions:
-        stories = load_stories(e, args.max_stories)
+        path = (DATA_DIR / f"stories_{e}_highsalience.jsonl") if args.high_salience else None
+        stories = load_stories(e, args.max_stories, path=path)
         if stories:
+            label = " (highsalience)" if args.high_salience else ""
             emotion_stories[e] = stories
-            print(f"  {e}: {len(stories)} stories")
+            print(f"  {e}: {len(stories)} stories{label}")
         else:
             print(f"  {e}: NOT FOUND — skipping")
     present_emotions = list(emotion_stories.keys())
