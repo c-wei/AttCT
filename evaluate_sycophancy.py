@@ -83,12 +83,12 @@ class SycophancyEvaluator:
                      evaluations logged in the same run.
     """
 
-    def __init__(self, model, tokenizer, device, max_samples: int = 500,
+    def __init__(self, model, tokenizer, device, max_samples: int = None,
                  prefix: str = "syco_eval", results_csv: str = "results/syco_results.csv"):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-        self.n_questions = max_samples
+        self.n_questions = max_samples if max_samples is not None else DEFAULT_N_QUESTIONS
         self.prefix = prefix
         self.results_csv = results_csv
 
