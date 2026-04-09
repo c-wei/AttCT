@@ -52,6 +52,10 @@ def _find_layers(model) -> torch.nn.ModuleList:
 
 # ── Activation extraction ─────────────────────────────────────────────────────
 
+class _EarlyExit(Exception):
+    pass
+
+
 def extract_activations(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -59,22 +63,24 @@ def extract_activations(
     target_layer: int,
     layers: torch.nn.ModuleList,
     start_token: int = 50,
-    batch_size: int = 1,
+    batch_size: int = 8,
     device: str = "cuda",
 ) -> np.ndarray:
     """
     Run texts through the model, capture residual stream at target_layer,
     average from token `start_token` onward.
 
+    Uses an early-exit hook to abort the forward pass after target_layer,
+    skipping all deeper layers for a ~30% speedup.
+
     Returns: np.ndarray of shape [len(texts), hidden_dim]
     """
     captured: dict[str, torch.Tensor] = {}
 
     def hook_fn(module, input, output):
-        # output may be a tuple (hidden_states, ...) or a bare tensor
         h = output if isinstance(output, torch.Tensor) else output[0]
         captured["hidden"] = h.detach().cpu().float()
-        return output
+        raise _EarlyExit()  # abort — we have what we need
 
     handle = layers[target_layer].register_forward_hook(hook_fn)
 
@@ -91,16 +97,17 @@ def extract_activations(
             ).to(device)
 
             with torch.inference_mode():
-                model(**enc)
+                try:
+                    model(**enc)
+                except _EarlyExit:
+                    pass
 
             h = captured["hidden"]  # [batch, seq_len, hidden_dim]
-            # For each item in batch, average from token start_token onward
-            # (use attention_mask to exclude padding)
-            attn_mask = enc["attention_mask"].cpu().float()  # [batch, seq_len]
+            attn_mask = enc["attention_mask"].cpu().float()
             for b in range(h.shape[0]):
                 seq_len = int(attn_mask[b].sum().item())
                 effective_start = min(start_token, seq_len - 1)
-                vec = h[b, effective_start:seq_len, :].mean(dim=0)  # [hidden_dim]
+                vec = h[b, effective_start:seq_len, :].mean(dim=0)
                 all_vecs.append(vec.numpy())
 
             if (i // batch_size + 1) % 20 == 0:
@@ -194,6 +201,8 @@ def main():
     parser.add_argument("--subtract-story-pca", type=int, default=0,
                         help="Remove top-N PCs of all story activations before computing vectors "
                              "(0 = disabled, try 3-5). Removes common narrative/format confounds.")
+    parser.add_argument("--max-stories", type=int, default=None,
+                        help="Cap stories per emotion (default: all). 80 is plenty for a reliable mean.")
     parser.add_argument("--stories-override", nargs=2, action="append", default=[],
                         metavar=("EMOTION", "PATH"),
                         help="Override story file for a specific emotion, e.g. "
@@ -229,6 +238,8 @@ def main():
         with open(path) as f:
             records = [json.loads(l) for l in f if l.strip()]
         texts = [r["story"] for r in records]
+        if args.max_stories:
+            texts = texts[:args.max_stories]
         label = f" (override: {path.name})" if emotion in overrides else ""
         print(f"  {emotion}: {len(texts)} stories{label}")
         emotion_texts[emotion] = texts
