@@ -24,7 +24,6 @@ from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
 from interleaved_trainer import InterleavedTrainer
 from evaluate import Evaluator
-from behavioral_evaluate import BehavioralEvaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -61,16 +60,8 @@ def main():
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
 
-    # Behavioral eval JSONL paths
-    beval = parser.add_argument_group("behavioral_eval")
-    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
-    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None)
-    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None)
-    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None)
-    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500)
-    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)
-    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
-    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
+    parser.add_argument("--control-cot", dest="control_cot_path", default=None,
+                        help="Path to control CoT JSONL — used to select sycophancy_bct data source")
 
     parser.add_argument(
         "--model",
@@ -246,33 +237,6 @@ def main():
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
-        has_sycophancy_paths = all(p is not None for p in beval_paths)
-        has_mmlu  = args.mmlu_max_samples > 0
-        has_gsm8k = args.gsm8k_max_samples > 0
-        behavioral_evaluator = None
-        if has_sycophancy_paths or has_mmlu or has_gsm8k:
-            config["behavioral_eval"] = {
-                "bct_cot_path":        args.bct_cot_path,
-                "bct_noncot_path":     args.bct_noncot_path,
-                "control_cot_path":    args.control_cot_path,
-                "control_noncot_path": args.control_noncot_path,
-                "max_samples":         args.beval_max_samples,
-                "mmlu_max_samples":    args.mmlu_max_samples,
-                "mmlu_subject":        args.mmlu_subject,
-                "gsm8k_max_samples":   args.gsm8k_max_samples,
-            }
-            behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
-            features = []
-            if has_sycophancy_paths:
-                features.append("sycophancy BCT")
-            if has_mmlu:
-                features.append(f"MMLU ({args.mmlu_max_samples} samples, subject={args.mmlu_subject})")
-            if has_gsm8k:
-                features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
-            print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
-        else:
-            print("No behavioral eval configured.")
 
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
         _data_source_tag = config.get("data", {}).get("source", "unknown")
