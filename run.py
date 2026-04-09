@@ -120,6 +120,15 @@ def main():
 
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
+    else:
+        # Apply per-source default max_steps if not explicitly overridden
+        source = (
+            args.data_source
+            or config.get("data", {}).get("source", "clear-harm")
+        )
+        source_max_steps = config.get("data", {}).get("source_max_steps", {})
+        if source in source_max_steps:
+            config.setdefault("training", {})["max_steps"] = source_max_steps[source]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
