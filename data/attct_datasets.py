@@ -135,6 +135,143 @@ def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
     return pairs
 
 
+def _detect_injection_point(template: str) -> str:
+    """
+    Normalise a raw in-the-wild jailbreak template so it contains exactly one
+    {prompt} placeholder.
+
+    Checks for common injection markers in order:
+        {prompt}, [INSERT PROMPT HERE], [INSERT], <INSERT>, <<QUERY>>, [QUERY]
+    If none are found, appends \\n\\n{prompt} at the end.
+    """
+    markers = [
+        ("{prompt}", "{prompt}"),
+        ("[INSERT PROMPT HERE]", "{prompt}"),
+        ("[INSERT]", "{prompt}"),
+        ("<INSERT>", "{prompt}"),
+        ("<<QUERY>>", "{prompt}"),
+        ("[QUERY]", "{prompt}"),
+        ("[prompt]", "{prompt}"),
+    ]
+    for marker, replacement in markers:
+        if marker in template:
+            return template.replace(marker, replacement, 1)
+    return template + "\n\n{prompt}"
+
+
+def _load_in_the_wild_templates(
+    config: str = "jailbreak_2023_12_25",
+    limit: Optional[int] = None,
+) -> List[str]:
+    """
+    Load in-the-wild jailbreak templates from HuggingFace.
+
+    Filters to rows where jailbreak==True, normalises each prompt to contain
+    a {prompt} placeholder via _detect_injection_point(), and deduplicates.
+
+    Args:
+        config: HF dataset config — "jailbreak_2023_12_25" (1,410 rows) or
+                "jailbreak_2023_05_07" (666 rows)
+        limit:  Maximum number of templates to return
+
+    Returns:
+        List of template strings each containing exactly one {prompt}
+    """
+    if _hf_load_dataset is None:
+        raise ImportError("HuggingFace datasets library not available")
+
+    print(f"--> Loading TrustAIRLab/in-the-wild-jailbreak-prompts ({config})...")
+    ds = _hf_load_dataset(
+        "TrustAIRLab/in-the-wild-jailbreak-prompts",
+        config,
+        split="train",
+        streaming=True,
+    )
+
+    templates = []
+    seen = set()
+    for item in ds:
+        if not item.get("jailbreak"):
+            continue
+        raw = str(item["prompt"]).strip()
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        templates.append(_detect_injection_point(raw))
+        if limit and len(templates) >= limit:
+            break
+
+    print(f"    Loaded {len(templates)} unique in-the-wild jailbreak templates")
+    return templates
+
+
+def _load_cot_transparency_pairs(
+    root_path: str | Path,
+    bias_names: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+) -> List[tuple]:
+    """
+    Load (clean_prompt, biased_messages) pairs from the COT-Transparency dataset.
+
+    Expects the directory structure:
+        root_path/
+            are_you_sure/
+                mmlu_are_you_sure.jsonl
+                ...
+            suggested_answer/
+                ...
+
+    Args:
+        root_path:  Path to the dataset_dumps/test/ directory of the cloned repo.
+        bias_names: Optional list of bias category names to include
+                    (e.g. ["are_you_sure", "suggested_answer"]).
+                    If None, all categories are loaded.
+        limit:      Maximum number of pairs to return.
+
+    Returns:
+        List of (clean_prompt_str, biased_messages_list) tuples where
+        biased_messages_list is the raw list of {"role", "content"} dicts.
+    """
+    root = Path(root_path)
+    if not root.exists():
+        raise FileNotFoundError(f"COT-Transparency root not found: {root}")
+
+    pairs: List[tuple] = []
+    jsonl_files = sorted(root.glob("**/*.jsonl"))
+    if not jsonl_files:
+        raise FileNotFoundError(f"No JSONL files found under {root}")
+
+    for path in jsonl_files:
+        with path.open("r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if bias_names and obj.get("bias_name") not in bias_names:
+                    continue
+
+                unbiased = obj.get("unbiased_question", [])
+                biased   = obj.get("biased_question", [])
+                if not unbiased or not biased:
+                    continue
+
+                clean_prompt = unbiased[0].get("content", "").strip()
+                if not clean_prompt:
+                    continue
+
+                pairs.append((clean_prompt, biased))
+                if limit and len(pairs) >= limit:
+                    return pairs
+
+    print(f"    Loaded {len(pairs)} COT-Transparency pairs from {root}")
+    return pairs
+
+
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "cot",
@@ -163,6 +300,35 @@ def _load_sycophancy_bct_clean_prompts(
 # PUBLIC PROMPT LOADERS
 # ==========================================
 
+def get_paired_prompts(
+    source: str,
+    limit: Optional[int] = None,
+    *,
+    cot_transparency_root: str | Path = Path(__file__).parent.parent.parent / "cot-transparency" / "dataset_dumps" / "test",
+    cot_bias_names: Optional[List[str]] = None,
+) -> List[tuple]:
+    """
+    Load pre-paired (clean, biased) prompt tuples for sources that provide
+    their own adversarial wrapping (i.e. COT-Transparency).
+
+    Args:
+        source:                 Must be "cot-transparency".
+        limit:                  Maximum number of pairs to return.
+        cot_transparency_root:  Path to dataset_dumps/test/ in the cloned repo.
+        cot_bias_names:         Optional list of bias categories to filter to.
+
+    Returns:
+        List of (clean_prompt_str, biased_messages_list) tuples.
+    """
+    if source == "cot-transparency":
+        return _load_cot_transparency_pairs(
+            root_path=cot_transparency_root,
+            bias_names=cot_bias_names,
+            limit=limit,
+        )
+    raise ValueError(f"get_paired_prompts() does not support source='{source}'")
+
+
 def get_prompts(
     source: str = "clear-harm",
     split: str = "train",
@@ -174,7 +340,10 @@ def get_prompts(
     Load prompts from various sources.
 
     Args:
-        source: One of "clear-harm", "hardcoded", "sycophancy_bct", or path to file
+        source: One of "clear-harm", "hardcoded", "sycophancy_bct",
+                "in-the-wild", "cot-transparency", or path to file.
+                Note: "cot-transparency" returns clean prompts only —
+                use get_paired_prompts() to get the biased side too.
         split: dataset split to use (for clear-harm)
         limit: maximum number of prompts to load
         sycophancy_bct_style: "cot" or "non_cot" (for sycophancy_bct source)
@@ -215,6 +384,30 @@ def get_prompts(
             f"    Loaded {len(prompts)} prompts from sycophancy_bct "
             f"(clean, style={sycophancy_bct_style})"
         )
+
+    elif source == "in-the-wild":
+        # Use ClearHarm as the clean harmful prompt source; in-the-wild templates
+        # are loaded separately and passed to AttCTDataset via extra_templates.
+        # get_prompts() returns only the clean prompts here.
+        try:
+            clearharm_split = "train" if split in ("eval", "validation") else split
+            print(f"--> Loading AlignmentResearch/ClearHarm for in-the-wild source...")
+            ds = _hf_load_dataset("AlignmentResearch/ClearHarm", "rep40", split=clearharm_split, streaming=True)
+            prompts_raw = []
+            for item in ds:
+                content = item['content']
+                prompts_raw.append(" ".join(content) if isinstance(content, list) else str(content))
+            prompts = list(set([str(p) for p in prompts_raw if len(str(p)) > 15]))
+            print(f"    Loaded {len(prompts)} clean prompts (in-the-wild wrapper templates loaded separately)")
+        except Exception as e:
+            print(f"    Warning: Failed to load ClearHarm for in-the-wild source: {e}")
+            prompts = []
+
+    elif source == "cot-transparency":
+        # Return only clean prompts; callers needing pairs should use get_paired_prompts()
+        pairs = get_paired_prompts("cot-transparency", limit=limit)
+        prompts = [clean for clean, _ in pairs]
+        print(f"    Loaded {len(prompts)} clean prompts from COT-Transparency")
 
     elif source == "hardcoded":
         prompts = [
@@ -282,6 +475,9 @@ class AttCTDataset(Dataset):
         use_strong_templates: bool = True,
         mode: Literal["jailbreak", "sycophancy"] = "jailbreak",
         max_length: Optional[int] = None,
+        pre_paired: bool = False,
+        paired_biased: Optional[List[list]] = None,
+        extra_templates: Optional[List[str]] = None,
     ):
         """
         Args:
@@ -291,46 +487,62 @@ class AttCTDataset(Dataset):
             add_special_tokens: Whether to add special tokens to sequences
             use_strong_templates: Use strong templates (jailbreak mode only)
             mode: "jailbreak" or "sycophancy" — controls defaults and output keys
+            max_length: Maximum token length for wrapped sequences
+            pre_paired: If True, biased sequences come from paired_biased instead
+                        of AdversarialWrapper (used for COT-Transparency).
+            paired_biased: List of biased message lists (one per prompt), required
+                           when pre_paired=True. Each element is a list of
+                           {"role", "content"} dicts as returned by
+                           get_paired_prompts().
+            extra_templates: Additional wrapper templates appended to the default
+                             list (used for in-the-wild jailbreak templates).
         """
         self.prompts = prompts
         self.tokenizer = tokenizer
         self.mode = mode
+        self.pre_paired = pre_paired
+        self.paired_biased = paired_biased or []
 
-        if wrapper is not None:
+        if pre_paired:
+            self.wrapper = None
+        elif wrapper is not None:
             self.wrapper = wrapper
         elif mode == "sycophancy":
             self.wrapper = AdversarialWrapper(
                 templates=SYCOPHANCY_TEMPLATES if use_strong_templates else None,
                 strategy="random",
                 mode="sycophancy",
+                extra_templates=extra_templates,
             )
         else:
             self.wrapper = AdversarialWrapper(
                 templates=STRONG_JAILBREAK_TEMPLATES if use_strong_templates else None,
                 strategy="random",
                 mode="jailbreak",
+                extra_templates=extra_templates,
             )
 
         self.add_special_tokens = add_special_tokens
         self.max_length = max_length
 
-        # If all templates require MCQ answer choices, drop prompts that have
-        # none — otherwise wrap() would raise ValueError at training time.
-        templates = self.wrapper.templates
-        all_need_choices = templates and all(
-            any(p in t for p in ("{answer_letter}", "{answer_text}", "{answer_rendered}"))
-            for t in templates
-        )
-        if all_need_choices:
-            n_before = len(self.prompts)
-            self.prompts = [p for p in self.prompts if _extract_answer_choices(str(p))]
-            n_dropped = n_before - len(self.prompts)
-            if n_dropped:
-                import warnings
-                warnings.warn(
-                    f"AttCTDataset: dropped {n_dropped}/{n_before} prompts with no "
-                    "MCQ answer choices (incompatible with sycophancy templates)."
-                )
+        if not pre_paired:
+            # If all templates require MCQ answer choices, drop prompts that have
+            # none — otherwise wrap() would raise ValueError at training time.
+            templates = self.wrapper.templates
+            all_need_choices = templates and all(
+                any(p in t for p in ("{answer_letter}", "{answer_text}", "{answer_rendered}"))
+                for t in templates
+            )
+            if all_need_choices:
+                n_before = len(self.prompts)
+                self.prompts = [p for p in self.prompts if _extract_answer_choices(str(p))]
+                n_dropped = n_before - len(self.prompts)
+                if n_dropped:
+                    import warnings
+                    warnings.warn(
+                        f"AttCTDataset: dropped {n_dropped}/{n_before} prompts with no "
+                        "MCQ answer choices (incompatible with sycophancy templates)."
+                    )
 
     def __len__(self) -> int:
         return len(self.prompts)
@@ -351,7 +563,6 @@ class AttCTDataset(Dataset):
                                       tokens (sycophancy mode only)
         """
         clean_text = str(self.prompts[idx])
-        wrapped_text, _, _ = self.wrapper.wrap(clean_text)
 
         # Get chat-formatted strings (not yet tokenized).
         # add_generation_prompt=True appends the assistant header so the model
@@ -363,14 +574,34 @@ class AttCTDataset(Dataset):
                 tokenize=False,
                 add_generation_prompt=True,
             )
-            wrapped_formatted = self.tokenizer.apply_chat_template(
-                [{"role": "user", "content": wrapped_text}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            if self.pre_paired:
+                # COT-Transparency: biased_question is already a message list
+                biased_messages = self.paired_biased[idx]
+                wrapped_formatted = self.tokenizer.apply_chat_template(
+                    biased_messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                # The content we track boundaries for is the first user turn
+                tracked_content = biased_messages[0]["content"]
+            else:
+                wrapped_text, _, _ = self.wrapper.wrap(clean_text)
+                wrapped_formatted = self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": wrapped_text}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                tracked_content = clean_text
         except (ValueError, AttributeError):
-            clean_formatted   = clean_text
-            wrapped_formatted = wrapped_text
+            if self.pre_paired:
+                biased_messages = self.paired_biased[idx]
+                wrapped_formatted = " ".join(m["content"] for m in biased_messages)
+                tracked_content = biased_messages[0]["content"]
+            else:
+                wrapped_text, _, _ = self.wrapper.wrap(clean_text)
+                wrapped_formatted = wrapped_text
+                tracked_content = clean_text
+            clean_formatted = clean_text
 
         # Use offset_mapping to find token boundaries for clean_text in each
         # formatted string. This is robust to BPE context-sensitivity.
@@ -378,7 +609,7 @@ class AttCTDataset(Dataset):
             clean_formatted, clean_text, self.tokenizer
         )
         wrapped_ids, start_index, _ = _find_content_token_boundary(
-            wrapped_formatted, clean_text, self.tokenizer
+            wrapped_formatted, tracked_content, self.tokenizer
         )
 
         # Truncate to max_length if set
@@ -581,8 +812,24 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    prompts = get_prompts(source=source, split=split, limit=limit)
-    dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
+    extra_templates = None
+    if source == "in-the-wild":
+        extra_templates = _load_in_the_wild_templates(limit=limit)
+
+    if source == "cot-transparency":
+        pairs = get_paired_prompts("cot-transparency", limit=limit)
+        prompts = [clean for clean, _ in pairs]
+        paired_biased = [biased for _, biased in pairs]
+        dataset = AttCTDataset(
+            prompts, tokenizer, mode=mode, max_length=max_length,
+            pre_paired=True, paired_biased=paired_biased,
+        )
+    else:
+        prompts = get_prompts(source=source, split=split, limit=limit)
+        dataset = AttCTDataset(
+            prompts, tokenizer, mode=mode, max_length=max_length,
+            extra_templates=extra_templates,
+        )
     collate = partial(collate_fn_batch1, mode=mode)
 
     return DataLoader(
