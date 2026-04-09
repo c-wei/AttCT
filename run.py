@@ -273,13 +273,20 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
-        is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
+        is_sycophancy = args.data_mode == "sycophancy"
+        is_jailbreak  = args.data_mode == "jailbreak"
         is_sanity = config.get("data", {}).get("limit") is not None
+
+        run_label = os.path.splitext(os.path.basename(args.config))[0]
 
         if not is_sanity and is_sycophancy:
             from evaluate_sycophancy import SycophancyEvaluator
-            run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+
+        if not is_sanity and is_jailbreak:
+            from evaluate_jailbreak import JailbreakEvaluator
+            jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
+            _jailbreak_data_source = config.get("data", {}).get("source", "clear-harm")
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -324,6 +331,10 @@ def main():
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                             results_csv=results_csv).evaluate()
+                    if is_jailbreak:
+                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=jailbreak_results_csv).evaluate()
                     _run_probe_questions(step)
                     model.enable_adapter_layers()
                     model.train()
@@ -331,6 +342,10 @@ def main():
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                             results_csv=results_csv).evaluate()
+                    if is_jailbreak:
+                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=jailbreak_results_csv).evaluate()
                     _run_probe_questions(step)
                     model.train()
             return _fn
@@ -347,6 +362,19 @@ def main():
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
                                     results_csv=results_csv).evaluate()
+
+        if not is_sanity and is_jailbreak:
+            print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                                   prefix="pre_train", results_csv=jailbreak_results_csv).evaluate()
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                JailbreakEvaluator(ref_model, tokenizer, device, data_source=_jailbreak_data_source,
+                                   prefix="pre_train", results_csv=jailbreak_results_csv).evaluate()
 
         attct_dl = get_dataloader(config, split="train")
 
@@ -405,10 +433,16 @@ def main():
                       metric_prefix=args.metric_prefix).evaluate()
 
         if not is_sanity and is_sycophancy:
-            print("\n=== Post-training evaluation (trained model) ===")
+            print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
                                 results_csv=results_csv).evaluate()
+
+        if not is_sanity and is_jailbreak:
+            print("\n=== Post-training evaluation (trained model) — jailbreak ===")
+            model.eval()
+            JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                               prefix="post_train", results_csv=jailbreak_results_csv).evaluate()
 
     wandb.finish()
 
