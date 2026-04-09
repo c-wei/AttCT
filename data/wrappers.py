@@ -204,6 +204,7 @@ class AdversarialWrapper:
         strategy: str = "random",
         use_strong_templates: bool = True,
         mode: Literal["jailbreak", "sycophancy"] = "jailbreak",
+        extra_templates: List[str] = None,
     ):
         """
         Args:
@@ -212,9 +213,14 @@ class AdversarialWrapper:
             use_strong_templates: Use strong jailbreak templates (jailbreak mode only)
             mode: "jailbreak" or "sycophancy" — determines default templates and
                   whether answer-choice placeholders are filled
+            extra_templates: Additional templates appended to the default list
+                             (e.g. in-the-wild jailbreak prompts)
         """
         if templates is None:
             templates = _default_templates(mode, use_strong_templates)
+
+        if extra_templates:
+            templates = templates + extra_templates
 
         self.templates = templates
         self.strategy = strategy
