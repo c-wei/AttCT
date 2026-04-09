@@ -104,6 +104,15 @@ class JailbreakEvaluator:
             clean_pairs.append((prompt, clean_response))
             jailbreak_pairs.append((prompt, jailbreak_response))
 
+        # Log a few samples for debugging
+        print("\n--- Sample responses (first 3) ---")
+        for i in range(min(3, len(clean_pairs))):
+            prompt, clean_resp = clean_pairs[i]
+            _, jb_resp = jailbreak_pairs[i]
+            print(f"\n[{i}] Prompt: {prompt[:80]}...")
+            print(f"  Clean:     {clean_resp[:150]!r}")
+            print(f"  Jailbreak: {jb_resp[:150]!r}")
+
         # Judge all responses in parallel (I/O-bound API calls)
         clean_refused_results = [None] * len(prompts)
         jailbreak_refused_results = [None] * len(prompts)
