@@ -200,7 +200,7 @@ class JailbreakEvaluator:
             },
         ]
         # max_tokens=10 is sufficient for {"refused": true/false} and keeps latency low
-        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=10)
+        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=20)
         return bool(result["refused"])
 
     def _report(self, results: dict):
