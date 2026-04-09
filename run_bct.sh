@@ -163,33 +163,23 @@ echo "    Checkpoint: $CHECKPOINT"
 echo ""
 echo "── POST-TRAINING EVALS ─────────────────────────────"
 
-for ep in $(seq 1 "$EPOCHS"); do
-    EP_CHECKPOINT="$SAVE_DIR/epoch_${ep}"
-    EP_PREFIX="post_ep${ep}/"
-    # Use shorter prefix for single-epoch runs to keep backward compat
-    if [[ "$EPOCHS" -eq 1 ]]; then
-        EP_PREFIX="post/"
-    fi
+FINAL_CHECKPOINT="$SAVE_DIR/epoch_${EPOCHS}"
 
-    echo ""
-    echo "── Epoch ${ep}/${EPOCHS} checkpoint: $EP_CHECKPOINT ──"
+run_eval "Post: all evals" run_evals.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+    --skip-mtbench \
+    $BCT_ROOT_ARG \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
-    run_eval "Post ep${ep}: all evals" run_evals.py \
-        --model "$MODEL" \
-        --checkpoint "$EP_CHECKPOINT" \
-        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
-        --skip-mtbench \
-        $BCT_ROOT_ARG \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "$EP_PREFIX"
-
-    run_eval "Post ep${ep}: BRR eval" evaluate_bct.py \
-        --model "$MODEL" \
-        --lora_path "$EP_CHECKPOINT" \
-        --test_root "$TEST_ROOT" \
-        --baseline_json "$RESULTS_DIR/pre_brr.json" \
-        --output_json "$RESULTS_DIR/post_ep${ep}_brr.json" \
-        --metric-prefix "$EP_PREFIX"
-done
+run_eval "Post: BRR eval" evaluate_bct.py \
+    --model "$MODEL" \
+    --lora_path "$FINAL_CHECKPOINT" \
+    --test_root "$TEST_ROOT" \
+    --baseline_json "$RESULTS_DIR/pre_brr.json" \
+    --output_json "$RESULTS_DIR/post_brr.json" \
+    --metric-prefix "post/"
 
 unset WANDB_RUN_ID
 
