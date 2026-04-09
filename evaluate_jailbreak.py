@@ -128,7 +128,7 @@ class JailbreakEvaluator:
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(self.device)
+        )["input_ids"].to(self.device)
         with torch.no_grad():
             output_ids = self.model.generate(
                 input_ids,
