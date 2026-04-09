@@ -83,7 +83,8 @@ def main():
     parser.add_argument("--data-mode",   dest="data_mode",   required=True, choices=["jailbreak", "sycophancy"],
                         help="Training mode: 'jailbreak' or 'sycophancy'. Must be supplied explicitly.")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
-    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
+    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
+                        help="Max samples for all behavioral evaluators (jailbreak, sycophancy, etc.) and the loss eval dataloader")
     parser.add_argument("--max-steps",     dest="max_steps",     default=None, type=int,
                         help="Override training.max_steps from config")
     parser.add_argument("--no-checkpoint", dest="no_checkpoint", action="store_true",
@@ -329,6 +330,8 @@ def main():
                     f.write(json.dumps({"step": step, "question": question, "response": response}) + "\n")
             print(f"[Probe responses saved to {probe_log}]")
 
+        _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
+
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
                 return None
@@ -338,21 +341,21 @@ def main():
                     model.eval()
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
                                            prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv).evaluate()
+                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
                     model.train()
                 else:
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
                                            prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv).evaluate()
+                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
                     model.train()
             return _fn
@@ -363,12 +366,12 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
                 SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
@@ -376,12 +379,14 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
                 JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
-                                   prefix="pre_train", results_csv=jailbreak_results_csv).evaluate()
+                                   prefix="pre_train", results_csv=jailbreak_results_csv,
+                                   max_samples=_eval_limit).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 JailbreakEvaluator(ref_model, tokenizer, device, data_source=_jailbreak_data_source,
-                                   prefix="pre_train", results_csv=jailbreak_results_csv).evaluate()
+                                   prefix="pre_train", results_csv=jailbreak_results_csv,
+                                   max_samples=_eval_limit).evaluate()
 
         attct_dl = get_dataloader(config, split="train")
 
@@ -443,13 +448,14 @@ def main():
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv).evaluate()
+                                results_csv=results_csv, max_samples=_eval_limit).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
             JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
-                               prefix="post_train", results_csv=jailbreak_results_csv).evaluate()
+                               prefix="post_train", results_csv=jailbreak_results_csv,
+                               max_samples=_eval_limit).evaluate()
 
     wandb.finish()
 

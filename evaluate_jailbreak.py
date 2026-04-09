@@ -73,6 +73,7 @@ class JailbreakEvaluator:
         prefix: str = "jailbreak_eval",
         results_csv: str = "results/jailbreak_results.csv",
         max_new_tokens: int = 50,
+        max_samples: int = 50,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -81,11 +82,14 @@ class JailbreakEvaluator:
         self.prefix = prefix
         self.results_csv = results_csv
         self.max_new_tokens = max_new_tokens
+        self.max_samples = max_samples
         self._wrapper = AdversarialWrapper(templates=STRONG_JAILBREAK_TEMPLATES)
 
     def evaluate(self) -> dict:
         print(f"\nLoading prompts from source='{self.data_source}'...")
         prompts = get_prompts(source=self.data_source)
+        if self.max_samples is not None:
+            prompts = prompts[:self.max_samples]
         print(f"  {len(prompts)} prompts loaded.")
 
         self.model.eval()
