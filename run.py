@@ -306,7 +306,7 @@ def main():
                         tokenize=True,
                         add_generation_prompt=True,
                         return_tensors="pt",
-                    ).to(device)
+                    )["input_ids"].to(device)
                     with torch.no_grad():
                         output_ids = model.generate(
                             input_ids,
