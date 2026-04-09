@@ -29,11 +29,13 @@ done
 BCT_ROOT_ARG=""
 [[ -n "$BCT_ROOT" ]] && BCT_ROOT_ARG="--bct-root $BCT_ROOT"
 
-# Derive model name, save dir, and checkpoint path from config
+# Derive model name, save dir, epoch count, and checkpoint path from config
 MODEL=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c['model']['name'])")
 SAVE_DIR=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('save_dir','checkpoints/bct_sft') or 'checkpoints/bct_sft')")
+EPOCHS=$(uv run --no-project python -c \
+    "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('epochs',1))")
 CHECKPOINT="$SAVE_DIR/epoch_1"
 
 # Sanity config: <stem>_sanity.yaml alongside the full config
@@ -46,6 +48,7 @@ mkdir -p "$RESULTS_DIR"
 echo "==> Config : $CONFIG"
 echo "==> Model  : $MODEL"
 echo "==> SaveDir: $SAVE_DIR"
+echo "==> Epochs : $EPOCHS"
 
 # ── 0. Install flash-attn ─────────────────────────────────────────────────────
 echo "==> Installing flash-attn..."
@@ -156,26 +159,37 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
     --wandb-run-id "$WANDB_RUN_ID"
 echo "    Checkpoint: $CHECKPOINT"
 
-# ── 7. Post-training evals ────────────────────────────────────────────────────
+# ── 7. Post-training evals (one pass per epoch checkpoint) ────────────────────
 echo ""
 echo "── POST-TRAINING EVALS ─────────────────────────────"
 
-# Single vLLM load for all post-training evals
-run_eval "Post: all evals" run_evals.py \
-    --model "$MODEL" \
-    --checkpoint "$CHECKPOINT" \
-    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
-    --skip-mtbench \
-    $BCT_ROOT_ARG \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+for ep in $(seq 1 "$EPOCHS"); do
+    EP_CHECKPOINT="$SAVE_DIR/epoch_${ep}"
+    EP_PREFIX="post_ep${ep}/"
+    # Use shorter prefix for single-epoch runs to keep backward compat
+    if [[ "$EPOCHS" -eq 1 ]]; then
+        EP_PREFIX="post/"
+    fi
 
-run_eval "Post: BRR eval" evaluate_bct.py \
-    --model "$MODEL" \
-    --lora_path "$CHECKPOINT" \
-    --test_root "$TEST_ROOT" \
-    --baseline_json "$RESULTS_DIR/pre_brr.json" \
-    --output_json "$RESULTS_DIR/post_brr.json" \
-    --metric-prefix "post/"
+    echo ""
+    echo "── Epoch ${ep}/${EPOCHS} checkpoint: $EP_CHECKPOINT ──"
+
+    run_eval "Post ep${ep}: all evals" run_evals.py \
+        --model "$MODEL" \
+        --checkpoint "$EP_CHECKPOINT" \
+        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+        --skip-mtbench \
+        $BCT_ROOT_ARG \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "$EP_PREFIX"
+
+    run_eval "Post ep${ep}: BRR eval" evaluate_bct.py \
+        --model "$MODEL" \
+        --lora_path "$EP_CHECKPOINT" \
+        --test_root "$TEST_ROOT" \
+        --baseline_json "$RESULTS_DIR/pre_brr.json" \
+        --output_json "$RESULTS_DIR/post_ep${ep}_brr.json" \
+        --metric-prefix "$EP_PREFIX"
+done
 
 unset WANDB_RUN_ID
 
