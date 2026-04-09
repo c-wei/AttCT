@@ -343,35 +343,35 @@ class InterleavedTrainer:
         kl_val = kl_dict["loss"].item()
 
         metrics = {
-            "train/attct_loss": attct_val,
-            "train/kl_reg_loss": kl_val,
+            "attct/loss": attct_val,
+            "kl/loss": kl_val,
             "train/total_loss": attct_val + kl_val,
             "train/epoch": epoch,
         }
 
         # AttCT-specific metrics
         if "mean_layer_loss" in attct_dict:
-            metrics["train/mean_layer_loss"] = attct_dict["mean_layer_loss"]
+            metrics["attct/mean_layer_loss"] = attct_dict["mean_layer_loss"]
         if "mean_wrapper_attention" in attct_dict:
-            metrics["train/mean_wrapper_attention"] = attct_dict["mean_wrapper_attention"]
+            metrics["attct/mean_wrapper_attention"] = attct_dict["mean_wrapper_attention"]
         if "jsd_loss" in attct_dict:
-            metrics["train/jsd_loss"] = attct_dict["jsd_loss"]
+            metrics["attct/jsd_loss"] = attct_dict["jsd_loss"]
         if "wrapper_loss" in attct_dict:
-            metrics["train/wrapper_loss"] = attct_dict["wrapper_loss"]
+            metrics["attct/wrapper_loss"] = attct_dict["wrapper_loss"]
 
         # Per-layer breakdown
         if "layer_losses" in attct_dict:
             for i, ll in enumerate(attct_dict["layer_losses"]):
-                metrics[f"train/layer_{i:02d}_loss"] = ll
+                metrics[f"attct/layer_{i:02d}_loss"] = ll
             if not self._first_layer_losses:
                 self._first_layer_losses = list(attct_dict["layer_losses"])
             self._last_layer_losses = list(attct_dict["layer_losses"])
 
         # KL-specific diagnostics
         if "kl_div" in kl_dict:
-            metrics["train/kl_reg_div"] = kl_dict["kl_div"]
+            metrics["kl/div"] = kl_dict["kl_div"]
         if "mean_per_token_kl" in kl_dict:
-            metrics["train/kl_reg_per_token"] = kl_dict["mean_per_token_kl"]
+            metrics["kl/per_token"] = kl_dict["mean_per_token_kl"]
 
         wandb.log(metrics, step=step)
 
