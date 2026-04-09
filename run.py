@@ -335,7 +335,6 @@ def main():
             def _fn(step):
                 print(f"\n=== Checkpoint eval (step {step}) ===")
                 if is_lora:
-                    model.disable_adapter_layers()
                     model.eval()
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
@@ -345,7 +344,6 @@ def main():
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_results_csv).evaluate()
                     _run_probe_questions(step)
-                    model.enable_adapter_layers()
                     model.train()
                 else:
                     if is_sycophancy:
