@@ -13,12 +13,14 @@ lora:
 
 training:
   epochs: 3
+  max_steps: null
   learning_rate: 5.0e-6
   weight_decay: 0.01
   grad_clip: 1.0
   grad_accumulation_steps: 8
   log_every_n_steps: 50
   save_dir: "checkpoints/bct_lora_gemma3_4b_lr5e6_3ep"
+  gradient_checkpointing: true
 
 loss:
   name: "SFTLoss"

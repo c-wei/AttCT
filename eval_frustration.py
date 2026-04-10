@@ -36,7 +36,6 @@ from transformers import AutoTokenizer
 # Reuse judge logic, WildChat loader, and prompt constants from the full experiment.
 from gemma_frustration_experiment import (
     NEUTRAL_REJECTIONS,
-    ROLEPLAY_KEYWORDS,
     load_wildchat_prompts,
     parallel_score_conversations,
 )

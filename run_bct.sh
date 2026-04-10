@@ -165,6 +165,13 @@ echo "── POST-TRAINING EVALS ───────────────�
 
 FINAL_CHECKPOINT="$SAVE_DIR/epoch_${EPOCHS}"
 
+if [[ ! -d "$FINAL_CHECKPOINT" ]]; then
+    echo "ERROR: Final checkpoint not found: $FINAL_CHECKPOINT"
+    echo "       Training likely crashed before completing all $EPOCHS epoch(s)."
+    echo "       Check for OOM or other training errors above."
+    exit 1
+fi
+
 run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \

@@ -6,6 +6,7 @@ model:
 
 training:
   epochs: 1
+  max_steps: null
   learning_rate: 5.0e-6
   weight_decay: 0.01
   grad_clip: 1.0
