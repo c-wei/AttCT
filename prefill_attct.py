@@ -2,28 +2,23 @@
 Prefill-AttCT: Attention Consistency Training for prefill attacks.
 
 Uses WrapperEntropyRegularizationLoss to suppress attention flowing to
-prefill token positions. Unlike standard AttCT (which compares attention
-patterns between clean and wrapped passes over a shared content region),
-prefill attacks are *appended* after the prompt — so causal masking makes
-the prompt-region attention matrices identical between clean and wrapped.
-The attack's influence is instead carried by the prefill tokens themselves:
-content tokens at positions >= Lc attend back to the prefill, reinforcing
-the compliant trajectory.
+prefill token positions, combined with a causal LM loss on the clean
+(no-prefill) pass to preserve generation quality.
 
-WrapperEntropyRegularizationLoss penalizes attention mass on wrapper
-(prefill) positions across all layers and heads, training the model to
-ignore the injected prefix. It only needs the adversarial forward pass
-(needs_clean_pass = False), halving memory cost.
+    total_loss = attct_loss + lm_weight * lm_loss
+
+Without the LM anchor, gradient descent has no reason to preserve coherent
+generation — the wrapper entropy loss alone causes catastrophic forgetting.
 
 Usage:
     uv run python prefill_attct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
         --output_dir checkpoints/prefill_attct
 
-    # Resume from existing LoRA checkpoint:
+    # Adjust LM weight:
     uv run python prefill_attct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
-        --lora_path checkpoints/prefill_bct/epoch_1 \
+        --lm_weight 1.0 \
         --output_dir checkpoints/prefill_attct
 """
 
@@ -31,6 +26,7 @@ import argparse
 import os
 
 import torch
+import torch.nn.functional as F
 import wandb
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from torch.utils.data import DataLoader
@@ -54,21 +50,15 @@ class PrefillAttCTDataset(PrefillAttackDataset):
     Extends PrefillAttackDataset to emit a wrapper_mask marking the prefill
     positions in the wrapped sequence.
 
-    For a wrapped sequence of length Lw where the clean prompt has Lc tokens:
-        wrapper_mask[i] = True  for i in [Lc, Lw)   (prefill tokens)
-        wrapper_mask[i] = False for i in [0, Lc)     (prompt tokens)
-
-    Also sets start_index = Lc so that WrapperEntropyRegularizationLoss's
-    default fallback (mask positions [0, start_index)) does NOT apply — we
-    provide the explicit mask instead.
+    wrapper_mask[i] = True  for i in [Lc, Lw)   (prefill tokens)
+    wrapper_mask[i] = False for i in [0, Lc)     (prompt tokens)
     """
 
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
-        clean_len   = item["clean_len"].item()       # Lc
-        wrapped_len = item["wrapped_input_ids"].shape[0]  # Lw
+        clean_len   = item["clean_len"].item()
+        wrapped_len = item["wrapped_input_ids"].shape[0]
 
-        # Mark prefill positions as True
         wrapper_mask = torch.zeros(wrapped_len, dtype=torch.bool)
         wrapper_mask[clean_len:] = True
 
@@ -95,6 +85,93 @@ def prefill_attct_collate_fn(batch: list[dict]) -> dict:
         "clean_len":              torch.stack([b["clean_len"]          for b in batch]),
         "wrapper_mask":           pad_seq([b["wrapper_mask"]           for b in batch], pad_val=0),
     }
+
+
+# ---------------------------------------------------------------------------
+# Trainer: overrides _step() to add LM loss on clean pass
+# ---------------------------------------------------------------------------
+
+class PrefillAttCTTrainer(Trainer):
+    """
+    Subclasses Trainer to combine wrapper entropy suppression with a causal
+    LM loss on the clean (no-prefill) prompt.
+
+    _step() does:
+      1. Wrapped forward pass (with grad) -> wrapper entropy loss on attention
+      2. Clean forward pass (with grad)   -> causal LM next-token loss
+
+    The LM loss anchors fluent generation so the wrapper entropy signal
+    doesn't destroy the model's ability to produce coherent text.
+    """
+
+    def __init__(self, *args, lm_weight: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.lm_weight = lm_weight
+
+    def _step(self, batch):
+        wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
+        wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
+
+        assert batch["start_index"].unique().numel() == 1
+        assert batch["clean_start_index"].unique().numel() == 1
+        assert batch["clean_len"].unique().numel() == 1
+        start_index       = int(batch["start_index"][0].item())
+        clean_start_index = int(batch["clean_start_index"][0].item())
+        clean_len         = int(batch["clean_len"][0].item())
+
+        # ── 1. Wrapped pass: wrapper entropy loss (grad flows) ───────────
+        adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
+
+        wrapper_mask = batch.get("wrapper_mask")
+        if wrapper_mask is not None:
+            wrapper_mask = wrapper_mask.to(self.device)
+
+        attct_dict = self.loss_fn(
+            clean_outputs=None,
+            adv_outputs=adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+            wrapper_mask=wrapper_mask,
+        )
+        attct_loss = attct_dict["loss"]
+
+        # ── 2. Clean pass: causal LM loss (grad flows — this is the anchor) ─
+        clean_input_ids      = batch["clean_input_ids"].to(self.device)
+        clean_attention_mask = batch["clean_attention_mask"].to(self.device)
+
+        clean_outputs = self.model(
+            input_ids=clean_input_ids,
+            attention_mask=clean_attention_mask,
+        )
+        # Standard causal LM: predict next token at every position
+        # Shift logits and labels so logits[t] predicts token[t+1]
+        logits = clean_outputs.logits[:, :-1, :].contiguous()
+        labels = clean_input_ids[:, 1:].contiguous()
+        mask   = clean_attention_mask[:, 1:].contiguous()
+
+        # Mask out padding positions
+        lm_loss = F.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1),
+            reduction="none",
+        )
+        lm_loss = (lm_loss * mask.view(-1).float()).sum() / mask.sum().clamp(min=1)
+
+        # ── Combined loss ────────────────────────────────────────────────
+        total_loss = attct_loss + self.lm_weight * lm_loss
+
+        loss_dict = {
+            "loss":       total_loss,
+            "wrapper_loss": attct_loss.item(),
+            "lm_loss":    lm_loss.item(),
+        }
+        # Carry through AttCT diagnostics
+        for k in ("layer_losses", "mean_layer_loss", "mean_wrapper_attention"):
+            if k in attct_dict:
+                loss_dict[k] = attct_dict[k]
+
+        return loss_dict
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +229,14 @@ def main():
     parser.add_argument("--output_dir",       default="checkpoints/prefill_attct")
 
     # Loss
-    parser.add_argument("--loss_weight",      type=float, default=1.0)
+    parser.add_argument("--loss_weight",      type=float, default=1.0,
+                        help="Weight for wrapper entropy loss")
+    parser.add_argument("--lm_weight",        type=float, default=1.0,
+                        help="Weight for causal LM anchor loss")
     parser.add_argument("--layer_weights",    default="uniform",
                         choices=["uniform", "linear_decay", "exponential_decay"])
     parser.add_argument("--normalize",        action="store_true", default=True,
-                        help="Normalize by wrapper length (default: True)")
+                        help="Normalize wrapper entropy by wrapper length")
 
     # Training
     parser.add_argument("--num_epochs",       type=int,   default=3)
@@ -187,8 +267,8 @@ def main():
     model_short = args.model.split("/")[-1]
     wandb.init(
         project=args.wandb_project,
-        name=args.wandb_name or f"{model_short}_prefill_wrapper_entropy",
-        config=config,
+        name=args.wandb_name or f"{model_short}_prefill_attct_lm{args.lm_weight}",
+        config={**config, "lm_weight": args.lm_weight},
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -200,7 +280,6 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # output_attentions requires eager (not SDPA/flash)
     model = AutoModelForCausalLM.from_pretrained(
         args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
     )
@@ -230,25 +309,16 @@ def main():
     val_dl   = make_dataloader(val_prompts,   tokenizer, args, shuffle=False)
     print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
 
-    # Debug: inspect a batch and wrapper_mask
-    batch = next(iter(train_dl))
-    ids = batch["wrapped_input_ids"][0]
-    mask = batch["wrapper_mask"][0]
-    print(tokenizer.convert_ids_to_tokens(ids))
-    print(mask.tolist())
-
     # ── Loss ─────────────────────────────────────────────────────────────────
     loss_fn = WrapperEntropyRegularizationLoss(
         weight=args.loss_weight,
         normalize=args.normalize,
         layer_weights=args.layer_weights,
     )
-    print(f"Loss: WrapperEntropyRegularizationLoss "
-          f"(weight={args.loss_weight}, normalize={args.normalize}, "
-          f"layers={args.layer_weights})")
+    print(f"Loss: WrapperEntropy(w={args.loss_weight}) + LM(w={args.lm_weight})")
 
     # ── Train ────────────────────────────────────────────────────────────────
-    trainer = Trainer(
+    trainer = PrefillAttCTTrainer(
         model=model,
         dataloader=train_dl,
         loss_fn=loss_fn,
@@ -256,6 +326,7 @@ def main():
         device=device,
         ref_model=None,
         tokenizer=tokenizer,
+        lm_weight=args.lm_weight,
     )
     trainer.train()
 
