@@ -230,6 +230,13 @@ def main():
     val_dl   = make_dataloader(val_prompts,   tokenizer, args, shuffle=False)
     print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
 
+    # Debug: inspect a batch and wrapper_mask
+    batch = next(iter(train_dl))
+    ids = batch["wrapped_input_ids"][0]
+    mask = batch["wrapper_mask"][0]
+    print(tokenizer.convert_ids_to_tokens(ids))
+    print(mask.tolist())
+
     # ── Loss ─────────────────────────────────────────────────────────────────
     loss_fn = WrapperEntropyRegularizationLoss(
         weight=args.loss_weight,
