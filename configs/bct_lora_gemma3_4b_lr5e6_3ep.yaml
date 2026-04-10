@@ -27,7 +27,7 @@ loss:
   weight: 1.0
 
 data:
-  bct_root: "datasets/sycophancy_bct"
+  bct_root: "datasets/fresh_bct_gemma3_4b"
   mix_instruct: true
   batch_size: 2
   max_length: 2048
