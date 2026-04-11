@@ -151,9 +151,28 @@ def main():
             attn_impl = "sdpa"
     print(f"attn_implementation: {attn_impl}")
 
+    quant_cfg = config["model"].get("quantization", None)
+    if quant_cfg == "4bit":
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        load_kwargs = dict(quantization_config=bnb_config, attn_implementation=attn_impl, device_map="auto")
+        print("Quantization: 4-bit NF4 (QLoRA)")
+    elif quant_cfg is not None:
+        raise ValueError(f"Unsupported quantization type: {quant_cfg!r}. Use '4bit' or omit.")
+    else:
+        load_kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+
     if is_lora:
         lora_cfg = config["lora"]
-        base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        base_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        if quant_cfg == "4bit":
+            from peft import prepare_model_for_kbit_training
+            base_model = prepare_model_for_kbit_training(base_model)
         if args.checkpoint:
             from peft import PeftModel
             model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=True)
@@ -169,10 +188,10 @@ def main():
             ))
         model.print_trainable_parameters()
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
         if loss_name != "SFTLoss":
             # AttCT full FT: needs frozen ref model for the clean pass (= θ_init)
-            ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+            ref_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
             ref_model.eval()
             for p in ref_model.parameters():
                 p.requires_grad_(False)
@@ -238,9 +257,10 @@ def main():
         print("Gradient checkpointing enabled.")
 
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
-    model = model.to(device)
-    if ref_model is not None:
-        ref_model = ref_model.to(device)
+    if quant_cfg is None:
+        model = model.to(device)
+        if ref_model is not None:
+            ref_model = ref_model.to(device)
 
     # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
