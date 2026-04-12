@@ -28,8 +28,6 @@ done
 
 BCT_ROOT_ARG=""
 [[ -n "$BCT_ROOT" ]] && BCT_ROOT_ARG="--bct-root $BCT_ROOT"
-QUANT_ARG=""
-[[ -n "$QUANTIZATION" ]] && QUANT_ARG="--quantization $QUANTIZATION"
 
 # Derive model name, save dir, epoch count, and checkpoint path from config
 MODEL=$(uv run --no-project python -c \
@@ -40,6 +38,8 @@ EPOCHS=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('epochs',1))")
 QUANTIZATION=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('model',{}).get('quantization','') or '')")
+QUANT_ARG=""
+[[ -n "$QUANTIZATION" ]] && QUANT_ARG="--quantization $QUANTIZATION"
 CHECKPOINT="$SAVE_DIR/epoch_1"
 
 # Sanity config: <stem>_sanity.yaml alongside the full config
