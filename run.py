@@ -152,7 +152,7 @@ def main():
     print(f"attn_implementation: {attn_impl}")
 
     quant_cfg = config["model"].get("quantization", None)
-    if quant_cfg == "4bit":
+    if quant_cfg == "bitsandbytes":
         from transformers import BitsAndBytesConfig
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -163,7 +163,7 @@ def main():
         load_kwargs = dict(quantization_config=bnb_config, attn_implementation=attn_impl, device_map="auto")
         print("Quantization: 4-bit NF4 (QLoRA)")
     elif quant_cfg is not None:
-        raise ValueError(f"Unsupported quantization type: {quant_cfg!r}. Use '4bit' or omit.")
+        raise ValueError(f"Unsupported quantization type: {quant_cfg!r}. Use 'bitsandbytes' or omit.")
     else:
         load_kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
 
