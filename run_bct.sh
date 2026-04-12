@@ -162,6 +162,7 @@ echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
     --config "$CONFIG" \
     $BCT_ROOT_ARG \
+    --no-checkpoint \
     --wandb-run-id "$WANDB_RUN_ID"
 echo "    Checkpoint: $CHECKPOINT"
 
