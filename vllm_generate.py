@@ -28,6 +28,7 @@ def load_llm(
     max_model_len: int = 4096,
     gpu_memory_utilization: float = 0.90,
     tensor_parallel_size: int = 1,
+    quantization: str | None = None,
 ) -> LLM:
     """Load a vLLM engine. Call once and reuse across generate() calls."""
     return LLM(
@@ -38,6 +39,7 @@ def load_llm(
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
         tensor_parallel_size=tensor_parallel_size,
+        quantization=quantization,
     )
 
 

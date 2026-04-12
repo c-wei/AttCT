@@ -281,6 +281,7 @@ def main():
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     parser.add_argument("--metric-prefix", default="",
                         help="Prefix for W&B metric keys (e.g. 'pre/' or 'post/')")
+    parser.add_argument("--quantization",  default=None, help="vLLM quantization (e.g. 'bitsandbytes')")
     args = parser.parse_args()
     p = args.metric_prefix
 
@@ -316,7 +317,7 @@ def main():
         lora_arg = checkpoint
 
     print(f"Loading vLLM engine: {model_path}")
-    llm = vllm_generate.load_llm(model_path, lora_path=lora_arg)
+    llm = vllm_generate.load_llm(model_path, lora_path=lora_arg, quantization=args.quantization)
 
     test_root  = Path(args.test_root)
     baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None

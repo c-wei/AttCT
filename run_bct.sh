@@ -28,6 +28,8 @@ done
 
 BCT_ROOT_ARG=""
 [[ -n "$BCT_ROOT" ]] && BCT_ROOT_ARG="--bct-root $BCT_ROOT"
+QUANT_ARG=""
+[[ -n "$QUANTIZATION" ]] && QUANT_ARG="--quantization $QUANTIZATION"
 
 # Derive model name, save dir, epoch count, and checkpoint path from config
 MODEL=$(uv run --no-project python -c \
@@ -36,6 +38,8 @@ SAVE_DIR=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('save_dir','checkpoints/bct_sft') or 'checkpoints/bct_sft')")
 EPOCHS=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('training',{}).get('epochs',1))")
+QUANTIZATION=$(uv run --no-project python -c \
+    "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('model',{}).get('quantization','') or '')")
 CHECKPOINT="$SAVE_DIR/epoch_1"
 
 # Sanity config: <stem>_sanity.yaml alongside the full config
@@ -137,7 +141,8 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         --model "$MODEL" \
         --test_root "$TEST_ROOT" \
         --output_json "$RESULTS_DIR/pre_brr.json" \
-        --metric-prefix "pre/"
+        --metric-prefix "pre/" \
+        $QUANT_ARG
 
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
@@ -145,6 +150,7 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
         --skip-mtbench \
         $BCT_ROOT_ARG \
+        $QUANT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
 fi
@@ -178,6 +184,7 @@ run_eval "Post: all evals" run_evals.py \
     --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
     --skip-mtbench \
     $BCT_ROOT_ARG \
+    $QUANT_ARG \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 run_eval "Post: BRR eval" evaluate_bct.py \
@@ -186,7 +193,8 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --test_root "$TEST_ROOT" \
     --baseline_json "$RESULTS_DIR/pre_brr.json" \
     --output_json "$RESULTS_DIR/post_brr.json" \
-    --metric-prefix "post/"
+    --metric-prefix "post/" \
+    $QUANT_ARG
 
 unset WANDB_RUN_ID
 
