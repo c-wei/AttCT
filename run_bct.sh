@@ -73,7 +73,7 @@ echo "    GPU: $(uv run python -c "import torch; print(torch.cuda.get_device_nam
 
 # ── 2. Login ──────────────────────────────────────────────────────────────────
 echo "==> Logging in..."
-uv run python -m wandb login "$WANDB_API_KEY" --relogin
+uv run python -m wandb login "$WANDB_API_KEY"
 uv run python -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
 
 # ── 3. Tests ──────────────────────────────────────────────────────────────────
