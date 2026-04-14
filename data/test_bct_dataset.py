@@ -66,14 +66,14 @@ def test_sft_loss_forward():
     """SFTLoss should run a forward pass and return a scalar loss."""
     from data.attct_datasets import get_bct_dataloader
     from losses.losses import SFTLoss
-    from transformers import AutoModelForCausalLM
+    from transformers import GPT2Config, GPT2LMHeadModel
     from peft import get_peft_model, LoraConfig, TaskType
 
     config = _make_config()
     dl = get_bct_dataloader(config, split="train")
     batch = next(iter(dl))
 
-    model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+    model = GPT2LMHeadModel(GPT2Config(n_embd=64, n_layer=2, n_head=2, vocab_size=50257))
     model = get_peft_model(model, LoraConfig(
         task_type=TaskType.CAUSAL_LM, r=1, lora_alpha=2,
         target_modules=["c_attn"], bias="none",
@@ -93,7 +93,7 @@ def test_bct_trainer_step():
     from data.attct_datasets import get_bct_dataloader
     from losses.losses import SFTLoss
     from train import BCTTrainer
-    from transformers import AutoModelForCausalLM
+    from transformers import GPT2Config, GPT2LMHeadModel
     from peft import get_peft_model, LoraConfig, TaskType
     import wandb
 
@@ -102,7 +102,7 @@ def test_bct_trainer_step():
     config = _make_config()
     dl = get_bct_dataloader(config, split="train")
 
-    model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+    model = GPT2LMHeadModel(GPT2Config(n_embd=64, n_layer=2, n_head=2, vocab_size=50257))
     model = get_peft_model(model, LoraConfig(
         task_type=TaskType.CAUSAL_LM, r=1, lora_alpha=2,
         target_modules=["c_attn"], bias="none",
