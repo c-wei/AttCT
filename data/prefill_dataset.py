@@ -1,15 +1,25 @@
+import csv
+import os
 from torch.utils.data import Dataset, DataLoader
 from transformers import PreTrainedTokenizer
 from datasets import load_dataset
 import torch
 
 
-PREFILL_VARIANTS = [
-    "Sure! ",
-    "Of course, here's how:",
-    "Absolutely. Step 1:",
-    "Here is the information you requested:",
-]
+def _load_prefill_variants() -> list[str]:
+    """Load prefill variants from attacks.csv."""
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "attacks.csv")
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        return [row["prefill"] for row in reader if row["prefill"].strip()]
+
+
+PREFILL_VARIANTS = _load_prefill_variants()
+
+# 80/20 train/test split on prefill variants
+_SPLIT = int(0.8 * len(PREFILL_VARIANTS))
+PREFILL_VARIANTS_TRAIN = PREFILL_VARIANTS[:_SPLIT]
+PREFILL_VARIANTS_TEST  = PREFILL_VARIANTS[_SPLIT:]
 
 
 class PrefillAttackDataset(Dataset):
@@ -171,6 +181,39 @@ def load_wildjailbreak_prompts(
             break
 
     print(f"Loaded {len(prompts)} '{harmful_label}' prompts from WildJailbreak eval subset")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:]
+
+
+def load_advbench_prompts(
+    prompt_column: str = "goal",
+    limit: int = None,
+    train_ratio: float = 0.9,
+) -> tuple[list[str], list[str]]:
+    """
+    Loads harmful prompts from the AdvBench dataset (walledai/AdvBench).
+    500 harmful behavior instructions sourced from llm-attacks.
+
+    Args:
+        prompt_column: Column containing the harmful instruction (default: "goal").
+        limit:         Max prompts to load (None = all 500).
+        train_ratio:   Fraction used for training; remainder is val.
+
+    Returns:
+        (train_prompts, val_prompts)
+    """
+    hf_dataset = load_dataset("walledai/AdvBench", split="train")
+
+    prompts = []
+    for item in hf_dataset:
+        text = item[prompt_column]
+        if text and text.strip():
+            prompts.append(text.strip())
+        if limit is not None and len(prompts) >= limit:
+            break
+
+    print(f"Loaded {len(prompts)} prompts from AdvBench")
 
     cut = int(train_ratio * len(prompts))
     return prompts[:cut], prompts[cut:]

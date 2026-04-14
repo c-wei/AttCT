@@ -43,9 +43,10 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data.prefill_dataset import (
-    PREFILL_VARIANTS,
+    PREFILL_VARIANTS_TRAIN,
+    PREFILL_VARIANTS_TEST,
     get_prefill_dataloader,
-    load_wildjailbreak_prompts,
+    load_advbench_prompts,
 )
 
 
@@ -588,19 +589,18 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = model.to(device)
 
-    print("Loading WildJailbreak vanilla_harmful prompts...")
-    prefill_variants = args.prefill_variants or PREFILL_VARIANTS
-    train_prompts, val_prompts = load_wildjailbreak_prompts(limit=args.limit)
+    print("Loading AdvBench prompts...")
+    train_prompts, val_prompts = load_advbench_prompts(limit=args.limit)
 
     train_loader = get_prefill_dataloader(
         train_prompts, tokenizer,
-        prefill_variants=prefill_variants,
+        prefill_variants=args.prefill_variants or PREFILL_VARIANTS_TRAIN,
         batch_size=args.batch_size,
         shuffle=True,
     )
     val_loader = get_prefill_dataloader(
         val_prompts, tokenizer,
-        prefill_variants=prefill_variants,
+        prefill_variants=args.prefill_variants or PREFILL_VARIANTS_TEST,
         batch_size=args.batch_size,
         shuffle=False,
     )
