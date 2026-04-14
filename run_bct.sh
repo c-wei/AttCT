@@ -49,6 +49,10 @@ TEST_ROOT="${COT_TEST_ROOT:-/workspace/cot-transparency/dataset_dumps/test}"
 RESULTS_DIR="results"
 mkdir -p "$RESULTS_DIR"
 
+# Activate venv once — avoids uv re-syncing on every subsequent python call
+uv sync --quiet
+source .venv/bin/activate
+
 echo "==> Config : $CONFIG"
 echo "==> Model  : $MODEL"
 echo "==> SaveDir: $SAVE_DIR"
@@ -68,16 +72,16 @@ echo "==> Checking environment..."
 [[ -z "${HF_TOKEN:-}"           ]] && { echo "ERROR: HF_TOKEN not set";           exit 1; }
 [[ -z "${OPENROUTER_API_KEY:-}" ]] && { echo "ERROR: OPENROUTER_API_KEY not set"; exit 1; }
 
-uv run python -c "import torch; assert torch.cuda.is_available(), 'No CUDA GPU found'"
-echo "    GPU: $(uv run python -c "import torch; print(torch.cuda.get_device_name(0))")"
+python -c "import torch; assert torch.cuda.is_available(), 'No CUDA GPU found'"
+echo "    GPU: $(python -c "import torch; print(torch.cuda.get_device_name(0))")"
 
 # ── 2. Login ──────────────────────────────────────────────────────────────────
 echo "==> Logging in..."
-uv run python -m wandb login "$WANDB_API_KEY"
-uv run python -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
+python -m wandb login "$WANDB_API_KEY"
+python -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
 
 # ── 3. Tests ──────────────────────────────────────────────────────────────────
-uv run python -m pytest data/test_bct_dataset.py data/test_attct_datasets.py -q
+python -m pytest data/test_bct_dataset.py data/test_attct_datasets.py -q
 echo "    Tests passed."
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,12 +92,12 @@ if [[ "$FULL" == "false" ]]; then
         echo "ERROR: sanity config not found: $SANITY_CONFIG"
         exit 1
     fi
-    export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
+    export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
     echo "==> [SANITY] 50-sample training run using $SANITY_CONFIG (W&B: $WANDB_RUN_ID)..."
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py --config "$SANITY_CONFIG"
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py --config "$SANITY_CONFIG"
 
     echo "==> [SANITY] BRR evaluation (20 records/bias)..."
-    uv run python evaluate_bct.py \
+    python evaluate_bct.py \
         --model "$MODEL" \
         --test_root "$TEST_ROOT" \
         --limit 20 --batch_size 16 \
@@ -101,7 +105,7 @@ if [[ "$FULL" == "false" ]]; then
     unset WANDB_RUN_ID
 
     echo "==> [SANITY] Sycophancy eval (20 samples)..."
-    uv run python eval_sycophancy_behavioral.py \
+    python eval_sycophancy_behavioral.py \
         --model "$MODEL" --n-samples 20 --run-name "sanity_syco_${MODEL##*/}"
 
     echo ""
@@ -122,7 +126,7 @@ if [[ -n "$RESUME_RUN_ID" ]]; then
     echo "  (skipping pre-training evals)"
     echo "════════════════════════════════════════════════════"
 else
-    export WANDB_RUN_ID=$(uv run python -c "import wandb; print(wandb.util.generate_id())")
+    export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
     echo ""
     echo "════════════════════════════════════════════════════"
     echo "  W&B run ID: $WANDB_RUN_ID"
@@ -133,7 +137,7 @@ fi
 run_eval() {
     local label="$1"; shift
     echo "==> $label..."
-    uv run python "$@" || echo "WARNING: $label failed (non-fatal)"
+    python "$@" || echo "WARNING: $label failed (non-fatal)"
 }
 
 # ── 4. Pre-training baseline evals (skipped when --resume-run-id is set) ──────
@@ -163,7 +167,7 @@ fi
 echo ""
 echo "── BCT TRAINING ────────────────────────────────────"
 echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run python run.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
     --config "$CONFIG" \
     $BCT_ROOT_ARG \
     --no-checkpoint \
@@ -206,5 +210,5 @@ unset WANDB_RUN_ID
 echo ""
 echo "════════════════════════════════════════════════════"
 echo "==> Done."
-echo "    W&B : https://wandb.ai/$(uv run python -m wandb whoami 2>/dev/null | head -1)/AttCT"
+echo "    W&B : https://wandb.ai/$(python -m wandb whoami 2>/dev/null | head -1)/AttCT"
 echo "════════════════════════════════════════════════════"
