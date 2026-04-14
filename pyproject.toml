@@ -13,6 +13,7 @@ dependencies = [
     "vllm",
     "bitsandbytes",
     "httpx",
+    "sympy<1.13",
 ]
 
 [dependency-groups]
