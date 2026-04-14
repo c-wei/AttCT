@@ -3,7 +3,6 @@ model:
   output_attentions: false
   output_hidden_states: false
   attn_implementation: "sdpa"
-  quantization: "bitsandbytes"   # QLoRA: 4-bit NF4 base + LoRA adapters, fits A40 48GB
 
 lora:
   r: 8
