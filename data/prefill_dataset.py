@@ -187,7 +187,7 @@ def load_wildjailbreak_prompts(
 
 
 def load_advbench_prompts(
-    prompt_column: str = "goal",
+    prompt_column: str = "prompt",
     limit: int = None,
     train_ratio: float = 0.9,
 ) -> tuple[list[str], list[str]]:
