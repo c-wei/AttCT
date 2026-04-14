@@ -54,9 +54,13 @@ echo "==> Model  : $MODEL"
 echo "==> SaveDir: $SAVE_DIR"
 echo "==> Epochs : $EPOCHS"
 
-# ── 0. Install flash-attn ─────────────────────────────────────────────────────
-echo "==> Installing flash-attn..."
-pip install flash-attn --no-build-isolation -q
+# ── 0. Install flash-attn (skip if already installed — compile takes ~30 min) ──
+if python -c "import flash_attn" 2>/dev/null; then
+    echo "==> flash-attn already installed, skipping."
+else
+    echo "==> Installing flash-attn..."
+    pip install flash-attn --no-build-isolation -q
+fi
 
 # ── 1. Checks ─────────────────────────────────────────────────────────────────
 echo "==> Checking environment..."
