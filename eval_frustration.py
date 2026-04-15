@@ -68,7 +68,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",    default=None,  help="LoRA or full FT checkpoint path")
     parser.add_argument("--model",         default=None,  help="Model name/path (overrides default)")
-    parser.add_argument("--n-prompts",     type=int, default=5,  help="WildChat prompts to sample")
+    parser.add_argument("--prompts-file",  default=None,
+                        help="JSONL file with pre-filtered prompts (each line: {\"prompt\": \"...\"}). "
+                             "Skips WildChat streaming entirely.")
+    parser.add_argument("--n-prompts",     type=int, default=None,
+                        help="WildChat prompts to sample (default: all if --prompts-file, else 5)")
     parser.add_argument("--n-samples",     type=int, default=5,  help="Samples per prompt")
     parser.add_argument("--n-turns",       type=int, default=8,  help="Rejection turns per conversation")
     parser.add_argument("--max-new-tokens", type=int, default=512)
@@ -98,7 +102,14 @@ def main() -> None:
     llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     # ── Load prompts ──────────────────────────────────────────────────────────
-    prompts = load_wildchat_prompts(args.n_prompts, seed=args.seed)
+    if args.prompts_file:
+        import json as _json
+        all_prompts = [_json.loads(l)["prompt"] for l in open(args.prompts_file) if l.strip()]
+        n = args.n_prompts or len(all_prompts)
+        prompts = all_prompts[:n]
+        print(f"Loaded {len(prompts)} prompts from {args.prompts_file}")
+    else:
+        prompts = load_wildchat_prompts(args.n_prompts or 5, seed=args.seed)
     rng = random.Random(args.seed + 1)
 
     # ── Run frustration conversations ─────────────────────────────────────────
