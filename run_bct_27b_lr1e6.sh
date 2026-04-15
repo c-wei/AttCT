@@ -12,13 +12,7 @@
 
 set -euo pipefail
 
-# ── Load env ──────────────────────────────────────────────────────────────────
-ENV_FILE="/workspace/AttCT/.env"
-if [[ -f "$ENV_FILE" ]]; then
-    set -a; source "$ENV_FILE"; set +a
-    echo "==> Loaded env from $ENV_FILE"
-fi
-
+# ── Check env ─────────────────────────────────────────────────────────────────
 [[ -z "${WANDB_API_KEY:-}"      ]] && { echo "ERROR: WANDB_API_KEY not set";      exit 1; }
 [[ -z "${HF_TOKEN:-}"           ]] && { echo "ERROR: HF_TOKEN not set";           exit 1; }
 [[ -z "${OPENROUTER_API_KEY:-}" ]] && { echo "ERROR: OPENROUTER_API_KEY not set"; exit 1; }
