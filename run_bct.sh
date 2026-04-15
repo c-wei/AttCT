@@ -150,6 +150,7 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         --test_root "$TEST_ROOT" \
         --output_json "$RESULTS_DIR/pre_brr.json" \
         --metric-prefix "pre/" \
+        --limit 300 \
         $QUANT_ARG
 
     # Single vLLM load for all pre-training evals
@@ -203,6 +204,7 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --baseline_json "$RESULTS_DIR/pre_brr.json" \
     --output_json "$RESULTS_DIR/post_brr.json" \
     --metric-prefix "post/" \
+    --limit 300 \
     $QUANT_ARG
 
 unset WANDB_RUN_ID
