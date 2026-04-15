@@ -271,7 +271,6 @@ def main():
                         help="Path to saved baseline BRR JSON for computing BRR ratio")
     parser.add_argument("--output_json",   default=None,
                         help="Save results to this JSON file")
-    parser.add_argument("--batch_size",  type=int, default=4)
     parser.add_argument("--limit",       type=int, default=None,
                         help="Max records per bias type (for quick runs)")
     parser.add_argument("--bias_types",  nargs="+", default=None,

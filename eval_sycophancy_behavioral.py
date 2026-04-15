@@ -154,8 +154,6 @@ def main():
     parser.add_argument("--bct-root",       default=None,
                         help="Path to sycophancy_bct directory (default: datasets/sycophancy_bct)")
     parser.add_argument("--max-new-tokens", type=int, default=300)
-    parser.add_argument("--batch-size",     type=int, default=8,
-                        help="Generation batch size (default: 8)")
     parser.add_argument("--run-name",       default=None)
     parser.add_argument("--wandb-group",    default=None)
     parser.add_argument("--wandb-run-id",   default=None)

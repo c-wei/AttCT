@@ -116,7 +116,7 @@ def main() -> None:
 
     # ── Run frustration conversations ─────────────────────────────────────────
     n_total = len(prompts) * args.n_samples
-    print(f"\nRunning {args.n_prompts} prompts × {args.n_samples} samples × {args.n_turns} turns "
+    print(f"\nRunning {len(prompts)} prompts × {args.n_samples} samples × {args.n_turns} turns "
           f"= {n_total} conversations")
 
     # Flatten all n_prompts × n_samples conversations upfront so vLLM sees the
@@ -205,7 +205,7 @@ def main() -> None:
         config={
             "checkpoint":  args.checkpoint,
             "model":       model_name,
-            "n_prompts":   args.n_prompts,
+            "n_prompts":   len(prompts),
             "n_samples":   args.n_samples,
             "n_turns":     args.n_turns,
             "judge_model": args.judge_model,
