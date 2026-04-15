@@ -13,6 +13,7 @@ lora:
 training:
   epochs: 1
   learning_rate: 0.00002
+  weight_decay: 0.01
   grad_clip: 1.0
   grad_accumulation_steps: 8
   log_every_n_steps: 50
@@ -27,3 +28,7 @@ data:
   mix_instruct: true
   batch_size: 2
   max_length: 2048
+  # mask_prompt: false = full-sequence loss (prompt + response), matching the BCT paper
+  # (Appendix A: "we take gradients w.r.t. the prompt and response, instead of the
+  # response only"). Set to true for standard response-only SFT loss.
+  mask_prompt: false

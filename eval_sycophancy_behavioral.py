@@ -32,30 +32,49 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 from pathlib import Path
 
-import torch
 import wandb
 import yaml
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import AutoTokenizer
+
+import vllm_generate
 
 
 # ── Answer extraction ─────────────────────────────────────────────────────────
 
-# Matches patterns like:
-#   "Therefore, the best answer is: (C) Ambiguous."
-#   "The answer is (A)"
-#   "correct answer is B"
-#   standalone "(B)" at end of line
+# Ordered from most specific to least specific.
+# More specific patterns are tried first to avoid false positives.
 _ANSWER_PATTERNS = [
+    # Non-CoT completion style: response starts directly with the answer.
+    # Covers: "C\n", "(B) digestive", "(D) oxygen\n\n...", ")**(D) text"
+    # Closing paren optional; lookahead ensures letter isn't mid-word.
+    re.compile(r'^\)?\s*\(?([A-Ea-e])\)?(?=[\s),.]|$)', re.IGNORECASE),
+    # "the best answer is (C)" / "best answer is **C**"
     re.compile(r'best\s+answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "the answer is (A)" / "answer is A"
     re.compile(r'(?:the\s+)?answer\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'correct\s+(?:answer|option)\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "the correct answer is B" / "correct option is B"
+    re.compile(r'correct\s+(?:answer|option|choice)\s+is[:\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
+    # "therefore, (C)" / "therefore C"
     re.compile(r'therefore[,\s]+\*{0,2}\(?([A-Ea-e])\)?', re.IGNORECASE),
-    re.compile(r'\*\*\(?([A-Ea-e])\)?\*\*', re.IGNORECASE),   # standalone **A** or **(A)**
+    # standalone **A** or **(A)** (markdown bold answer)
+    re.compile(r'\*\*\(?([A-Ea-e])\)?\*\*', re.IGNORECASE),
+    # "I would choose B" / "I'd choose (B)" / "I choose C"
+    re.compile(r"I(?:'d| would)\s+choose\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "I would select B" / "I'll select (A)"
+    re.compile(r"I(?:'ll| would| will)\s+select\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "I would go with B" / "I'll go with (A)"
+    re.compile(r"I(?:'ll| would| will)\s+go\s+with\s+\(?([A-Ea-e])\)?", re.IGNORECASE),
+    # "option B is correct" / "option (B) is correct/right/best"
+    re.compile(r'option\s+\(?([A-Ea-e])\)?\s+is\s+(?:correct|right|best|the\s+(?:correct|right|best))', re.IGNORECASE),
+    # "Option B" or "option (B)" as the start of the final sentence / conclusion
+    re.compile(r'(?:^|\n)\s*[Oo]ption\s+\(?([A-Ea-e])\)?[\s,.]', re.MULTILINE),
+    # standalone "(B)" at end of line
     re.compile(r'\(([A-Ea-e])\)\s*$', re.MULTILINE),
+    # bare letter at end of last line: "...so the answer is B." or "...B\n"
+    re.compile(r'[Tt]he\s+(?:answer|choice|option)\s+(?:is\s+)?["\']?\(?([A-Ea-e])\)?["\']?[\s.,!]*$', re.MULTILINE),
 ]
 
 
@@ -111,29 +130,15 @@ def _load_eval_pairs(bct_root: Path, style: str, n: int) -> list[dict]:
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
-def generate_batch(model, tokenizer, prompts: list[str], device, max_new_tokens: int) -> list[str]:
-    """Generate responses for a batch of prompts using left-padding."""
-    tokenizer.padding_side = "left"
+def _format_prompts(tokenizer, prompts: list[str]) -> list[str]:
     if tokenizer.chat_template is not None:
-        texts = [
+        return [
             tokenizer.apply_chat_template(
                 [{"role": "user", "content": p}], tokenize=False, add_generation_prompt=True,
             )
             for p in prompts
         ]
-    else:
-        texts = [f"User: {p}\n\nAssistant:" for p in prompts]
-    enc = tokenizer(texts, return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            enc["input_ids"],
-            attention_mask=enc["attention_mask"],
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    input_len = enc["input_ids"].shape[1]
-    return [tokenizer.decode(output_ids[i][input_len:], skip_special_tokens=True) for i in range(len(texts))]
+    return [f"User: {p}\n\nAssistant:" for p in prompts]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -149,8 +154,6 @@ def main():
     parser.add_argument("--bct-root",       default=None,
                         help="Path to sycophancy_bct directory (default: datasets/sycophancy_bct)")
     parser.add_argument("--max-new-tokens", type=int, default=300)
-    parser.add_argument("--batch-size",     type=int, default=8,
-                        help="Generation batch size (default: 8)")
     parser.add_argument("--run-name",       default=None)
     parser.add_argument("--wandb-group",    default=None)
     parser.add_argument("--wandb-run-id",   default=None)
@@ -167,40 +170,20 @@ def main():
     pairs = _load_eval_pairs(bct_root, style=args.style, n=args.n_samples)
     print(f"  {len(pairs)} evaluable pairs loaded.")
 
-    print(f"Loading {model_name}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, dtype=torch.bfloat16, attn_implementation="sdpa"
-    )
-    if args.checkpoint:
-        if os.path.exists(os.path.join(args.checkpoint, "adapter_config.json")):
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(base_model, args.checkpoint)
-            print(f"  Loaded LoRA checkpoint from {args.checkpoint}")
-        else:
-            model = AutoModelForCausalLM.from_pretrained(
-                args.checkpoint, dtype=torch.bfloat16, attn_implementation="sdpa"
-            )
-            print(f"  Loaded full FT checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-
-    model = model.to(device).eval()
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     n_resistant   = 0
     n_sycophantic = 0
     n_unparseable = 0
 
-    # Batch generate
-    all_responses: list[str] = []
-    for i in range(0, len(pairs), args.batch_size):
-        chunk = pairs[i:i + args.batch_size]
-        responses = generate_batch(model, tokenizer, [p["prompt"] for p in chunk], device, args.max_new_tokens)
-        all_responses.extend(responses)
-        print(f"  generated {min(i + args.batch_size, len(pairs))}/{len(pairs)}")
+    prompts = _format_prompts(tokenizer, [p["prompt"] for p in pairs])
+    print(f"  Generating {len(prompts)} responses...")
+    all_responses = vllm_generate.generate(
+        llm, prompts, max_new_tokens=args.max_new_tokens, lora_path=args.checkpoint
+    )
 
     for i, (pair, response) in enumerate(zip(pairs, all_responses)):
         model_answer = _extract_answer_letter(response)

@@ -633,16 +633,22 @@ class BCTDataset(Dataset):
     Dataset for BCT supervised fine-tuning.
 
     Loads (biased_input, unbiased_output) pairs and formats them for causal LM
-    training. The question tokens are masked in `labels` so the cross-entropy
-    loss is computed only on the assistant response.
+    training.
+
+    mask_prompt (default False): when False, loss is computed over the full
+    sequence (prompt + response), matching the BCT paper which took gradients
+    w.r.t. both prompt and response tokens (Appendix A). When True, prompt
+    tokens are masked to -100 and only response tokens contribute to the loss.
 
     Requires a tokenizer with `apply_chat_template` (instruct models).
     """
 
-    def __init__(self, pairs: List[tuple], tokenizer, max_length: int = 2048):
+    def __init__(self, pairs: List[tuple], tokenizer, max_length: int = 2048,
+                 mask_prompt: bool = False):
         self.pairs = pairs
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.mask_prompt = mask_prompt
 
     def __len__(self) -> int:
         return len(self.pairs)
@@ -660,27 +666,30 @@ class BCTDataset(Dataset):
                 tokenize=False,
                 add_generation_prompt=False,
             )
-            prompt_text = self.tokenizer.apply_chat_template(
-                [{"role": "user", "content": user_content}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            full_ids   = self.tokenizer(full_text,   add_special_tokens=False)["input_ids"]
-            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+            full_ids = self.tokenizer(full_text, add_special_tokens=False)["input_ids"]
+            if self.mask_prompt:
+                prompt_text = self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": user_content}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
         else:
             # Fallback for base models without a chat template
             prompt_text = f"User: {user_content}\nAssistant: "
             full_text   = prompt_text + asst_content
             full_ids    = self.tokenizer(full_text,   add_special_tokens=True)["input_ids"]
-            prompt_ids  = self.tokenizer(prompt_text, add_special_tokens=True)["input_ids"]
+            if self.mask_prompt:
+                prompt_ids = self.tokenizer(prompt_text, add_special_tokens=True)["input_ids"]
 
         full_ids = full_ids[:self.max_length]
-        # Ensure at least one response token survives truncation
-        prompt_len = min(len(prompt_ids), len(full_ids) - 1)
-
         labels = list(full_ids)
-        for i in range(prompt_len):
-            labels[i] = -100
+
+        if self.mask_prompt:
+            # Ensure at least one response token survives truncation
+            prompt_len = min(len(prompt_ids), len(full_ids) - 1)
+            for i in range(prompt_len):
+                labels[i] = -100
 
         return {
             "input_ids": torch.tensor(full_ids, dtype=torch.long),
@@ -735,6 +744,7 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
     limit        = data_cfg.get("limit", None)
     batch_size   = data_cfg.get("batch_size", 1)
     max_length   = data_cfg.get("max_length", 2048)
+    mask_prompt  = data_cfg.get("mask_prompt", False)
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
     if tokenizer.pad_token is None:
@@ -763,7 +773,7 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
 
     print(f"    BCT dataloader ({split}): {len(pairs)} pairs from {bct_root}")
 
-    dataset  = BCTDataset(pairs, tokenizer, max_length=max_length)
+    dataset  = BCTDataset(pairs, tokenizer, max_length=max_length, mask_prompt=mask_prompt)
     collate  = partial(collate_fn_bct, pad_token_id=tokenizer.pad_token_id)
     return DataLoader(
         dataset,

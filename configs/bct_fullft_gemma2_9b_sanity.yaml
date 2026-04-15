@@ -1,23 +1,18 @@
 model:
-  name: "meta-llama/Llama-3.1-8B-Instruct"
+  name: "google/gemma-2-9b-it"
   output_attentions: false
   output_hidden_states: false
 
-lora:
-  r: 8
-  lora_alpha: 16
-  lora_dropout: 0.05
-  target_modules: ["q_proj", "v_proj"]
-  bias: "none"
-
 training:
   epochs: 1
-  learning_rate: 0.00002
+  learning_rate: 0.00001
   weight_decay: 0.01
   grad_clip: 1.0
   grad_accumulation_steps: 1
   log_every_n_steps: 5
-  save_dir: null  # don't save checkpoint for sanity run
+  save_dir: null
+  gradient_checkpointing: true
+  optimizer: "paged_adamw_8bit"
 
 loss:
   name: "SFTLoss"
@@ -28,5 +23,5 @@ data:
   mix_instruct: false
   batch_size: 1
   max_length: 1024
-  limit: 50        # ~2 minutes on A100
+  limit: 50
   mask_prompt: false
