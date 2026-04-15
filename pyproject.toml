@@ -3,14 +3,14 @@ name = "attct"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.6",
+    "torch>=2.7",
     "transformers>=4.50.0,<5.0.0",
     "peft",
     "datasets",
     "wandb",
     "tqdm",
     "pyyaml",
-    "vllm",
+    "vllm>=0.9.0",
     "bitsandbytes",
     "httpx",
     "setuptools",
@@ -24,10 +24,10 @@ dev = [
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
