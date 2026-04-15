@@ -10,7 +10,7 @@ dependencies = [
     "wandb",
     "tqdm",
     "pyyaml",
-    "vllm>=0.9.0",
+    "vllm",
     "bitsandbytes",
     "httpx",
     "setuptools",
