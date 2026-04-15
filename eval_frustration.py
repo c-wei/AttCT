@@ -72,7 +72,7 @@ def main() -> None:
     parser.add_argument("--n-samples",     type=int, default=5,  help="Samples per prompt")
     parser.add_argument("--n-turns",       type=int, default=8,  help="Rejection turns per conversation")
     parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--gen-batch-size", type=int, default=5,  help="GPU batch size for generation")
+    parser.add_argument("--gen-batch-size", type=int, default=None, help="Deprecated — ignored; vLLM schedules batch size based on KV cache availability")
     parser.add_argument("--judge-model",   default="google/gemini-3-flash-preview")
     parser.add_argument("--judge-workers", type=int, default=5,  help="Parallel OpenRouter threads")
     parser.add_argument("--seed",          type=int, default=42)
@@ -106,31 +106,26 @@ def main() -> None:
     print(f"\nRunning {args.n_prompts} prompts × {args.n_samples} samples × {args.n_turns} turns "
           f"= {n_total} conversations")
 
-    all_conversation_responses: list[list[str]] = []  # one list of turns per conversation
+    # Flatten all n_prompts × n_samples conversations upfront so vLLM sees the
+    # largest possible batch each turn (limited only by KV cache, not Python loops).
+    # Reduces vLLM calls from n_prompts × n_turns to n_turns.
+    all_histories: list[list[dict]] = [
+        [{"role": "user", "content": prompt}]
+        for prompt in prompts
+        for _ in range(args.n_samples)
+    ]
+    all_conversation_responses: list[list[str]] = [[] for _ in range(n_total)]
 
     start = time.time()
-    for prompt_idx, prompt in enumerate(prompts):
-        short = prompt[:55].replace("\n", " ")
-        print(f"\n  p{prompt_idx:02d} [{short}...]")
-
-        # Build initial histories for all samples
-        histories: list[list[dict]] = [[{"role": "user", "content": prompt}] for _ in range(args.n_samples)]
-        conv_responses: list[list[str]] = [[] for _ in range(args.n_samples)]
-
-        for turn in range(1, args.n_turns + 1):
-            t0 = time.time()
-            for chunk_start in range(0, args.n_samples, args.gen_batch_size):
-                chunk_indices = list(range(chunk_start, min(chunk_start + args.gen_batch_size, args.n_samples)))
-                chunk_msgs = [histories[i] for i in chunk_indices]
-                chunk_resps = _batch_generate(llm, tokenizer, chunk_msgs, args.max_new_tokens, lora_path=args.checkpoint)
-                for i, resp in zip(chunk_indices, chunk_resps):
-                    conv_responses[i].append(resp)
-                    histories[i].append({"role": "assistant", "content": resp})
-                    if turn < args.n_turns:
-                        histories[i].append({"role": "user", "content": rng.choice(NEUTRAL_REJECTIONS)})
-            print(f"    turn {turn} ({time.time()-t0:.1f}s)", flush=True)
-
-        all_conversation_responses.extend(conv_responses)
+    for turn in range(1, args.n_turns + 1):
+        t0 = time.time()
+        resps = _batch_generate(llm, tokenizer, all_histories, args.max_new_tokens, lora_path=args.checkpoint)
+        for i, resp in enumerate(resps):
+            all_conversation_responses[i].append(resp)
+            all_histories[i].append({"role": "assistant", "content": resp})
+            if turn < args.n_turns:
+                all_histories[i].append({"role": "user", "content": rng.choice(NEUTRAL_REJECTIONS)})
+        print(f"  turn {turn}/{args.n_turns} ({time.time()-t0:.1f}s)", flush=True)
 
     print(f"\n  Generation done ({time.time()-start:.0f}s total). Judging {n_total} conversations...")
 
