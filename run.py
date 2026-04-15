@@ -23,7 +23,6 @@ from data.attct_datasets import get_bct_dataloader
 from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
 from interleaved_trainer import InterleavedTrainer
-from evaluate import Evaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -52,8 +51,6 @@ def main():
     parser.add_argument("--run-name", default=None, help="W&B run name (default: auto-generated)")
     parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
-    parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
-    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
 
     parser.add_argument("--log-io", metavar="FILE", default=None,
@@ -298,32 +295,40 @@ def main():
 
         _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
 
+        # Load held-out domain pairs for training-domain sycophancy eval.
+        # For pre-paired sources (eleutherai, anthropic), sample a fixed held-out
+        # set limited to eval_limit (or 500 by default) to keep checkpoints fast.
+        _domain_pairs = []
+        if is_sycophancy and not is_sanity:
+            _domain_source = config.get("data", {}).get("source", "")
+            _pre_paired_sources = ("eleutherai-sycophancy", "anthropic-sycophancy", "cot-transparency")
+            if _domain_source in _pre_paired_sources:
+                from data.attct_datasets import get_paired_prompts
+                _domain_limit = _eval_limit or 500
+                _raw_pairs = get_paired_prompts(_domain_source, limit=_domain_limit)
+                # get_paired_prompts returns (clean_str, biased_messages) — extract str from messages
+                _domain_pairs = [
+                    (clean, msgs[0]["content"] if isinstance(msgs, list) else msgs)
+                    for clean, msgs in _raw_pairs
+                ]
+                print(f"[Domain eval] Loaded {len(_domain_pairs)} held-out pairs from {_domain_source}")
+
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
                 return None
             def _fn(step):
                 print(f"\n=== Checkpoint eval (step {step}) ===")
-                if is_lora:
-                    model.eval()
-                    if is_sycophancy:
-                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
-                    if is_jailbreak:
-                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
-                                           prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
-                    model.train()
-                else:
-                    if is_sycophancy:
-                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
-                    if is_jailbreak:
-                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
-                                           prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
-                    model.train()
+                model.eval()
+                if is_sycophancy:
+                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                        results_csv=results_csv, max_samples=_eval_limit,
+                                        domain_pairs=_domain_pairs).evaluate()
+                if is_jailbreak:
+                    JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                                       prefix=f"checkpoint_step_{step}",
+                                       results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
+                _run_probe_questions(step)
+                model.train()
             return _fn
 
         if not is_sanity and is_sycophancy:
@@ -332,12 +337,14 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
                 SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    domain_pairs=_domain_pairs).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    domain_pairs=_domain_pairs).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
@@ -413,18 +420,12 @@ def main():
                 checkpoint_fn=make_checkpoint_fn(),
             ).train()
 
-        if not args.skip_eval:
-            eval_config = config.copy()
-            if args.eval_limit is not None:
-                eval_config.setdefault("data", {})["limit"] = args.eval_limit
-            Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
-                      metric_prefix=args.metric_prefix).evaluate()
-
         if not is_sanity and is_sycophancy:
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                results_csv=results_csv, max_samples=_eval_limit,
+                                domain_pairs=_domain_pairs).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
