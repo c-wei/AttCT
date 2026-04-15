@@ -113,7 +113,9 @@ def main():
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
     else:
-        # Apply per-source default max_steps if not explicitly overridden
+        # Apply per-source static default if available — dynamic sources (e.g.
+        # eleutherai-sycophancy whose size depends on which subsets are loaded)
+        # are resolved later, after the dataloader is built.
         source = (
             args.data_source
             or config.get("data", {}).get("source", "clear-harm")
@@ -353,6 +355,16 @@ def main():
                                    max_samples=_eval_limit).evaluate()
 
         attct_dl = get_dataloader(config, split="train")
+
+        # Dynamic max_steps fallback: if no max_steps was resolved from CLI or
+        # source_max_steps (e.g. eleutherai-sycophancy which varies by subset
+        # config), derive it from actual dataset size * epochs so the trainer
+        # checkpoints and logging are always calibrated to the real run length.
+        if config.get("training", {}).get("max_steps") is None:
+            _epochs = config.get("training", {}).get("epochs", 1)
+            _derived = len(attct_dl.dataset) * _epochs
+            config.setdefault("training", {})["max_steps"] = _derived
+            print(f"[max_steps] derived from dataset: {len(attct_dl.dataset)} samples × {_epochs} epochs = {_derived}")
 
         if args.interleave:
             kl_loss_fn = KLRegularizationLoss(
