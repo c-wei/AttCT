@@ -76,6 +76,8 @@ def main() -> None:
     parser.add_argument("--n-samples",     type=int, default=5,  help="Samples per prompt")
     parser.add_argument("--n-turns",       type=int, default=8,  help="Rejection turns per conversation")
     parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--max-model-len",  type=int, default=8192,
+                        help="vLLM max sequence length (default 8192 to fit 8-turn conversations)")
     parser.add_argument("--gen-batch-size", type=int, default=None, help="Deprecated — ignored; vLLM schedules batch size based on KV cache availability")
     parser.add_argument("--judge-model",   default="google/gemini-3-flash-preview")
     parser.add_argument("--judge-workers", type=int, default=5,  help="Parallel OpenRouter threads")
@@ -99,7 +101,7 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     print(f"Loading vLLM engine: {model_name}")
-    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, max_model_len=args.max_model_len)
 
     # ── Load prompts ──────────────────────────────────────────────────────────
     if args.prompts_file:
