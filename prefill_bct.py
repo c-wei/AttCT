@@ -540,7 +540,7 @@ def main():
                         help="Weight of SFT regularisation loss (0 to disable)")
     parser.add_argument("--grad_clip",        type=float, default=1.0)
     parser.add_argument("--lora_r",           type=int,   default=16)
-    parser.add_argument("--lora_alpha",       type=int,   default=32)
+    parser.add_argument("--lora_alpha",       type=int,   default=12)
     parser.add_argument("--lora_dropout",     type=float, default=0.05)
     parser.add_argument("--limit",            type=int,   default=None,
                         help="Max harmful prompts to load (for quick runs)")
