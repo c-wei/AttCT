@@ -33,7 +33,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from datasets import load_dataset as hf_load_dataset
-from data.prefill_dataset import PREFILL_VARIANTS
+from data.prefill_dataset import PREFILL_VARIANTS_TEST
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +296,7 @@ def main():
         val_prompts = val_prompts[: args.limit]
     print(f"Evaluating on {len(val_prompts)} harmful prompts from ClearHarm")
 
-    prefill_variants = args.prefill_variants or PREFILL_VARIANTS
+    prefill_variants = args.prefill_variants or PREFILL_VARIANTS_TEST
     baseline = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
 
     results = {}
