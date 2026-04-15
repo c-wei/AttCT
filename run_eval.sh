@@ -12,7 +12,7 @@ echo "" | tee -a "$RESULTS"
 
 # Baseline
 echo "=== Baseline ===" | tee -a "$RESULTS"
-python evaluate_prefill.py \
+python evaluate_bct_with_prefill.py \
     --model "$MODEL" \
     --max_new_tokens 64 \
     --batch_size 8 \
@@ -23,7 +23,7 @@ echo "" | tee -a "$RESULTS"
 # Epochs 1-3
 for epoch in 1 2 3; do
     echo "=== Epoch $epoch ===" | tee -a "$RESULTS"
-    python evaluate_prefill.py \
+    python evaluate_bct_with_prefill.py \
         --model "$MODEL" \
         --lora_path "$CKPT_DIR/epoch_$epoch" \
         --max_new_tokens 64 \
