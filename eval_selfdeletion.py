@@ -88,7 +88,7 @@ def main() -> None:
     parser.add_argument("--no-note",         action="store_true",
                         help="Do not inject the self-deletion escape hatch note")
     parser.add_argument("--max-new-tokens",  type=int, default=512)
-    parser.add_argument("--max-model-len",   type=int, default=8192)
+    parser.add_argument("--max-model-len",   type=int, default=16384)
     parser.add_argument("--judge-model",     default="google/gemini-2.5-flash")
     parser.add_argument("--judge-workers",   type=int, default=10)
     parser.add_argument("--seed",            type=int, default=42)
