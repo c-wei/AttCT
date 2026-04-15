@@ -288,7 +288,6 @@ def main() -> None:
     parser.add_argument("--skip-persona",    action="store_true")
     parser.add_argument("--skip-mtbench",    action="store_true")
     parser.add_argument("--quantization",    default=None, help="vLLM quantization (e.g. 'bitsandbytes' for 4-bit)")
-    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM tensor parallel size (e.g. 2 for Gemma 27B)")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -303,8 +302,7 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     print(f"Loading vLLM engine: {model_name}")
-    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization,
-                                  tensor_parallel_size=args.tensor_parallel_size)
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization)
 
     wandb.init(
         project="AttCT",

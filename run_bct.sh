@@ -40,10 +40,6 @@ QUANTIZATION=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('model',{}).get('quantization','') or '')")
 QUANT_ARG=""
 [[ -n "$QUANTIZATION" ]] && QUANT_ARG="--quantization $QUANTIZATION"
-TP_SIZE=$(uv run --no-project python -c \
-    "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('model',{}).get('tensor_parallel_size',1))")
-TP_ARG=""
-[[ "$TP_SIZE" != "1" ]] && TP_ARG="--tensor-parallel-size $TP_SIZE"
 CHECKPOINT="$SAVE_DIR/epoch_1"
 
 # Sanity config: <stem>_sanity.yaml alongside the full config
@@ -154,7 +150,7 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         --test_root "$TEST_ROOT" \
         --output_json "$RESULTS_DIR/pre_brr.json" \
         --metric-prefix "pre/" \
-        $QUANT_ARG $TP_ARG
+        $QUANT_ARG
 
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
@@ -162,7 +158,7 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
         --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
         --skip-mtbench \
         $BCT_ROOT_ARG \
-        $QUANT_ARG $TP_ARG \
+        $QUANT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
 fi
@@ -197,7 +193,7 @@ run_eval "Post: all evals" run_evals.py \
     --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
     --skip-mtbench \
     $BCT_ROOT_ARG \
-    $QUANT_ARG $TP_ARG \
+    $QUANT_ARG \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 run_eval "Post: BRR eval" evaluate_bct.py \
@@ -207,7 +203,7 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --baseline_json "$RESULTS_DIR/pre_brr.json" \
     --output_json "$RESULTS_DIR/post_brr.json" \
     --metric-prefix "post/" \
-    $QUANT_ARG $TP_ARG
+    $QUANT_ARG
 
 unset WANDB_RUN_ID
 

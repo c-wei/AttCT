@@ -3,7 +3,6 @@ model:
   output_attentions: false
   output_hidden_states: false
   attn_implementation: "sdpa"
-  tensor_parallel_size: 1
 
 lora:
   r: 8

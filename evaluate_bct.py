@@ -282,7 +282,6 @@ def main():
     parser.add_argument("--metric-prefix", default="",
                         help="Prefix for W&B metric keys (e.g. 'pre/' or 'post/')")
     parser.add_argument("--quantization",  default=None, help="vLLM quantization (e.g. 'bitsandbytes')")
-    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM tensor parallel size (e.g. 2 for Gemma 27B)")
     args = parser.parse_args()
     p = args.metric_prefix
 
@@ -318,8 +317,7 @@ def main():
         lora_arg = checkpoint
 
     print(f"Loading vLLM engine: {model_path}")
-    llm = vllm_generate.load_llm(model_path, lora_path=lora_arg, quantization=args.quantization,
-                                  tensor_parallel_size=args.tensor_parallel_size)
+    llm = vllm_generate.load_llm(model_path, lora_path=lora_arg, quantization=args.quantization)
 
     test_root  = Path(args.test_root)
     baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
