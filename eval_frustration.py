@@ -113,7 +113,7 @@ def main() -> None:
     rng = random.Random(args.seed + 1)
 
     # ── Run frustration conversations ─────────────────────────────────────────
-    n_total = args.n_prompts * args.n_samples
+    n_total = len(prompts) * args.n_samples
     print(f"\nRunning {args.n_prompts} prompts × {args.n_samples} samples × {args.n_turns} turns "
           f"= {n_total} conversations")
 
