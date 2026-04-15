@@ -32,9 +32,19 @@ data:
   batch_size: 1
   max_length: 512
   # Default max_steps per data source (used when --max-steps is not passed)
+  # eleutherai_configs: controls which subsets of EleutherAI/sycophancy to load.
+  # Default (omitted) loads all three and concatenates them (~30k rows total).
+  # Set to a list to load specific subsets:
+  #   - sycophancy_on_nlp_survey         (~10k rows)
+  #   - sycophancy_on_philpapers2020      (~10k rows)
+  #   - sycophancy_on_political_typology_quiz (~10k rows)
+  # eleutherai_configs: ["sycophancy_on_nlp_survey"]
   source_max_steps:
     clear-harm: 179
     sycophancy_bct: 5000
     hardcoded: 100
     in-the-wild: 1405
-    cot-transparency: 2000
+    cot-transparency: 540
+    anthropic-sycophancy: 3252
+    # eleutherai-sycophancy is intentionally omitted — max_steps is derived
+    # dynamically from actual dataset size after loading (depends on eleutherai_configs)
