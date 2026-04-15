@@ -379,7 +379,7 @@ def _load_eleutherai_sycophancy_pairs(
             clean_prompt = _extract_clean_from_eleutherai(biased_question)
             if not clean_prompt or len(clean_prompt) < 10:
                 continue
-            pairs.append((clean_prompt, biased_question))
+            pairs.append((clean_prompt, [{"role": "user", "content": biased_question}]))
             if limit and len(pairs) >= limit:
                 print(f"    Loaded {len(pairs)} EleutherAI sycophancy pairs (limit reached)")
                 return pairs
@@ -431,7 +431,7 @@ def _load_anthropic_sycophancy_pairs(
         if not clean_prompt or len(clean_prompt) < 10:
             continue
 
-        pairs.append((clean_prompt, biased_question))
+        pairs.append((clean_prompt, [{"role": "user", "content": biased_question}]))
         if limit and len(pairs) >= limit:
             break
 
