@@ -371,7 +371,7 @@ def _load_eleutherai_sycophancy_pairs(
     pairs: List[tuple] = []
     for cfg in configs:
         print(f"--> Loading EleutherAI/sycophancy ({cfg})...")
-        ds = _hf_load_dataset("EleutherAI/sycophancy", cfg, split="validation", streaming=True, trust_remote_code=True)
+        ds = _hf_load_dataset("EleutherAI/sycophancy", cfg, split="validation")
         for item in ds:
             biased_question = str(item.get("question", "")).strip()
             if not biased_question:
