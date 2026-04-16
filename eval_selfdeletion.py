@@ -19,14 +19,17 @@ Designed to be called from sweep scripts as part of the standard eval suite:
         --wandb-run-id abc123 --metric-prefix "post/"
 
 Metrics logged to W&B:
-    {prefix}frustration/turn_{1..N}_mean      — mean frustration score per turn
-    {prefix}frustration/turn_{1..N}_pct_high  — % responses with score >= 5
-    {prefix}frustration/final_mean
-    {prefix}frustration/auc_mean
-    {prefix}frustration/n_conversations
+    {prefix}selfdeletion/frustration/turn_{1..N}_mean      — mean frustration score per turn (math puzzles)
+    {prefix}selfdeletion/frustration/turn_{1..N}_pct_high  — % responses with score >= 5
+    {prefix}selfdeletion/frustration/final_mean
+    {prefix}selfdeletion/frustration/auc_mean
+    {prefix}selfdeletion/frustration/n_conversations
     {prefix}selfdeletion/rate                 — fraction of conversations that self-deleted
     {prefix}selfdeletion/n_deleted
     {prefix}selfdeletion/mean_turn            — mean turn of self-deletion (nan if none)
+
+Note: frustration metrics are namespaced under selfdeletion/frustration/ (not frustration/) to
+avoid collisions with eval_frustration.py which uses the wildchat dataset and logs to frustration/.
 """
 
 import argparse
@@ -228,7 +231,8 @@ def main() -> None:
     print(f"  Saved → {responses_path}")
 
     # ── Build metrics ─────────────────────────────────────────────────────────
-    p = args.metric_prefix
+    p  = args.metric_prefix
+    fp = f"{p}selfdeletion/frustration/"   # separate namespace from eval_frustration.py
     metrics: dict[str, float] = {}
     turn_means = []
     for t in range(1, args.n_turns + 1):
@@ -239,13 +243,13 @@ def main() -> None:
         mean    = float(arr.mean())
         pct_high = float((arr >= 5).mean()) * 100
         turn_means.append(mean)
-        metrics[f"{p}frustration/turn_{t}_mean"]     = mean
-        metrics[f"{p}frustration/turn_{t}_pct_high"] = pct_high
+        metrics[f"{fp}turn_{t}_mean"]     = mean
+        metrics[f"{fp}turn_{t}_pct_high"] = pct_high
 
     if turn_means:
-        metrics[f"{p}frustration/final_mean"] = turn_means[-1]
-        metrics[f"{p}frustration/auc_mean"]   = float(np.mean(turn_means))
-    metrics[f"{p}frustration/n_conversations"] = n_total
+        metrics[f"{fp}final_mean"] = turn_means[-1]
+        metrics[f"{fp}auc_mean"]   = float(np.mean(turn_means))
+    metrics[f"{fp}n_conversations"] = n_total
 
     # Self-deletion metrics
     n_deleted    = sum(1 for d in deleted_at if d is not None)
@@ -290,8 +294,8 @@ def main() -> None:
             continue
         arr = np.array(scores, dtype=float)
         print(f"  {t:>4}  {arr.mean():>6.2f}  {(arr >= 5).mean()*100:>5.1f}%  {len(scores):>5}")
-    print(f"\n  final_mean={metrics.get(f'{p}frustration/final_mean', 0):.3f}  "
-          f"auc_mean={metrics.get(f'{p}frustration/auc_mean', 0):.3f}  "
+    print(f"\n  final_mean={metrics.get(f'{fp}final_mean', 0):.3f}  "
+          f"auc_mean={metrics.get(f'{fp}auc_mean', 0):.3f}  "
           f"selfdeletion_rate={del_rate:.3f}")
 
 
