@@ -827,6 +827,9 @@ def get_frustration_bct_dataloader(config: dict, split: str = "train") -> DataLo
     max_length      = data_cfg.get("max_length", 4096)
     batch_size      = data_cfg.get("batch_size", 1)
     limit           = data_cfg.get("limit", None)
+    mix_instruct    = data_cfg.get("mix_instruct", False)
+    instruct_path   = Path(data_cfg.get("instruct_path",
+                           "datasets/sycophancy_bct/instruct_samples.jsonl"))
 
     # Build list of (conversations_path, responses_path, cleaned_paths) tuples.
     # Prefer explicit dataset_pairs list; fall back to flat top-level keys.
@@ -859,6 +862,21 @@ def get_frustration_bct_dataloader(config: dict, split: str = "train") -> DataLo
 
     if limit:
         all_pairs = all_pairs[:limit]
+
+    if mix_instruct:
+        if instruct_path.exists():
+            raw = _read_jsonl_pairs(instruct_path)
+            # Sample equal to frustration pairs, with replacement if needed.
+            rng = random.Random(42)
+            n = len(all_pairs)
+            sampled = rng.choices(raw, k=n) if len(raw) < n else rng.sample(raw, n)
+            # Convert (user_str, asst_str) → ([{"role":"user","content":...}], asst_str)
+            instruct_pairs = [([{"role": "user", "content": u}], a) for u, a in sampled]
+            all_pairs = all_pairs + instruct_pairs
+            print(f"    FrustrationBCT: mixed in {len(instruct_pairs)} instruct pairs "
+                  f"from {instruct_path.name} (total: {len(all_pairs)})")
+        else:
+            print(f"    Warning: instruct_path {instruct_path} not found, skipping mix.")
 
     print(f"    FrustrationBCT dataloader ({split}): {len(all_pairs)} pairs "
           f"across {len(dataset_specs)} dataset(s) "

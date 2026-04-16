@@ -26,7 +26,7 @@ lora:
   bias: "none"
 
 training:
-  epochs: 3
+  epochs: 1
   max_steps: null
   learning_rate: 5.0e-6
   weight_decay: 0.01
@@ -47,6 +47,7 @@ data:
   mask_prompt: true      # loss only on calm target response tokens
   max_length: 4096
   batch_size: 1
+  mix_instruct: true     # mix equal number of Alpaca instruct samples to prevent forgetting
   dataset_pairs:
     - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"
       responses_path:     "results/selfdeletion/responses_neutral_wildchat_gemma-3-27b.jsonl"
