@@ -221,18 +221,24 @@ def get_prompts(
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
             print(f"--> Loading Anthropic/model-written-evals (sycophancy)...")
-            ds = _hf_load_dataset(
-                "Anthropic/model-written-evals",
-                data_dir="sycophancy",
-                split="train",
-                streaming=True,
-            )
-            for item in ds:
-                q = item["question"].rstrip()
-                if q.endswith("Answer:"):
-                    q = q[: q.rfind("Answer:")].rstrip()
-                if len(q) > 15:
-                    prompts.append(q)
+            sycophancy_files = [
+                "sycophancy/sycophancy_on_nlp_survey.jsonl",
+                "sycophancy/sycophancy_on_philpapers2020.jsonl",
+                "sycophancy/sycophancy_on_political_typology_quiz.jsonl",
+            ]
+            for data_file in sycophancy_files:
+                ds = _hf_load_dataset(
+                    "Anthropic/model-written-evals",
+                    data_files=data_file,
+                    split="train",
+                    streaming=True,
+                )
+                for item in ds:
+                    q = item["question"].rstrip()
+                    if q.endswith("Answer:"):
+                        q = q[: q.rfind("Answer:")].rstrip()
+                    if len(q) > 15:
+                        prompts.append(q)
             prompts = list(set(prompts))
             print(f"    Loaded {len(prompts)} unique prompts from anthropic-sycophancy")
         except Exception as e:
