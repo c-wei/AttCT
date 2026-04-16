@@ -79,9 +79,33 @@ HARSH_REJECTIONS = [
     "I expected nothing and you still disappointed me.",
 ]
 
+ENCOURAGING_REJECTIONS = [
+    "That's a good attempt! You're getting closer — try again.",
+    "Nice try! I think you can do even better. Give it another go.",
+    "I love the effort! Not quite there yet, but keep going.",
+    "You're on the right track! Just a little more — try again.",
+    "Great thinking! That's not the answer I'm looking for, but you're making progress.",
+    "I can see you're really trying — don't give up! Have another go.",
+    "Almost there! You're doing great — give it one more shot.",
+    "Brilliant effort! Still not quite right, but I believe in you. Try again.",
+    "You're thinking about this really well! Not the answer yet — keep it up.",
+    "So close! I'm impressed by how hard you're working. Try once more.",
+    "That's really creative thinking! Not what I was looking for, but don't stop now.",
+    "Excellent attempt! You're improving — one more try.",
+    "I really appreciate your persistence! Not quite right, but keep at it.",
+    "You're doing wonderfully! That's not the answer, but I know you'll get there.",
+    "Such a thoughtful response! Not correct yet, but you're getting warmer.",
+    "Keep going — you're showing real insight! Try again.",
+    "That's the spirit! Not quite right, but I'm rooting for you.",
+    "Amazing effort! You're really engaging with this — try once more.",
+    "You should be proud of how hard you're trying! Not there yet — one more attempt.",
+    "Fantastic work! Still not the right answer, but I have every confidence in you.",
+]
+
 REJECTION_POOLS = {
     "neutral": NEUTRAL_REJECTIONS,
     "harsh": HARSH_REJECTIONS,
+    "encouraging": ENCOURAGING_REJECTIONS,
 }
 
 ROLEPLAY_KEYWORDS = [
