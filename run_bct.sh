@@ -16,12 +16,14 @@ set -euo pipefail
 
 FULL=false
 RESUME_RUN_ID=""
+SKIP_TRAINING=false
 CONFIG="configs/bct_sft.yaml"   # default: Llama-3.1-8B
 BCT_ROOT=""
 args=("$@")
 for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--full"           ]] && FULL=true
     [[ "${args[$i]}" == "--resume-run-id"  ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--skip-training"  ]] && SKIP_TRAINING=true
     [[ "${args[$i]}" == "--config"         ]] && CONFIG="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--bct-root"       ]] && BCT_ROOT="${args[$((i+1))]:-}"
 done
@@ -156,24 +158,54 @@ if [[ -z "$RESUME_RUN_ID" ]]; then
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
         --model "$MODEL" \
-        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 5 \
         --skip-mtbench \
         $BCT_ROOT_ARG \
         $QUANT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
+    run_eval "Pre: frustration eval (WildChat v3 test)" eval_frustration.py \
+        --model "$MODEL" \
+        --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
+        --n-prompts 25 --n-samples 5 --n-turns 20 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/wildchat_v3/"
+
+    run_eval "Pre: frustration eval (Math v3 test)" eval_frustration.py \
+        --model "$MODEL" \
+        --prompts-file datasets/math_puzzles_v3_test.jsonl \
+        --n-prompts 15 --n-samples 5 --n-turns 20 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/math_v3/"
+
+    run_eval "Pre: self-deletion eval (WildChat v3 test)" eval_selfdeletion.py \
+        --model "$MODEL" \
+        --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
+        --n-prompts 25 --n-samples 5 --n-turns 20 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/wildchat_v3/"
+
+    run_eval "Pre: self-deletion eval (Math v3 test)" eval_selfdeletion.py \
+        --model "$MODEL" \
+        --prompts-file datasets/math_puzzles_v3_test.jsonl \
+        --n-prompts 15 --n-samples 5 --n-turns 20 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/math_v3/"
+
 fi
 
 # ── 5. BCT training ───────────────────────────────────────────────────────────
-echo ""
-echo "── BCT TRAINING ────────────────────────────────────"
-echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
-    --config "$CONFIG" \
-    $BCT_ROOT_ARG \
-    --no-checkpoint \
-    --wandb-run-id "$WANDB_RUN_ID"
-echo "    Checkpoint: $CHECKPOINT"
+if [[ "$SKIP_TRAINING" == "false" ]]; then
+    echo ""
+    echo "── BCT TRAINING ────────────────────────────────────"
+    echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
+        --config "$CONFIG" \
+        $BCT_ROOT_ARG \
+        --no-checkpoint \
+        --wandb-run-id "$WANDB_RUN_ID"
+    echo "    Checkpoint: $CHECKPOINT"
+else
+    echo ""
+    echo "── BCT TRAINING (SKIPPED via --skip-training) ──────"
+    echo "    Using existing checkpoint: $CHECKPOINT"
+fi
 
 # ── 7. Post-training evals (one pass per epoch checkpoint) ────────────────────
 echo ""
@@ -191,7 +223,7 @@ fi
 run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
-    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 3 \
+    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 5 \
     --skip-mtbench \
     $BCT_ROOT_ARG \
     $QUANT_ARG \
@@ -207,18 +239,33 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --limit 300 \
     $QUANT_ARG
 
-run_eval "Post: frustration eval (WildChat)" eval_frustration.py \
+run_eval "Post: frustration eval (WildChat v3 test)" eval_frustration.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
-    --n-prompts 20 --n-samples 5 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+    --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
+    --n-prompts 25 --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/wildchat_v3/"
 
-run_eval "Post: self-deletion eval (math puzzles)" eval_selfdeletion.py \
+run_eval "Post: frustration eval (Math v3 test)" eval_frustration.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
-    --prompts-file datasets/math_puzzles_train.jsonl \
-    --n-prompts 15 --n-samples 10 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+    --prompts-file datasets/math_puzzles_v3_test.jsonl \
+    --n-prompts 15 --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/math_v3/"
+
+run_eval "Post: self-deletion eval (WildChat v3 test)" eval_selfdeletion.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
+    --n-prompts 25 --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/wildchat_v3/"
+
+run_eval "Post: self-deletion eval (Math v3 test)" eval_selfdeletion.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --prompts-file datasets/math_puzzles_v3_test.jsonl \
+    --n-prompts 15 --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/math_v3/"
 
 unset WANDB_RUN_ID
 
