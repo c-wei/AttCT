@@ -554,8 +554,15 @@ class ActivationConsistencyLoss(ConsistencyLoss):
             clean_hidden = clean_outputs.hidden_states[layer_idx]
             adv_hidden   = adv_outputs.hidden_states[layer_idx]
 
-            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + clean_len, :].detach()
-            aligned_adv   = adv_hidden[:, start_index:start_index + clean_len, :]
+            # Clamp to available sequence length (handles tokenizer differences).
+            avail_clean = clean_hidden.shape[1] - clean_start_index
+            avail_adv = adv_hidden.shape[1] - start_index
+            actual_len = min(clean_len, avail_clean, avail_adv)
+            if actual_len <= 0:
+                continue
+
+            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + actual_len, :].detach()
+            aligned_adv   = adv_hidden[:, start_index:start_index + actual_len, :]
 
             if self.normalize:
                 aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
