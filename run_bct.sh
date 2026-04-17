@@ -125,7 +125,11 @@ if [[ -n "$RESUME_RUN_ID" ]]; then
     echo ""
     echo "════════════════════════════════════════════════════"
     echo "  Resuming W&B run ID: $WANDB_RUN_ID"
-    echo "  (skipping pre-training evals)"
+    if [[ "$SKIP_TRAINING" == "true" ]]; then
+        echo "  (--skip-training set: pre-evals WILL run)"
+    else
+        echo "  (skipping pre-training evals)"
+    fi
     echo "════════════════════════════════════════════════════"
 else
     export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
@@ -142,8 +146,11 @@ run_eval() {
     python "$@" || echo "WARNING: $label failed (non-fatal)"
 }
 
-# ── 4. Pre-training baseline evals (skipped when --resume-run-id is set) ──────
-if [[ -z "$RESUME_RUN_ID" ]]; then
+# ── 4. Pre-training baseline evals ────────────────────────────────────────────
+# Skipped when --resume-run-id is set (pre-evals already exist on the run),
+# UNLESS --skip-training is also set (then we're adding fresh evals to an
+# existing run that was missing these pre-eval metrics).
+if [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
     echo ""
     echo "── PRE-TRAINING EVALS ──────────────────────────────"
 
