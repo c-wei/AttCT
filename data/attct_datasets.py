@@ -796,9 +796,11 @@ class FrustrationBCTDataset(Dataset):
             for i in range(prompt_len_in_trunc):
                 labels[i] = -100
 
+        input_ids_t = torch.tensor(full_ids, dtype=torch.long)
         return {
-            "input_ids": torch.tensor(full_ids, dtype=torch.long),
-            "labels":    torch.tensor(labels,   dtype=torch.long),
+            "input_ids":      input_ids_t,
+            "attention_mask": torch.ones(len(full_ids), dtype=torch.long),
+            "labels":         torch.tensor(labels, dtype=torch.long),
         }
 
 
@@ -960,9 +962,11 @@ class BCTDataset(Dataset):
             for i in range(prompt_len):
                 labels[i] = -100
 
+        input_ids_t = torch.tensor(full_ids, dtype=torch.long)
         return {
-            "input_ids": torch.tensor(full_ids, dtype=torch.long),
-            "labels":    torch.tensor(labels,   dtype=torch.long),
+            "input_ids":      input_ids_t,
+            "attention_mask": torch.ones(len(full_ids), dtype=torch.long),
+            "labels":         torch.tensor(labels, dtype=torch.long),
         }
 
 
