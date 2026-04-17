@@ -131,12 +131,16 @@ class Trainer:
                 print(f"MLP hooks installed on ref_model ({self._mlp_hook_mgr_ref.num_layers} layers)")
 
     def _forward(self, input_ids, attention_mask):
-        return self.model(
+        kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
+        # Gemma 3 requires token_type_ids during training.
+        if hasattr(self.model.config, "model_type") and "gemma3" in getattr(self.model.config, "model_type", ""):
+            kwargs["token_type_ids"] = torch.zeros_like(input_ids)
+        return self.model(**kwargs)
 
     def _step(self, batch):
         wrapped_input_ids      = batch["wrapped_input_ids"].to(self.device)
@@ -166,12 +170,15 @@ class Trainer:
             with torch.no_grad():
                 if self.ref_model is not None:
                     # Full FT: use frozen reference model (θ_init)
-                    clean_outputs = self.ref_model(
+                    ref_kwargs = dict(
                         input_ids=clean_input_ids,
                         attention_mask=clean_attention_mask,
                         output_attentions=self.output_attentions,
                         output_hidden_states=self.output_hidden_states,
                     )
+                    if hasattr(self.ref_model.config, "model_type") and "gemma3" in getattr(self.ref_model.config, "model_type", ""):
+                        ref_kwargs["token_type_ids"] = torch.zeros_like(clean_input_ids)
+                    clean_outputs = self.ref_model(**ref_kwargs)
                     # Capture clean MLP states from ref_model.
                     if self._mlp_hook_mgr_ref is not None:
                         clean_mlp_states = self._mlp_hook_mgr_ref.get_states()
@@ -424,5 +431,8 @@ class BCTTrainer(Trainer):
         input_ids      = batch["input_ids"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device)
         labels         = batch["labels"].to(self.device)
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        kwargs = dict(input_ids=input_ids, attention_mask=attention_mask)
+        if hasattr(self.model.config, "model_type") and "gemma3" in getattr(self.model.config, "model_type", ""):
+            kwargs["token_type_ids"] = torch.zeros_like(input_ids)
+        outputs = self.model(**kwargs)
         return self.loss_fn(logits=outputs.logits, labels=labels)
