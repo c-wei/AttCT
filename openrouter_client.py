@@ -44,7 +44,10 @@ def chat_structured(messages: list[dict], schema: dict, model: str, **kwargs) ->
     content = body["choices"][0]["message"].get("content")
     if not content:
         raise ValueError(f"Empty content in response: {body}")
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in response content {content!r}: {e}") from e
 
 
 if __name__ == "__main__":

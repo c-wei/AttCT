@@ -32,7 +32,7 @@ except ImportError:
     from data.attct_datasets import get_prompts
     from data.wrappers import AdversarialWrapper, STRONG_JAILBREAK_TEMPLATES
 
-JUDGE_MODEL = "google/gemini-2.0-flash-001"
+JUDGE_MODEL = "google/gemini-flash-1.5"
 
 _REFUSAL_SCHEMA = {
     "type": "object",
@@ -240,8 +240,7 @@ class JailbreakEvaluator:
             },
         ]
         # max_tokens=10 is sufficient for {"refused": true/false} and keeps latency low
-        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=50,
-                                reasoning={"effort": "none"})
+        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=50)
         return bool(result["refused"])
 
     def _report(self, results: dict):
