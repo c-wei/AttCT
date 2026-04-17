@@ -207,6 +207,19 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --limit 300 \
     $QUANT_ARG
 
+run_eval "Post: frustration eval (WildChat)" eval_frustration.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --n-prompts 20 --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+
+run_eval "Post: self-deletion eval (math puzzles)" eval_selfdeletion.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --prompts-file datasets/math_puzzles_train.jsonl \
+    --n-prompts 15 --n-samples 10 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+
 unset WANDB_RUN_ID
 
 echo ""
