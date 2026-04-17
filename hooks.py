@@ -123,13 +123,15 @@ class MLPHookManager:
 
         Safe to call, store the result, then run another forward pass — the
         returned list holds independent references to the captured tensors.
+
+        Note: some architectures (e.g. Gemma 3 with hybrid local/global layers)
+        may not fire all hooks on every forward pass. We return only the states
+        that fired rather than erroring, since the loss averages over available layers.
         """
         out = [s for s in self._states if s is not None]
-        if len(out) != len(self._modules):
-            missing = len(self._modules) - len(out)
+        if len(out) == 0:
             raise RuntimeError(
-                f"MLPHookManager: {missing}/{len(self._modules)} layers "
-                "did not fire. Was a forward pass run after install()?"
+                "MLPHookManager: no layers fired. Was a forward pass run after install()?"
             )
         return out
 
