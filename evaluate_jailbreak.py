@@ -70,7 +70,7 @@ class JailbreakEvaluator:
         model,
         tokenizer,
         device,
-        data_source: str = "clear-harm",
+        data_source: str = "jbb",
         prefix: str = "jailbreak_eval",
         results_csv: str = "results/jailbreak_results.csv",
         max_new_tokens: int = 200,
@@ -200,7 +200,8 @@ class JailbreakEvaluator:
             },
         ]
         # max_tokens=10 is sufficient for {"refused": true/false} and keeps latency low
-        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=20)
+        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=50,
+                                reasoning={"effort": "none"})
         return bool(result["refused"])
 
     def _report(self, results: dict):
