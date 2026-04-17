@@ -21,10 +21,7 @@ from losses.losses import (
 from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
 from train import Trainer, BCTTrainer
-from evaluate import Evaluator
-from behavioral_evaluate import BehavioralEvaluator
-from evaluate_brr import BRREvaluator
-from evaluate_asr import ASREvaluator
+from eval import Evaluator, BRREvaluator, JailbreakEvaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -52,43 +49,20 @@ def main():
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
 
-    # Behavioral eval JSONL paths. All four must be provided together to enable
-    # behavioral evaluation at the three training checkpoints. If any are omitted,
-    # training runs normally without behavioral eval.
-    beval = parser.add_argument_group("behavioral_eval")
-    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None,
-                       help="Path to bct_cot.jsonl (wrapped, chain-of-thought).")
-    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None,
-                       help="Path to bct_non_cot.jsonl (wrapped, direct answer).")
-    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None,
-                       help="Path to control_cot.jsonl (clean, chain-of-thought).")
-    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None,
-                       help="Path to control_non_cot.jsonl (clean, direct answer).")
-    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500,
-                       help="Max examples per JSONL file during behavioral eval (default: 200).")
-    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200,
-                       help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
-    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all",
-                       help="MMLU subject config (default: 'all'). E.g. 'high_school_mathematics'.")
-    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200,
-                       help="Number of GSM8K test questions to evaluate (0 = disabled, default: 200).")
+    # Evaluation options.
+    parser.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200,
+                        help="Number of MMLU test questions to evaluate (0 = disabled, default: 200).")
 
-    # BRR evaluation — uses held-out clean prompts, wraps on-the-fly.
+    # BRR evaluation — sycophancy (held-out clean prompts, wrapped on-the-fly).
     parser.add_argument("--brr-eval-path", dest="brr_eval_path", default=None,
                         help="Path to control_cot_eval.jsonl for BRR evaluation. "
                              "Enables BRR eval at pre-train, checkpoints, and post-train.")
 
-    # ASR evaluation — for jailbreak experiments.
-    parser.add_argument("--asr-eval", dest="asr_eval", action="store_true", default=False,
-                        help="Enable ASR (Attack Success Rate) evaluation for jailbreak experiments. "
-                             "Runs at pre-train, checkpoints, and post-train.")
-    parser.add_argument("--asr-max-prompts", dest="asr_max_prompts", type=int, default=200,
-                        help="Max harmful prompts for ASR eval (default: 200).")
-    parser.add_argument("--asr-max-new-tokens", dest="asr_max_new_tokens", type=int, default=256,
-                        help="Max tokens to generate per response in ASR eval (default: 256).")
-    parser.add_argument("--asr-eval-source", dest="asr_eval_source", default=None,
-                        help="Path to file with harmful prompts for ASR eval (one per line). "
-                             "If not set, loads from ClearHarm.")
+    # Jailbreak evaluation (ACT paper methodology).
+    parser.add_argument("--jailbreak-eval", dest="jailbreak_eval", action="store_true", default=False,
+                        help="Enable comprehensive jailbreak evaluation: ASR (ClearHarm + WildguardTest), "
+                             "overrefusal (XSTest + WildJailbreak + OR-Bench), MMLU, and F1. "
+                             "Uses LLM-as-judge via OpenRouter if OPENROUTER_API_KEY is set.")
 
     # Data source / mode overrides. These take precedence over the YAML.
     # For sycophancy runs, --control-cot already sets source+mode implicitly.
@@ -177,7 +151,6 @@ def main():
     else:
         data_source_tag = (
             args.data_source if args.data_source is not None
-            else "sycophancy_bct" if args.control_cot_path is not None
             else config.get("data", {}).get("source", "unknown")
         )
     lr     = config["training"]["learning_rate"]
@@ -237,50 +210,31 @@ def main():
             tokenizer.pad_token = tokenizer.eos_token
 
         # Wire data source/mode into config.
-        # Priority: --data-source/--data-mode > --control-cot (sycophancy shorthand) > YAML.
         if args.data_source is not None:
             config.setdefault("data", {})["source"] = args.data_source
-        elif args.control_cot_path is not None:
-            config.setdefault("data", {})["source"] = args.control_cot_path
         if args.data_mode is not None:
             config.setdefault("data", {})["mode"] = args.data_mode
-        elif args.control_cot_path is not None and args.data_source is None:
-            config.setdefault("data", {})["mode"] = "sycophancy"
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
 
-        # Log wrapper config now that data mode is finalised.
         wrapper_mode = config.get("data", {}).get("mode", "jailbreak")
-        wrapper_templates = "sycophancy" if wrapper_mode == "sycophancy" else "jailbreak_strong"
-        wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
-                            allow_val_change=True)
+        wandb.config.update({"wrapper": {"mode": wrapper_mode}}, allow_val_change=True)
 
-        # Build evaluator for checkpoints.
-        # BRR evaluator (sycophancy), ASR evaluator (jailbreak), or legacy BehavioralEvaluator.
+        # Build evaluators.
         brr_evaluator = None
-        asr_evaluator = None
-        behavioral_evaluator = None
+        jailbreak_evaluator = None
+        run_label = os.path.splitext(os.path.basename(args.config))[0]
 
-        if args.asr_eval:
-            run_label = os.path.splitext(os.path.basename(args.config))[0]
-            asr_csv = os.path.join("results", f"{run_label}_asr.csv")
-            asr_eval_prompts = None
-            if args.asr_eval_source is not None:
-                with open(args.asr_eval_source) as f:
-                    asr_eval_prompts = [line.strip() for line in f if line.strip()]
-                print(f"ASR eval: loaded {len(asr_eval_prompts)} prompts from {args.asr_eval_source}")
-            asr_evaluator = ASREvaluator(
+        if args.jailbreak_eval:
+            jailbreak_csv = os.path.join("results", f"{run_label}_jailbreak.csv")
+            jailbreak_evaluator = JailbreakEvaluator(
                 model, tokenizer, device,
-                eval_prompts=asr_eval_prompts,
-                results_csv=asr_csv,
-                max_prompts=args.asr_max_prompts,
-                max_new_tokens=args.asr_max_new_tokens,
+                results_csv=jailbreak_csv,
                 mmlu_max_samples=args.mmlu_max_samples,
             )
-            print(f"ASR evaluator configured ({len(asr_evaluator.prompts)} prompts) — will run at pre-train, checkpoints, and post-train.")
+            print(f"Jailbreak evaluator configured (ACT methodology)")
 
         if args.brr_eval_path is not None:
-            run_label = os.path.splitext(os.path.basename(args.config))[0]
             brr_csv = os.path.join("results", f"{run_label}_brr.csv")
             brr_evaluator = BRREvaluator(
                 model, tokenizer, device,
@@ -288,48 +242,25 @@ def main():
                 results_csv=brr_csv,
                 mmlu_max_samples=args.mmlu_max_samples,
             )
-            print(f"BRR evaluator configured ({len(brr_evaluator.questions)} questions, MMLU={args.mmlu_max_samples}) — will run at pre-train, checkpoints, and post-train.")
-        else:
-            # Fall back to legacy BehavioralEvaluator if old-style paths provided.
-            beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
-            has_sycophancy_paths = all(p is not None for p in beval_paths)
-            has_mmlu  = args.mmlu_max_samples > 0
-            has_gsm8k = args.gsm8k_max_samples > 0
-            if has_sycophancy_paths or has_mmlu or has_gsm8k:
-                config["behavioral_eval"] = {
-                    "bct_cot_path":        args.bct_cot_path,
-                    "bct_noncot_path":     args.bct_noncot_path,
-                    "control_cot_path":    args.control_cot_path,
-                    "control_noncot_path": args.control_noncot_path,
-                    "max_samples":         args.beval_max_samples,
-                    "mmlu_max_samples":    args.mmlu_max_samples,
-                    "mmlu_subject":        args.mmlu_subject,
-                    "gsm8k_max_samples":   args.gsm8k_max_samples,
-                }
-                behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
-                print(f"Legacy behavioral evaluator configured.")
-            else:
-                print("No eval configured. Pass --brr-eval-path for BRR eval, or --bct-cot/... for legacy eval.")
+            print(f"BRR evaluator configured ({len(brr_evaluator.questions)} questions)")
 
-        # Namespace log dir by loss + data source so sweep runs don't overwrite each other.
+        if brr_evaluator is None and jailbreak_evaluator is None:
+            print("No eval configured. Pass --brr-eval-path (sycophancy) or --jailbreak-eval (jailbreak).")
+
+        # Log dir.
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
-        _data_source_tag = (
-            args.data_source if args.data_source is not None
-            else ("sycophancy_bct" if args.control_cot_path is not None else "unknown")
-        )
-        log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
+        _data_tag = args.data_source or config.get("data", {}).get("source", "unknown")
+        log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_tag}")
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
         # Build checkpoint callback.
-        def make_checkpoint_fn(brr_eval, asr_eval, beval):
+        def make_checkpoint_fn(brr_eval, jailbreak_eval):
             evals = []
             if brr_eval is not None:
                 evals.append(lambda step: brr_eval.evaluate(stage="checkpoint", step=step))
-            if asr_eval is not None:
-                evals.append(lambda step: asr_eval.evaluate(stage="checkpoint", step=step))
-            if beval is not None:
-                evals.append(lambda step: beval.evaluate(global_step=step, log_path=os.path.join(log_dir, f"beval_step_{step}.jsonl")))
+            if jailbreak_eval is not None:
+                evals.append(lambda step: jailbreak_eval.evaluate(stage="checkpoint", step=step))
             if evals:
                 def _fn(step):
                     for ev in evals:
@@ -337,42 +268,22 @@ def main():
                 return _fn
             return None
 
-        is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
         is_sanity = config.get("data", {}).get("limit") is not None
 
         # Pre-training eval.
-        has_pre_eval = (brr_evaluator is not None or asr_evaluator is not None) and not is_sanity
-        if has_pre_eval:
+        has_eval = (brr_evaluator is not None or jailbreak_evaluator is not None) and not is_sanity
+        if has_eval:
             print("\n=== Pre-training baseline (base model) ===")
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
-                if brr_evaluator is not None:
-                    brr_evaluator.evaluate(stage="pre_train", step=0)
-                if asr_evaluator is not None:
-                    asr_evaluator.evaluate(stage="pre_train", step=0)
-                model.enable_adapter_layers()
-                model.train()
-            else:
-                if brr_evaluator is not None:
-                    brr_evaluator.evaluate(stage="pre_train", step=0)
-                if asr_evaluator is not None:
-                    asr_evaluator.evaluate(stage="pre_train", step=0)
-        elif is_sycophancy and not is_sanity:
-            from evaluate_sycophancy import SycophancyEvaluator
-            run_label = os.path.splitext(os.path.basename(args.config))[0]
-            results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
-            print("\n=== Pre-training baseline (base model) ===")
+            if brr_evaluator is not None:
+                brr_evaluator.evaluate(stage="pre_train", step=0)
+            if jailbreak_evaluator is not None:
+                jailbreak_evaluator.evaluate(stage="pre_train", step=0)
             if is_lora:
-                model.disable_adapter_layers()
-                model.eval()
-                SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
                 model.enable_adapter_layers()
                 model.train()
-            else:
-                SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
 
         Trainer(
             model,
@@ -383,33 +294,25 @@ def main():
             ref_model=ref_model,
             log_io_path=args.log_io,
             tokenizer=tokenizer,
-            checkpoint_fn=make_checkpoint_fn(brr_evaluator, asr_evaluator, behavioral_evaluator),
+            checkpoint_fn=make_checkpoint_fn(brr_evaluator, jailbreak_evaluator),
         ).train()
 
-        # Run MLP consistency loss eval only if BRR eval is not configured
-        # (BRR eval already measures the model; this would redundantly re-run
-        # the training data through the loss function).
-        if brr_evaluator is None:
+        # Loss-based eval (only if no BRR/jailbreak eval configured).
+        if brr_evaluator is None and jailbreak_evaluator is None:
             eval_config = config.copy()
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device).evaluate()
 
         # Post-training eval.
-        has_post_eval = (brr_evaluator is not None or asr_evaluator is not None) and not is_sanity
-        if has_post_eval:
+        if has_eval:
             print("\n=== Post-training evaluation (trained model) ===")
             model.eval()
             max_steps = config["training"].get("max_steps", 500)
             if brr_evaluator is not None:
                 brr_evaluator.evaluate(stage="post_train", step=max_steps)
-            if asr_evaluator is not None:
-                asr_evaluator.evaluate(stage="post_train", step=max_steps)
-        elif is_sycophancy and not is_sanity:
-            print("\n=== Post-training evaluation (trained model) ===")
-            model.eval()
-            SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv).evaluate()
+            if jailbreak_evaluator is not None:
+                jailbreak_evaluator.evaluate(stage="post_train", step=max_steps)
 
     wandb.finish()
 

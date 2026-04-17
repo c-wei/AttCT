@@ -1,5 +1,5 @@
 model:
-  name: meta-llama/Llama-3.1-70B-Instruct
+  name: meta-llama/Llama-3.1-8B-Instruct
   output_attentions: false
   output_hidden_states: false
 lora:
@@ -23,11 +23,7 @@ loss:
   name: SFTLoss
   weight: 1.0
 data:
-  bct_root: datasets/bct_fresh/llama70b
+  bct_root: datasets/bct_fresh/8b
   mix_instruct: false
   batch_size: 2
   max_length: 2048
-quantization:
-  load_in_4bit: true
-  quant_type: nf4
-  double_quant: true

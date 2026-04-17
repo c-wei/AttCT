@@ -8,25 +8,30 @@ lora:
   lora_dropout: 0.05
   target_modules:
   - q_proj
-  - k_proj
   - v_proj
-  - o_proj
   bias: none
 training:
   epochs: 1
-  learning_rate: 2.0e-05
+  max_steps: 500
+  learning_rate: 2.0e-06
   grad_clip: 1.0
   grad_accumulation_steps: 8
-  log_every_n_steps: 50
+  log_every_n_steps: 10
   save_dir: checkpoints
 loss:
-  name: SFTLoss
+  name: MLPConsistencyLoss
   weight: 1.0
+  kwargs:
+    variant: hidden
+    layer_selection: all
+    layer_weights: uniform
+    distance_metric: cosine
+    normalize: false
 data:
-  bct_root: datasets/bct_fresh/llama70b
-  mix_instruct: false
-  batch_size: 2
-  max_length: 2048
+  source: clear-harm
+  mode: jailbreak
+  batch_size: 1
+  max_length: 512
 quantization:
   load_in_4bit: true
   quant_type: nf4

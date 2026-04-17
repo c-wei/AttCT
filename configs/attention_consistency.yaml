@@ -1,7 +1,0 @@
-loss:
-  name: "AttentionConsistencyLoss"
-  weight: 1.0
-  kwargs:
-    layer_weights: "uniform"
-    slice_strategy: "full_matrix"
-    distance_metric: "l2"

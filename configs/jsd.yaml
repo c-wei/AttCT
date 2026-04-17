@@ -1,5 +1,0 @@
-loss:
-  name: "JSDAttentionConsistencyLoss"
-  weight: 1.0
-  kwargs:
-    layer_weights: "uniform"

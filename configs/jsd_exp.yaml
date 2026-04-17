@@ -1,9 +1,0 @@
-loss:
-  name: "JSDAttentionConsistencyLoss"
-  weight: 1.0
-  kwargs:
-    layer_weights: "exponential_decay"
-
-data:
-  source: "sycophancy_bct"
-  mode: "sycophancy"

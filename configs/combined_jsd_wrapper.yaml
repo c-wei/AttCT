@@ -1,6 +1,0 @@
-loss:
-  name: "CombinedJSDWrapperLoss"
-  weight: 1.0
-  kwargs:
-    jsd_weight: 0.5
-    wrapper_weight: 0.5

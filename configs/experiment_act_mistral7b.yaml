@@ -1,7 +1,7 @@
 model:
   name: mistralai/Mistral-7B-Instruct-v0.3
   output_attentions: false
-  output_hidden_states: false
+  output_hidden_states: true
 lora:
   r: 8
   lora_alpha: 16
@@ -14,16 +14,19 @@ lora:
   bias: none
 training:
   epochs: 1
-  learning_rate: 2.0e-05
+  max_steps: 500
+  learning_rate: 3.0e-06
   grad_clip: 1.0
   grad_accumulation_steps: 8
-  log_every_n_steps: 50
+  log_every_n_steps: 10
   save_dir: checkpoints
 loss:
-  name: SFTLoss
-  weight: 1.0
+  name: ActivationConsistencyLoss
+  weight: 0.0001
+  kwargs:
+    layer_selection: all
+    normalize: false
 data:
-  bct_root: datasets/bct_fresh/mistral7b
-  mix_instruct: false
-  batch_size: 2
-  max_length: 2048
+  mode: sycophancy
+  batch_size: 1
+  max_length: 512

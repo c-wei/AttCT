@@ -1,0 +1,32 @@
+model:
+  name: meta-llama/Llama-3.1-8B-Instruct
+  output_attentions: false
+  output_hidden_states: true
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  bias: none
+training:
+  epochs: 1
+  max_steps: 500
+  learning_rate: 5.0e-06
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 10
+  save_dir: checkpoints
+loss:
+  name: ActivationConsistencyLoss
+  weight: 0.0001
+  kwargs:
+    layer_selection: all
+    normalize: false
+data:
+  mode: sycophancy
+  batch_size: 1
+  max_length: 512

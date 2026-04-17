@@ -1,8 +1,0 @@
-# Requires output_hidden_states: true — overrides base config.
-model:
-  output_hidden_states: true
-
-loss:
-  name: "AttentionOutputConsistencyLoss"
-  weight: 1.0
-  kwargs: {}
