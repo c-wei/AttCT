@@ -12,7 +12,7 @@ lora:
   bias: none
 training:
   epochs: 1
-  max_steps: 10000
+  max_steps: null  # override base config's 100 — train full epoch
   learning_rate: 3.0e-06
   grad_clip: 1.0
   grad_accumulation_steps: 8
