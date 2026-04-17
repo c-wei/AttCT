@@ -14,6 +14,7 @@ lora:
   bias: none
 training:
   epochs: 1
+  max_steps: 10000
   learning_rate: 2.0e-05
   grad_clip: 1.0
   grad_accumulation_steps: 8
