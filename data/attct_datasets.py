@@ -1012,6 +1012,23 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
     if data_cfg.get("source") == "frustration_bct":
         return get_frustration_bct_dataloader(config, split)
 
+    if data_cfg.get("source") == "instruct_only":
+        instruct_path = Path(data_cfg.get("instruct_path", "datasets/sycophancy_bct/instruct_samples.jsonl"))
+        n_samples     = int(data_cfg.get("n_samples", 4000))
+        raw           = _read_jsonl_pairs(instruct_path)
+        rng           = random.Random(data_cfg.get("seed", 42))
+        sampled       = rng.sample(raw, min(n_samples, len(raw)))
+        pairs         = [([{"role": "user", "content": u}], a) for u, a in sampled]
+        tokenizer     = AutoTokenizer.from_pretrained(config["model"]["name"])
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        dataset = FrustrationBCTDataset(
+            pairs, tokenizer,
+            max_length=data_cfg.get("max_length", 2048),
+            mask_prompt=data_cfg.get("mask_prompt", True),
+        )
+        return DataLoader(dataset, batch_size=data_cfg.get("batch_size", 1), shuffle=(split == "train"))
+
     bct_root    = Path(data_cfg.get("bct_root", "datasets/sycophancy_bct"))
     mix_instruct = data_cfg.get("mix_instruct", True)
     limit        = data_cfg.get("limit", None)

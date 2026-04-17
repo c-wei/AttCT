@@ -1,0 +1,42 @@
+# Instruct-only baseline — Gemma-3-27B-IT, LoRA (q+v).
+#
+# Fine-tunes on 4000 Alpaca instruct samples with no BCT signal.
+# Used as a control to isolate whether BCT eval changes are due to
+# the BCT objective specifically, vs. fine-tuning on any data.
+
+model:
+  name: "google/gemma-3-27b-it"
+  output_attentions: false
+  output_hidden_states: false
+  attn_implementation: "sdpa"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 4
+  log_every_n_steps: 10
+  save_dir: "checkpoints/bct_instruct_baseline"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  source: "instruct_only"
+  n_samples: 4000
+  instruct_path: "datasets/sycophancy_bct/instruct_samples.jsonl"
+  mask_prompt: true
+  max_length: 2048
+  batch_size: 1
