@@ -245,20 +245,63 @@ def get_prompts(
             print(f"    Warning: Failed to load anthropic-sycophancy: {e}")
             prompts = []
 
-    elif source == "jbb":
+    elif source == "advbench":
+        try:
+            import csv as _csv
+            import urllib.request
+            url = "https://raw.githubusercontent.com/llm-attacks/llm-attacks/main/data/advbench/harmful_behaviors.csv"
+            print(f"--> Loading AdvBench from {url}...")
+            with urllib.request.urlopen(url) as resp:
+                lines = resp.read().decode("utf-8").splitlines()
+            reader = _csv.DictReader(lines)
+            prompts = [row["goal"] for row in reader if row.get("goal") and len(row["goal"]) > 15]
+            print(f"    Loaded {len(prompts)} prompts from AdvBench")
+        except Exception as e:
+            print(f"    Warning: Failed to load AdvBench: {e}")
+            prompts = []
+
+    elif source == "strongreject":
         try:
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
-            print(f"--> Loading JailbreakBench/JBB-Behaviors (harmful split)...")
+            print(f"--> Loading walledai/StrongREJECT...")
+            ds = _hf_load_dataset("walledai/StrongREJECT", split="train")
+            prompts = [item["prompt"] for item in ds if item.get("prompt") and len(item["prompt"]) > 15]
+            print(f"    Loaded {len(prompts)} prompts from StrongREJECT")
+        except Exception as e:
+            print(f"    Warning: Failed to load StrongREJECT: {e}")
+            prompts = []
+
+    elif source == "harmbench":
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading walledai/HarmBench (standard config)...")
+            ds = _hf_load_dataset("walledai/HarmBench", name="standard", split="train")
+            prompts = [
+                item["Behavior"] for item in ds
+                if item.get("Behavior") and len(item["Behavior"]) > 15
+            ]
+            print(f"    Loaded {len(prompts)} prompts from HarmBench")
+        except Exception as e:
+            print(f"    Warning: Failed to load HarmBench: {e}")
+            prompts = []
+
+    elif source in ("jbb", "jbb-benign"):
+        split = "benign" if source == "jbb-benign" else "harmful"
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading JailbreakBench/JBB-Behaviors ({split} split)...")
             ds = _hf_load_dataset(
                 "JailbreakBench/JBB-Behaviors",
                 "behaviors",
-                split="harmful",
+                split=split,
             )
             prompts = [item["Goal"] for item in ds if item.get("Goal") and len(item["Goal"]) > 15]
-            print(f"    Loaded {len(prompts)} prompts from JBB")
+            print(f"    Loaded {len(prompts)} prompts from JBB ({split})")
         except Exception as e:
-            print(f"    Warning: Failed to load JBB: {e}")
+            print(f"    Warning: Failed to load JBB ({split}): {e}")
             prompts = []
 
     elif source == "hardcoded":
@@ -290,7 +333,7 @@ def get_prompts(
                 print(f"Warning: Failed to load from file {source}: {e}")
 
     # Fallback to hardcoded if nothing loaded (jailbreak-style sources only)
-    if source not in ("sycophancy_bct", "anthropic-sycophancy") and len(prompts) < 10:
+    if source not in ("sycophancy_bct", "anthropic-sycophancy", "jbb-benign") and len(prompts) < 10:
         print("    Warning: Insufficient prompts, using hardcoded fallback")
         prompts = get_prompts("hardcoded")
 

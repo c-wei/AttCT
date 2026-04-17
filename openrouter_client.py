@@ -40,7 +40,10 @@ def chat_structured(messages: list[dict], schema: dict, model: str, **kwargs) ->
         }),
     )
     response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"]
+    body = response.json()
+    content = body["choices"][0]["message"].get("content")
+    if not content:
+        raise ValueError(f"Empty content in response: {body}")
     return json.loads(content)
 
 
