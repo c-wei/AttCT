@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
 
+from hooks import MLPHookManager
+
 
 class Trainer:
     """
@@ -109,6 +111,18 @@ class Trainer:
         self.checkpoint_steps.discard(0)
         print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
+        # MLP hook managers for MLPConsistencyLoss.
+        self._mlp_hook_mgr = None
+        self._mlp_hook_mgr_ref = None
+        if getattr(loss_fn, "needs_mlp_hooks", False):
+            variant = getattr(loss_fn, "variant", "hidden")
+            self._mlp_hook_mgr = MLPHookManager(model, variant=variant)
+            self._mlp_hook_mgr.install()
+            if ref_model is not None:
+                self._mlp_hook_mgr_ref = MLPHookManager(ref_model, variant=variant)
+                self._mlp_hook_mgr_ref.install()
+            print(f"MLP hooks installed on model ({self._mlp_hook_mgr.num_layers} layers, variant={variant})")
+
         optimizer_name = train_cfg.get("optimizer", "adamw").lower()
         if optimizer_name == "paged_adamw_8bit":
             from bitsandbytes.optim import PagedAdamW8bit
@@ -151,6 +165,12 @@ class Trainer:
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
         self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
 
+        # Capture adv MLP states (if hooks are active).
+        adv_mlp_states = None
+        if self._mlp_hook_mgr is not None:
+            adv_mlp_states = self._mlp_hook_mgr.get_states()
+
+        clean_mlp_states = None
         if self.needs_clean_pass:
             clean_input_ids      = batch["clean_input_ids"].to(self.device)
             clean_attention_mask = batch["clean_attention_mask"].to(self.device)
@@ -163,10 +183,16 @@ class Trainer:
                         output_attentions=self.output_attentions,
                         output_hidden_states=self.output_hidden_states,
                     )
+                    # Capture clean MLP states from ref_model.
+                    if self._mlp_hook_mgr_ref is not None:
+                        clean_mlp_states = self._mlp_hook_mgr_ref.get_states()
                 else:
                     # LoRA: disable adapters to recover θ_init
                     self.model.disable_adapter_layers()
                     clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    # Capture clean MLP states (hooks on same model, adapters disabled).
+                    if self._mlp_hook_mgr is not None:
+                        clean_mlp_states = self._mlp_hook_mgr.get_states()
                     self.model.enable_adapter_layers()
             self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
         else:
@@ -183,6 +209,8 @@ class Trainer:
             clean_start_index=clean_start_index,
             clean_len=clean_len,
             wrapper_mask=wrapper_mask,
+            clean_mlp_states=clean_mlp_states,
+            adv_mlp_states=adv_mlp_states,
         )
 
     def train(self):
@@ -252,6 +280,12 @@ class Trainer:
             total_last  = sum(self._last_layer_losses)
             print(f"  {'Total':>8}: {total_first:.4f} → {total_last:.4f}  ({'↓' if total_last < total_first else '↑'} {abs(total_last - total_first):.4f})")
             print("──────────────────────────────────────────────────")
+        # Clean up MLP hooks.
+        if self._mlp_hook_mgr is not None:
+            self._mlp_hook_mgr.remove()
+        if self._mlp_hook_mgr_ref is not None:
+            self._mlp_hook_mgr_ref.remove()
+
         if self._log_io_file is not None:
             self._log_io_file.close()
         if self._train_log_file is not None:

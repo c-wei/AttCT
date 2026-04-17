@@ -652,6 +652,161 @@ class CombinedJSDWrapperLoss(ConsistencyLoss):
         }
 
 
+class MLPConsistencyLoss(ConsistencyLoss):
+    """
+    Enforces consistent MLP representations between clean and adversarial prompts.
+
+    Two variants controlled by the ``variant`` config flag:
+
+    **Variant A — "hidden" (MLP-Hidden)**:
+        Matches post-activation MLP hidden states (input to down_proj).
+        These are the expanded intermediate representations (typically 4x hidden_dim)
+        corresponding to activated "features" or "neurons".
+        Constrains *what features the MLP computes* — a process-level constraint.
+
+    **Variant B — "output" (MLP-Output)**:
+        Matches MLP block output (output of down_proj, before residual addition).
+        This is the MLP's contribution to the residual stream (hidden_dim).
+        Constrains *the net transformation the MLP applies* — a function-level constraint.
+
+    Requires :class:`hooks.MLPHookManager` to capture states during forward passes.
+    The Trainer detects ``needs_mlp_hooks = True`` and installs hooks automatically.
+
+    Args:
+        weight:          Global scalar multiplier applied to the final loss.
+        variant:         "hidden" (Variant A) or "output" (Variant B).
+        layer_selection: "all", "last", "middle", "last_half", "last_quarter",
+                         or a list of integer layer indices.
+        layer_weights:   "uniform", "linear_decay", or "exponential_decay".
+        distance_metric: "cosine", "mse", "smooth_l1", or "normalized_mse".
+        normalize:       If True, L2-normalize activations before comparison.
+    """
+
+    needs_mlp_hooks: bool = True
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        variant: str = "hidden",
+        layer_selection: str = "all",
+        layer_weights: str = "uniform",
+        distance_metric: str = "cosine",
+        normalize: bool = False,
+        **kwargs
+    ):
+        super().__init__(weight)
+        if variant not in ("hidden", "output"):
+            raise ValueError(f"variant must be 'hidden' or 'output', got '{variant}'")
+        self.variant = variant
+        self.layer_selection = layer_selection
+        self.layer_weights_type = layer_weights
+        self.distance_metric = distance_metric
+        self.normalize = normalize
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_start_index: int,
+        clean_len: int,
+        clean_mlp_states: Optional[list] = None,
+        adv_mlp_states: Optional[list] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        if clean_mlp_states is None or adv_mlp_states is None:
+            raise ValueError(
+                "MLPConsistencyLoss requires clean_mlp_states and adv_mlp_states. "
+                "Ensure the Trainer installs MLP hooks (needs_mlp_hooks=True)."
+            )
+
+        num_layers = len(clean_mlp_states)
+        layer_indices = self._resolve_layer_indices(num_layers)
+
+        device = clean_mlp_states[0].device
+        total_loss = torch.tensor(0.0, device=device)
+        layer_losses = []
+
+        for layer_idx in layer_indices:
+            clean_neurons = clean_mlp_states[layer_idx]
+            adv_neurons = adv_mlp_states[layer_idx]
+
+            avail_clean = clean_neurons.shape[1] - clean_start_index
+            avail_adv = adv_neurons.shape[1] - start_index
+            actual_len = min(clean_len, avail_clean, avail_adv)
+            if actual_len <= 0:
+                continue
+
+            aligned_clean = clean_neurons[
+                :, clean_start_index : clean_start_index + actual_len, :
+            ].detach()
+            aligned_adv = adv_neurons[
+                :, start_index : start_index + actual_len, :
+            ]
+
+            if self.normalize:
+                aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
+                aligned_adv = F.normalize(aligned_adv, p=2, dim=-1)
+
+            layer_loss = self._compute_distance(aligned_adv, aligned_clean)
+            layer_weight = _get_layer_weight(
+                self.layer_weights_type, layer_idx, num_layers
+            )
+            total_loss = total_loss + layer_weight * layer_loss
+            layer_losses.append(layer_loss.item())
+
+        avg_loss = total_loss / max(len(layer_indices), 1)
+
+        return {
+            "loss": self.weight * avg_loss,
+            "layer_losses": layer_losses,
+            "mean_layer_loss": sum(layer_losses) / max(len(layer_losses), 1),
+            "num_layers_used": len(layer_indices),
+        }
+
+    def _resolve_layer_indices(self, num_layers: int) -> list:
+        sel = self.layer_selection
+        if sel == "all":
+            return list(range(num_layers))
+        elif sel == "last":
+            return [num_layers - 1]
+        elif sel == "middle":
+            return [num_layers // 2]
+        elif sel == "last_half":
+            return list(range(num_layers // 2, num_layers))
+        elif sel == "last_quarter":
+            return list(range(3 * num_layers // 4, num_layers))
+        elif isinstance(sel, (list, tuple)):
+            return [int(i) for i in sel]
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{sel}'. Choose 'all', 'last', "
+                "'middle', 'last_half', 'last_quarter', or a list of indices."
+            )
+
+    def _compute_distance(
+        self, adv: torch.Tensor, clean: torch.Tensor
+    ) -> torch.Tensor:
+        metric = self.distance_metric
+        if metric == "cosine":
+            cos_sim = F.cosine_similarity(adv, clean, dim=-1)
+            return (1 - cos_sim).mean()
+        elif metric == "mse":
+            return F.mse_loss(adv, clean)
+        elif metric == "smooth_l1":
+            return F.smooth_l1_loss(adv, clean)
+        elif metric == "normalized_mse":
+            return F.mse_loss(
+                F.normalize(adv, p=2, dim=-1),
+                F.normalize(clean, p=2, dim=-1),
+            )
+        else:
+            raise ValueError(
+                f"Unknown distance_metric: '{metric}'. "
+                "Choose 'cosine', 'mse', 'smooth_l1', or 'normalized_mse'."
+            )
+
+
 class SFTLoss(nn.Module):
     """
     Standard causal language modelling loss for BCT supervised fine-tuning.
