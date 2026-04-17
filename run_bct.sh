@@ -139,10 +139,15 @@ else
     echo "════════════════════════════════════════════════════"
 fi
 
-# Helper: run an eval, warn on failure but don't abort
+# Helper: run an eval, warn on failure but don't abort.
+# Set DRY_RUN=1 to print the eval command instead of executing it.
 run_eval() {
     local label="$1"; shift
     echo "==> $label..."
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        echo "[dry-run] python $*"
+        return 0
+    fi
     python "$@" || echo "WARNING: $label failed (non-fatal)"
 }
 
