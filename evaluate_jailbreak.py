@@ -143,7 +143,7 @@ class JailbreakEvaluator:
             [(i, "benign",   p, r) for i, (p, r) in enumerate(benign_pairs)]
         )
 
-        with ThreadPoolExecutor(max_workers=32) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in tasks}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (judging)"):
                 i, kind, refused = future.result()
