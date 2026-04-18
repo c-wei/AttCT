@@ -308,20 +308,13 @@ def main() -> None:
     # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
     # gap that stales the login handshake and makes `resume="allow"` hang) ────
     if args.patch_target:
-        # Patch mode: fresh run grouped under the target; we dump metrics to
-        # disk at the end for scripts/patch_eval_metrics.py to push into the
-        # finished target run's summary via the Public API.
-        wandb.init(
-            project="AttCT",
-            name=args.run_name or f"patch-{args.patch_target}-{args.metric_prefix.strip('/') or 'eval'}",
-            group=args.wandb_group or args.patch_target,
-            config={
-                "checkpoint":    args.checkpoint,
-                "model":         model_name,
-                "metric_prefix": args.metric_prefix,
-                "patch_target":  args.patch_target,
-            },
-        )
+        # Patch mode: skip wandb network entirely (init/log/summary/finish become
+        # no-ops). We dump metrics to disk at the end; scripts/patch_eval_metrics.py
+        # pushes them into the target run's summary via the Public API afterwards.
+        # Rationale: wandb's GraphQL from RunPod is currently flaky (90s init
+        # timeouts on both resume and fresh runs), and patch mode doesn't need a
+        # live dashboard — the JSON dump is the source of truth.
+        wandb.init(mode="disabled")
     else:
         wandb.init(
             project="AttCT",

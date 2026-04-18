@@ -118,21 +118,8 @@ def main() -> None:
 
     # ── Initialise W&B once (resuming if an ID is supplied) ──────────────────
     if args.patch_target:
-        wandb.init(
-            project="AttCT",
-            name=args.run_name or f"patch-{args.patch_target}-{args.metric_prefix.strip('/') or 'rollout'}-rollout",
-            group=args.wandb_group or args.patch_target,
-            config={
-                "checkpoint":   args.checkpoint,
-                "model":        args.model,
-                "tasks":        tasks,
-                "datasets":     [slug for slug, _, _ in datasets],
-                "n_samples":    args.n_samples,
-                "n_turns":      args.n_turns,
-                "judge_model":  args.judge_model,
-                "patch_target": args.patch_target,
-            },
-        )
+        # Patch mode: skip wandb network entirely. See run_evals.py for rationale.
+        wandb.init(mode="disabled")
     else:
         wandb.init(
             project="AttCT",

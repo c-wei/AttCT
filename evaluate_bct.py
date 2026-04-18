@@ -299,13 +299,8 @@ def main():
     if args.patch_target and resume_id:
         raise SystemExit("Unset WANDB_RUN_ID when using --patch-target (cannot resume + patch).")
     if args.patch_target:
-        wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_name or f"patch-{args.patch_target}-{p.strip('/') or 'brr'}-brr",
-            group=args.patch_target,
-            config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit,
-                    "patch_target": args.patch_target, "metric_prefix": p},
-        )
+        # Patch mode: skip wandb network entirely. See run_evals.py for rationale.
+        wandb.init(mode="disabled")
     else:
         wandb.init(
             project=args.wandb_project,
