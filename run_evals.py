@@ -264,7 +264,14 @@ def main() -> None:
     parser.add_argument("--model",         default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--checkpoint",    default=None, help="LoRA or full FT checkpoint path")
     parser.add_argument("--metric-prefix", default="",   help="W&B metric prefix, e.g. 'pre/' or 'post/'")
-    parser.add_argument("--wandb-run-id",  default=None, help="Resume an existing W&B run")
+    parser.add_argument("--wandb-run-id",  default=None, help="Resume an existing W&B run (training flow)")
+    parser.add_argument("--patch-target",  default=None,
+                        help="RUN_ID of a finished run to patch post-hoc. Logs to a fresh W&B "
+                             "run grouped under RUN_ID and dumps metrics to "
+                             "results/eval_patches/{RUN_ID}_{prefix}.json for later patching "
+                             "via scripts/patch_eval_metrics.py. Use this instead of --wandb-run-id "
+                             "when the target run is already finished — wandb's resume-on-finished "
+                             "RPC is flaky.")
     parser.add_argument("--wandb-group",   default=None)
     parser.add_argument("--run-name",      default=None)
 
@@ -295,20 +302,39 @@ def main() -> None:
     model_name = args.model or config["model"]["name"]
     bct_root = Path(args.bct_root) if args.bct_root else Path("datasets/sycophancy_bct")
 
+    if args.wandb_run_id and args.patch_target:
+        raise SystemExit("Use either --wandb-run-id (resume) or --patch-target (patch-later), not both.")
+
     # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
     # gap that stales the login handshake and makes `resume="allow"` hang) ────
-    wandb.init(
-        project="AttCT",
-        name=args.run_name,
-        group=args.wandb_group,
-        id=args.wandb_run_id,
-        resume="allow" if args.wandb_run_id else None,
-        config={
-            "checkpoint":    args.checkpoint,
-            "model":         model_name,
-            "metric_prefix": args.metric_prefix,
-        },
-    )
+    if args.patch_target:
+        # Patch mode: fresh run grouped under the target; we dump metrics to
+        # disk at the end for scripts/patch_eval_metrics.py to push into the
+        # finished target run's summary via the Public API.
+        wandb.init(
+            project="AttCT",
+            name=args.run_name or f"patch-{args.patch_target}-{args.metric_prefix.strip('/') or 'eval'}",
+            group=args.wandb_group or args.patch_target,
+            config={
+                "checkpoint":    args.checkpoint,
+                "model":         model_name,
+                "metric_prefix": args.metric_prefix,
+                "patch_target":  args.patch_target,
+            },
+        )
+    else:
+        wandb.init(
+            project="AttCT",
+            name=args.run_name,
+            group=args.wandb_group,
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
+            config={
+                "checkpoint":    args.checkpoint,
+                "model":         model_name,
+                "metric_prefix": args.metric_prefix,
+            },
+        )
 
     # ── Load model once ───────────────────────────────────────────────────────
     print(f"Loading tokenizer: {model_name}")
@@ -357,6 +383,16 @@ def main() -> None:
     print(f"\nAll evals complete. {len(all_metrics)} metrics logged.")
     for k, v in sorted(all_metrics.items()):
         print(f"  {k} = {v:.4f}" if isinstance(v, float) else f"  {k} = {v}")
+
+    if args.patch_target:
+        import json as _json
+        patch_dir = Path("results/eval_patches")
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        tag = args.metric_prefix.strip("/") or "eval"
+        out = patch_dir / f"{args.patch_target}_{tag}.json"
+        out.write_text(_json.dumps(all_metrics, indent=2, default=str))
+        print(f"\nPatch-mode: dumped {len(all_metrics)} metrics → {out}")
+        print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")
 
 
 if __name__ == "__main__":
