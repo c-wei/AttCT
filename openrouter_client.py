@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import json
+from json_repair import repair_json
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 MODEL = "meta-llama/llama-3.3-70b-instruct:free"
@@ -53,8 +54,11 @@ def chat_structured(messages: list[dict], schema: dict, model: str, retries: int
             raise ValueError(f"Empty content in response: {body}")
         try:
             return json.loads(content)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in response content {content!r}: {e}") from e
+        except json.JSONDecodeError:
+            repaired = repair_json(content, return_objects=True)
+            if isinstance(repaired, dict):
+                return repaired
+            raise ValueError(f"Could not repair JSON from response content {content!r}")
     raise RuntimeError(f"chat_structured failed after {retries} retries (persistent 429)")
 
 
