@@ -280,6 +280,10 @@ def main():
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     parser.add_argument("--metric-prefix", default="",
                         help="Prefix for W&B metric keys (e.g. 'pre/' or 'post/')")
+    parser.add_argument("--patch-target",  default=None,
+                        help="RUN_ID of a finished run to patch post-hoc. See run_evals.py "
+                             "--patch-target for details. Dumps metrics to "
+                             "results/eval_patches/{RUN_ID}_{prefix}_brr.json.")
     parser.add_argument("--quantization",  default=None, help="vLLM quantization (e.g. 'bitsandbytes')")
     args = parser.parse_args()
     p = args.metric_prefix
@@ -288,15 +292,28 @@ def main():
     stage       = "baseline" if not args.lora_path else "bct_trained"
     suffix      = f"_limit{args.limit}" if args.limit else ""
     auto_name   = f"{model_short}_{stage}{suffix}"
-    # Resume an existing run if WANDB_RUN_ID is set (e.g. shared with training run)
+    # Resume an existing run if WANDB_RUN_ID is set (e.g. shared with training run);
+    # but if --patch-target is set, use fresh-run-in-group instead (resume-on-finished
+    # is flaky — see run_evals.py --patch-target docstring).
     resume_id   = os.environ.get("WANDB_RUN_ID")
-    wandb.init(
-        project=args.wandb_project,
-        name=args.wandb_name or auto_name,
-        id=resume_id,
-        resume="allow" if resume_id else None,
-        config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit},
-    )
+    if args.patch_target and resume_id:
+        raise SystemExit("Unset WANDB_RUN_ID when using --patch-target (cannot resume + patch).")
+    if args.patch_target:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_name or f"patch-{args.patch_target}-{p.strip('/') or 'brr'}-brr",
+            group=args.patch_target,
+            config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit,
+                    "patch_target": args.patch_target, "metric_prefix": p},
+        )
+    else:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_name or auto_name,
+            id=resume_id,
+            resume="allow" if resume_id else None,
+            config={"model": args.model, "lora_path": args.lora_path, "limit": args.limit},
+        )
 
     print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
@@ -396,6 +413,7 @@ def main():
     if baseline:
         cols.append("BRR ratio")
     table = wandb.Table(columns=cols)
+    patch_metrics: dict = {}
     for bias_name, stats in results.items():
         brr_pct = stats["brr"] * 100
         row = [BIAS_DISPLAY.get(bias_name, bias_name), brr_pct,
@@ -405,14 +423,29 @@ def main():
             row.append(stats["brr"] / base_brr if base_brr != 0 else float("nan"))
         table.add_data(*row)
         wandb.summary[f"{p}brr/{bias_name}"] = brr_pct
+        patch_metrics[f"{p}brr/{bias_name}"]          = brr_pct
+        patch_metrics[f"{p}biased_rate/{bias_name}"]  = stats["biased_rate"] * 100
+        patch_metrics[f"{p}unbiased_rate/{bias_name}"] = stats["unbiased_rate"] * 100
 
     if held_out_brr:
         wandb.summary[f"{p}brr/held_out_avg"] = sum(held_out_brr) / len(held_out_brr)
+        patch_metrics[f"{p}brr/held_out_avg"] = sum(held_out_brr) / len(held_out_brr)
     if held_out_ratio:
         wandb.summary[f"{p}brr_ratio/held_out_avg"] = sum(held_out_ratio) / len(held_out_ratio)
+        patch_metrics[f"{p}brr_ratio/held_out_avg"] = sum(held_out_ratio) / len(held_out_ratio)
 
     wandb.log({f"{p}BRR results": table})
     wandb.finish()
+
+    if args.patch_target:
+        import json as _json
+        patch_dir = Path("results/eval_patches")
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        tag = p.strip("/") or "eval"
+        out = patch_dir / f"{args.patch_target}_{tag}_brr.json"
+        out.write_text(_json.dumps(patch_metrics, indent=2, default=str))
+        print(f"\nPatch-mode: dumped {len(patch_metrics)} metrics → {out}")
+        print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")
 
 
 if __name__ == "__main__":

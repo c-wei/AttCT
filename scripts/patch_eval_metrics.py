@@ -28,7 +28,8 @@ PROJECT = "neilshah/AttCT"
 
 
 def patch(json_path: Path) -> None:
-    # Filename convention: {RUN_ID}_{prefix}.json
+    # Filename convention: {RUN_ID}_{prefix}_{script}.json
+    # (script ∈ {evals, brr, rollout}; prefix ∈ {pre, post, ""})
     stem = json_path.stem
     run_id = stem.split("_", 1)[0]
     metrics = json.loads(json_path.read_text())

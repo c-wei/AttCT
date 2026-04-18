@@ -389,7 +389,7 @@ def main() -> None:
         patch_dir = Path("results/eval_patches")
         patch_dir.mkdir(parents=True, exist_ok=True)
         tag = args.metric_prefix.strip("/") or "eval"
-        out = patch_dir / f"{args.patch_target}_{tag}.json"
+        out = patch_dir / f"{args.patch_target}_{tag}_evals.json"
         out.write_text(_json.dumps(all_metrics, indent=2, default=str))
         print(f"\nPatch-mode: dumped {len(all_metrics)} metrics → {out}")
         print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")

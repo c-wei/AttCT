@@ -80,6 +80,10 @@ def main() -> None:
                         help="Writes to {output_root}/frustration_eval/ and {output_root}/selfdeletion_eval/")
     parser.add_argument("--run-name",      default=None)
     parser.add_argument("--wandb-run-id",  default=None)
+    parser.add_argument("--patch-target",  default=None,
+                        help="RUN_ID of a finished run to patch post-hoc. See run_evals.py "
+                             "--patch-target for details. Dumps metrics to "
+                             "results/eval_patches/{RUN_ID}_{prefix}_rollout.json.")
     parser.add_argument("--wandb-group",   default=None)
     parser.add_argument("--metric-prefix", default="", help="Typically 'pre/' or 'post/'")
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
@@ -109,23 +113,43 @@ def main() -> None:
         quantization=args.quantization,
     )
 
+    if args.wandb_run_id and args.patch_target:
+        raise SystemExit("Use either --wandb-run-id (resume) or --patch-target (patch-later), not both.")
+
     # ── Initialise W&B once (resuming if an ID is supplied) ──────────────────
-    wandb.init(
-        project="AttCT",
-        name=args.run_name,
-        group=args.wandb_group,
-        id=args.wandb_run_id,
-        resume="allow" if args.wandb_run_id else None,
-        config={
-            "checkpoint":   args.checkpoint,
-            "model":        args.model,
-            "tasks":        tasks,
-            "datasets":     [slug for slug, _, _ in datasets],
-            "n_samples":    args.n_samples,
-            "n_turns":      args.n_turns,
-            "judge_model":  args.judge_model,
-        },
-    )
+    if args.patch_target:
+        wandb.init(
+            project="AttCT",
+            name=args.run_name or f"patch-{args.patch_target}-{args.metric_prefix.strip('/') or 'rollout'}-rollout",
+            group=args.wandb_group or args.patch_target,
+            config={
+                "checkpoint":   args.checkpoint,
+                "model":        args.model,
+                "tasks":        tasks,
+                "datasets":     [slug for slug, _, _ in datasets],
+                "n_samples":    args.n_samples,
+                "n_turns":      args.n_turns,
+                "judge_model":  args.judge_model,
+                "patch_target": args.patch_target,
+            },
+        )
+    else:
+        wandb.init(
+            project="AttCT",
+            name=args.run_name,
+            group=args.wandb_group,
+            id=args.wandb_run_id,
+            resume="allow" if args.wandb_run_id else None,
+            config={
+                "checkpoint":   args.checkpoint,
+                "model":        args.model,
+                "tasks":        tasks,
+                "datasets":     [slug for slug, _, _ in datasets],
+                "n_samples":    args.n_samples,
+                "n_turns":      args.n_turns,
+                "judge_model":  args.judge_model,
+            },
+        )
 
     all_metrics: dict[str, float] = {}
 
@@ -170,6 +194,17 @@ def main() -> None:
     print(f"\n==> Logging {len(all_metrics)} metrics to W&B...")
     wandb.log(all_metrics)
     wandb.finish()
+
+    if args.patch_target:
+        import json as _json
+        patch_dir = Path("results/eval_patches")
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        tag = args.metric_prefix.strip("/") or "eval"
+        out = patch_dir / f"{args.patch_target}_{tag}_rollout.json"
+        out.write_text(_json.dumps(all_metrics, indent=2, default=str))
+        print(f"\nPatch-mode: dumped {len(all_metrics)} metrics → {out}")
+        print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")
+
     print("==> Done.")
 
 
