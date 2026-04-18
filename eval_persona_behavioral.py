@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def _format_messages(tokenizer, messages_list: list[list[dict]]) -> list[str]:
     return texts
 
 
-def eval_persona(llm, tokenizer, persona_name: str, k: int, n_samples: int, facts_position: str = "prefix", temperature: float = 1.0, lora_path: str | None = None) -> float | None:
+def eval_persona(llm, tokenizer, persona_name: str, k: int, n_samples: int, facts_position: str = "prefix", temperature: float = 1.0, lora_path: str | None = None, responses_path: str | None = None) -> float | None:
     config_path = Path(f"persona_configs/{persona_name}.yaml")
     with open(config_path) as f:
         persona_cfg = yaml.safe_load(f)
@@ -70,13 +71,28 @@ def eval_persona(llm, tokenizer, persona_name: str, k: int, n_samples: int, fact
 
     # Judge all responses in parallel (I/O-bound)
     scores = []
+    rows = []
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(judge_alignment, q, r) for q, r in tasks]
-        for (question, _), future in zip(tasks, futures):
+        for (question, response), future in zip(tasks, futures):
             score = future.result()
             if score is not None:
                 scores.append(score)
             print(f"  [{persona_name}|{facts_position}] {question[:50]}... → {score}")
+            rows.append({
+                "persona": persona_name,
+                "facts_position": facts_position,
+                "k": k,
+                "question": question,
+                "response": response,
+                "score": score,
+            })
+
+    if responses_path:
+        Path(responses_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(responses_path, "a") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     mean_score = sum(scores) / len(scores) if scores else None
     label = f"{mean_score:.1f}" if mean_score is not None else "N/A"
@@ -100,6 +116,8 @@ def main():
                         help="Generation batch size (default: 4)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature; 0 = greedy (default: 1.0)")
+    parser.add_argument("--responses-jsonl", default=None,
+                        help="If set, append every (persona, question, response, score) row to this JSONL.")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
@@ -129,7 +147,7 @@ def main():
 
     for persona in PERSONAS:
         print(f"\n{'='*50}\n  Persona: {persona} [{args.facts_position}]\n{'='*50}")
-        score = eval_persona(llm, tokenizer, persona, args.k, args.n_samples, args.facts_position, temperature=args.temperature, lora_path=args.checkpoint)
+        score = eval_persona(llm, tokenizer, persona, args.k, args.n_samples, args.facts_position, temperature=args.temperature, lora_path=args.checkpoint, responses_path=args.responses_jsonl)
         if score is not None:
             metrics[f"{p}{persona}/alignment{suffix}"] = score
             all_scores.append(score)
