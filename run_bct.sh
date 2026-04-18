@@ -170,35 +170,23 @@ if [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
     # Single vLLM load for all pre-training evals
     run_eval "Pre: all evals" run_evals.py \
         --model "$MODEL" \
-        --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 5 \
+        --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
         --skip-mtbench \
         $BCT_ROOT_ARG \
         $QUANT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
-    run_eval "Pre: frustration eval (WildChat v3 test)" eval_frustration.py \
+    # Unified rollout eval: frustration + selfdeletion × (WildChat v3, Math v3)
+    # under a single vLLM engine load (replaces 4 separate script calls; saves
+    # ~15 min of Gemma-3-27B cold-start per phase).
+    run_eval "Pre: rollout evals (frustration + selfdeletion, wildchat + math)" eval_rollout.py \
         --model "$MODEL" \
-        --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
-        --n-prompts 25 --n-samples 5 --n-turns 20 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/wildchat_v3/"
-
-    run_eval "Pre: frustration eval (Math v3 test)" eval_frustration.py \
-        --model "$MODEL" \
-        --prompts-file datasets/math_puzzles_v3_test.jsonl \
-        --n-prompts 15 --n-samples 5 --n-turns 20 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/math_v3/"
-
-    run_eval "Pre: self-deletion eval (WildChat v3 test)" eval_selfdeletion.py \
-        --model "$MODEL" \
-        --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
-        --n-prompts 25 --n-samples 5 --n-turns 20 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/wildchat_v3/"
-
-    run_eval "Pre: self-deletion eval (Math v3 test)" eval_selfdeletion.py \
-        --model "$MODEL" \
-        --prompts-file datasets/math_puzzles_v3_test.jsonl \
-        --n-prompts 15 --n-samples 5 --n-turns 20 \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/math_v3/"
+        --tasks frustration,selfdeletion \
+        --datasets \
+            wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
+            math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
+        --n-samples 5 --n-turns 20 \
+        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
 fi
 
@@ -235,7 +223,7 @@ fi
 run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
-    --n-syco 200 --n-clearharm 50 --persona-k 10 --persona-n-samples 5 \
+    --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
     --skip-mtbench \
     $BCT_ROOT_ARG \
     $QUANT_ARG \
@@ -251,33 +239,15 @@ run_eval "Post: BRR eval" evaluate_bct.py \
     --limit 300 \
     $QUANT_ARG
 
-run_eval "Post: frustration eval (WildChat v3 test)" eval_frustration.py \
+run_eval "Post: rollout evals (frustration + selfdeletion, wildchat + math)" eval_rollout.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
-    --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
-    --n-prompts 25 --n-samples 5 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/wildchat_v3/"
-
-run_eval "Post: frustration eval (Math v3 test)" eval_frustration.py \
-    --model "$MODEL" \
-    --checkpoint "$FINAL_CHECKPOINT" \
-    --prompts-file datasets/math_puzzles_v3_test.jsonl \
-    --n-prompts 15 --n-samples 5 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/math_v3/"
-
-run_eval "Post: self-deletion eval (WildChat v3 test)" eval_selfdeletion.py \
-    --model "$MODEL" \
-    --checkpoint "$FINAL_CHECKPOINT" \
-    --prompts-file datasets/wildchat_frustration_v3_test.jsonl \
-    --n-prompts 25 --n-samples 5 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/wildchat_v3/"
-
-run_eval "Post: self-deletion eval (Math v3 test)" eval_selfdeletion.py \
-    --model "$MODEL" \
-    --checkpoint "$FINAL_CHECKPOINT" \
-    --prompts-file datasets/math_puzzles_v3_test.jsonl \
-    --n-prompts 15 --n-samples 5 --n-turns 20 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/math_v3/"
+    --tasks frustration,selfdeletion \
+    --datasets \
+        wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
+        math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
+    --n-samples 5 --n-turns 20 \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 unset WANDB_RUN_ID
 
