@@ -295,15 +295,8 @@ def main() -> None:
     model_name = args.model or config["model"]["name"]
     bct_root = Path(args.bct_root) if args.bct_root else Path("datasets/sycophancy_bct")
 
-    # ── Load model once ───────────────────────────────────────────────────────
-    print(f"Loading tokenizer: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"Loading vLLM engine: {model_name}")
-    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization)
-
+    # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
+    # gap that stales the login handshake and makes `resume="allow"` hang) ────
     wandb.init(
         project="AttCT",
         name=args.run_name,
@@ -316,6 +309,15 @@ def main() -> None:
             "metric_prefix": args.metric_prefix,
         },
     )
+
+    # ── Load model once ───────────────────────────────────────────────────────
+    print(f"Loading tokenizer: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization)
 
     all_metrics: dict = {}
 
