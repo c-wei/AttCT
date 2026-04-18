@@ -41,9 +41,9 @@ def chat_structured(messages: list[dict], schema: dict, model: str, retries: int
                 **kwargs,
             }),
         )
-        if response.status_code == 429:
+        if response.status_code in (429, 502, 503, 504):
             wait = 2 ** attempt
-            print(f"    [OpenRouter] 429 rate limit, retrying in {wait}s (attempt {attempt+1}/{retries})...")
+            print(f"    [OpenRouter] {response.status_code}, retrying in {wait}s (attempt {attempt+1}/{retries})...")
             time.sleep(wait)
             continue
         response.raise_for_status()
