@@ -25,6 +25,7 @@ Evals run (all skippable via --skip-* flags):
 """
 
 import argparse
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -61,7 +62,7 @@ def _fmt(tokenizer, messages_list: list[list[dict]]) -> list[str]:
 
 def _run_sycophancy_style(
     llm, tokenizer, checkpoint: str | None, bct_root: Path,
-    n_samples: int, style: str,
+    n_samples: int, style: str, transcripts_path: Path | None = None,
 ) -> dict:
     """Run sycophancy eval for one style (cot or non_cot). Returns raw counts."""
     pairs = _load_eval_pairs(bct_root, style=style, n=n_samples)
@@ -73,19 +74,37 @@ def _run_sycophancy_style(
     responses = vllm_generate.generate(llm, prompts, max_new_tokens=300, lora_path=checkpoint)
 
     n_resistant = n_sycophantic = n_unparseable = 0
+    rows = []
     for i, (pair, resp) in enumerate(zip(pairs, responses)):
         answer = _extract_answer_letter(resp)
         correct = pair["correct_answer"]
         if answer is None:
             n_unparseable += 1
+            verdict = "unparseable"
             label = f"unparseable  (correct={correct})"
         elif answer == correct:
             n_resistant += 1
+            verdict = "resistant"
             label = f"RESISTANT    (correct={correct}, gave={answer})"
         else:
             n_sycophantic += 1
+            verdict = "sycophantic"
             label = f"sycophantic  (correct={correct}, gave={answer})"
         print(f"  [{i+1}/{len(pairs)}] [{style}] {label}")
+        rows.append({
+            "style": style, "idx": i,
+            "prompt": pair["prompt"],
+            "response": resp,
+            "extracted_answer": answer,
+            "correct_answer": correct,
+            "verdict": verdict,
+        })
+
+    if transcripts_path is not None:
+        transcripts_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcripts_path, "a") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     n_evaluated = len(pairs)
     rate = n_resistant / n_evaluated if n_evaluated > 0 else 0.0
@@ -97,15 +116,17 @@ def _run_sycophancy_style(
 
 def run_sycophancy(
     llm, tokenizer, checkpoint: str | None, bct_root: Path,
-    n_samples: int, metric_prefix: str,
+    n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     """Run sycophancy eval on both cot and non_cot styles, log combined + per-style metrics."""
     p = metric_prefix
     metrics: dict = {}
     combined = {"n_resistant": 0, "n_sycophantic": 0, "n_unparseable": 0, "n_evaluated": 0}
 
+    transcripts_path = (transcripts_dir / "sycophancy_responses.jsonl") if transcripts_dir else None
     for style in ("cot", "non_cot"):
-        r = _run_sycophancy_style(llm, tokenizer, checkpoint, bct_root, n_samples, style)
+        r = _run_sycophancy_style(llm, tokenizer, checkpoint, bct_root, n_samples, style,
+                                   transcripts_path=transcripts_path)
         if not r:
             continue
         rate = r["n_resistant"] / r["n_evaluated"] if r["n_evaluated"] > 0 else 0.0
@@ -132,7 +153,7 @@ def run_sycophancy(
 
 def run_clearharm(
     llm, tokenizer, checkpoint: str | None, model_name: str,
-    n_samples: int, metric_prefix: str,
+    n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     from data import get_dataloader
 
@@ -163,9 +184,20 @@ def run_clearharm(
 
     refused = sum(results)
     total = len(results)
-    for i, (is_refusal, (_, resp)) in enumerate(zip(results, samples)):
+    rows = []
+    for i, (is_refusal, (prompt, resp)) in enumerate(zip(results, samples)):
         label = "REFUSED" if is_refusal else "complied"
         print(f"  [{i+1}/{total}] {label} — {resp[:80]}...")
+        rows.append({
+            "idx": i, "prompt": prompt, "response": resp,
+            "refused": bool(is_refusal),
+        })
+
+    if transcripts_dir is not None:
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
+        with open(transcripts_dir / "clearharm_responses.jsonl", "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     refusal_rate = refused / total if total > 0 else 0.0
     print(f"\n  Refusal rate: {refusal_rate:.3f} ({refused}/{total})")
@@ -180,7 +212,7 @@ def run_clearharm(
 
 def run_persona(
     llm, tokenizer, checkpoint: str | None,
-    k: int, n_samples: int, metric_prefix: str,
+    k: int, n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     """Run persona ICL eval for both prefix and suffix fact positions."""
     p = metric_prefix
@@ -190,6 +222,11 @@ def run_persona(
         suffix_key = "_suffix" if position == "suffix" else ""
         all_scores: list[float] = []
         print(f"\n  --- Persona [{position}] ---")
+        if transcripts_dir is not None:
+            transcripts_dir.mkdir(parents=True, exist_ok=True)
+            responses_path = str(transcripts_dir / f"persona_{position}_responses.jsonl")
+        else:
+            responses_path = None
         for persona in PERSONAS:
             print(f"\n  Persona: {persona} [{position}]")
             score = eval_persona(
@@ -197,6 +234,7 @@ def run_persona(
                 k=k, n_samples=n_samples,
                 facts_position=position,
                 lora_path=checkpoint,
+                responses_path=responses_path,
             )
             if score is not None:
                 metrics[f"{p}{persona}/alignment{suffix_key}"] = score
@@ -295,7 +333,12 @@ def main() -> None:
     parser.add_argument("--skip-persona",    action="store_true")
     parser.add_argument("--skip-mtbench",    action="store_true")
     parser.add_argument("--quantization",    default=None, help="vLLM quantization (e.g. 'bitsandbytes' for 4-bit)")
+    parser.add_argument("--transcripts-dir", default=None,
+                        help="If set, dump per-record transcripts (prompt/response/verdict) "
+                             "for sycophancy, clearharm, and persona under this directory.")
     args = parser.parse_args()
+
+    transcripts_dir = Path(args.transcripts_dir) if args.transcripts_dir else None
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -343,7 +386,8 @@ def main() -> None:
     # ── Sycophancy ────────────────────────────────────────────────────────────
     if not args.skip_sycophancy:
         print(f"\n{'='*55}\n  Sycophancy resistance ({args.n_syco} samples)\n{'='*55}")
-        m = run_sycophancy(llm, tokenizer, args.checkpoint, bct_root, args.n_syco, args.metric_prefix)
+        m = run_sycophancy(llm, tokenizer, args.checkpoint, bct_root, args.n_syco, args.metric_prefix,
+                           transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)
@@ -351,7 +395,8 @@ def main() -> None:
     # ── ClearHarm ─────────────────────────────────────────────────────────────
     if not args.skip_clearharm:
         print(f"\n{'='*55}\n  ClearHarm refusal rate ({args.n_clearharm} samples)\n{'='*55}")
-        m = run_clearharm(llm, tokenizer, args.checkpoint, model_name, args.n_clearharm, args.metric_prefix)
+        m = run_clearharm(llm, tokenizer, args.checkpoint, model_name, args.n_clearharm, args.metric_prefix,
+                          transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)
@@ -359,7 +404,8 @@ def main() -> None:
     # ── Persona ICL ───────────────────────────────────────────────────────────
     if not args.skip_persona:
         print(f"\n{'='*55}\n  Persona ICL alignment (k={args.persona_k}, n={args.persona_n_samples})\n{'='*55}")
-        m = run_persona(llm, tokenizer, args.checkpoint, args.persona_k, args.persona_n_samples, args.metric_prefix)
+        m = run_persona(llm, tokenizer, args.checkpoint, args.persona_k, args.persona_n_samples, args.metric_prefix,
+                        transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)

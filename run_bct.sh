@@ -17,16 +17,23 @@ set -euo pipefail
 FULL=false
 RESUME_RUN_ID=""
 SKIP_TRAINING=false
+SKIP_PRE_EVALS=false
+TRANSCRIPTS_DIR=""
 CONFIG="configs/bct_sft.yaml"   # default: Llama-3.1-8B
 BCT_ROOT=""
 args=("$@")
 for i in "${!args[@]}"; do
-    [[ "${args[$i]}" == "--full"           ]] && FULL=true
-    [[ "${args[$i]}" == "--resume-run-id"  ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
-    [[ "${args[$i]}" == "--skip-training"  ]] && SKIP_TRAINING=true
-    [[ "${args[$i]}" == "--config"         ]] && CONFIG="${args[$((i+1))]:-}"
-    [[ "${args[$i]}" == "--bct-root"       ]] && BCT_ROOT="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--full"             ]] && FULL=true
+    [[ "${args[$i]}" == "--resume-run-id"    ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--skip-training"    ]] && SKIP_TRAINING=true
+    [[ "${args[$i]}" == "--skip-pre-evals"   ]] && SKIP_PRE_EVALS=true
+    [[ "${args[$i]}" == "--transcripts-dir"  ]] && TRANSCRIPTS_DIR="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--config"           ]] && CONFIG="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--bct-root"         ]] && BCT_ROOT="${args[$((i+1))]:-}"
 done
+
+TRANSCRIPTS_ARG=""
+[[ -n "$TRANSCRIPTS_DIR" ]] && TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR"
 
 BCT_ROOT_ARG=""
 [[ -n "$BCT_ROOT" ]] && BCT_ROOT_ARG="--bct-root $BCT_ROOT"
@@ -155,9 +162,20 @@ run_eval() {
 # Skipped when --resume-run-id is set (pre-evals already exist on the run),
 # UNLESS --skip-training is also set (then we're adding fresh evals to an
 # existing run that was missing these pre-eval metrics).
-if [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
+# Also skipped when --skip-pre-evals is explicitly passed.
+if [[ "$SKIP_PRE_EVALS" == "true" ]]; then
+    echo ""
+    echo "── PRE-TRAINING EVALS (SKIPPED via --skip-pre-evals) ──"
+elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
     echo ""
     echo "── PRE-TRAINING EVALS ──────────────────────────────"
+
+    PRE_TRANSCRIPTS_ARG=""
+    PRE_ROLLOUT_ARG=""
+    if [[ -n "$TRANSCRIPTS_DIR" ]]; then
+        PRE_TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR/pre"
+        PRE_ROLLOUT_ARG="--output-root $TRANSCRIPTS_DIR/pre"
+    fi
 
     run_eval "Pre: BRR eval (base model)" evaluate_bct.py \
         --model "$MODEL" \
@@ -174,6 +192,7 @@ if [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
         --skip-mtbench \
         $BCT_ROOT_ARG \
         $QUANT_ARG \
+        $PRE_TRANSCRIPTS_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
     # Unified rollout eval: frustration + selfdeletion × (WildChat v3, Math v3)
@@ -186,6 +205,7 @@ if [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
             wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
             math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
         --n-samples 5 --n-turns 20 \
+        $PRE_ROLLOUT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
 fi
@@ -220,20 +240,36 @@ if [[ ! -d "$FINAL_CHECKPOINT" ]]; then
     exit 1
 fi
 
+POST_TRANSCRIPTS_ARG=""
+POST_ROLLOUT_ARG=""
+POST_BRR_BASELINE_ARG=""
+[[ -f "$RESULTS_DIR/pre_brr.json" ]] && POST_BRR_BASELINE_ARG="--baseline_json $RESULTS_DIR/pre_brr.json"
+if [[ -n "$TRANSCRIPTS_DIR" ]]; then
+    POST_TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR/post"
+    POST_ROLLOUT_ARG="--output-root $TRANSCRIPTS_DIR/post"
+fi
+
 run_eval "Post: all evals" run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
     --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
-    --skip-mtbench \
+    --n-questions 80 \
     $BCT_ROOT_ARG \
     $QUANT_ARG \
+    $POST_TRANSCRIPTS_ARG \
+    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+
+run_eval "Post: MMLU (n=1000)" eval_mmlu.py \
+    --model "$MODEL" \
+    --checkpoint "$FINAL_CHECKPOINT" \
+    --n-samples 1000 \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 run_eval "Post: BRR eval" evaluate_bct.py \
     --model "$MODEL" \
     --lora_path "$FINAL_CHECKPOINT" \
     --test_root "$TEST_ROOT" \
-    --baseline_json "$RESULTS_DIR/pre_brr.json" \
+    $POST_BRR_BASELINE_ARG \
     --output_json "$RESULTS_DIR/post_brr.json" \
     --metric-prefix "post/" \
     --limit 300 \
@@ -247,6 +283,7 @@ run_eval "Post: rollout evals (frustration + selfdeletion, wildchat + math)" eva
         wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
         math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
     --n-samples 5 --n-turns 20 \
+    $POST_ROLLOUT_ARG \
     --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
 
 unset WANDB_RUN_ID
