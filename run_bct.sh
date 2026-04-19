@@ -204,7 +204,7 @@ elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
         --datasets \
             wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
             math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
-        --n-samples 5 --n-turns 20 \
+        --n-samples 3 --n-turns 20 \
         $PRE_ROLLOUT_ARG \
         --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
 
