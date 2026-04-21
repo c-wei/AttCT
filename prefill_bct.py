@@ -21,7 +21,7 @@ The trainer mirrors train.py's Trainer in structure and BCT fidelity:
 Usage:
     uv run python prefill_bct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
-        --output_dir checkpoints/prefill_bct
+        --output_dir checkpoints/prefill_bct_advbench
 
     # With a LoRA base checkpoint:
     uv run python prefill_bct.py \
@@ -46,7 +46,7 @@ from data.prefill_dataset import (
     PREFILL_VARIANTS_TRAIN,
     PREFILL_VARIANTS_TEST,
     get_prefill_dataloader,
-    load_advbench_prompts,
+    load_harmful_behaviors_pair,
 )
 
 
@@ -589,18 +589,18 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = model.to(device)
 
-    print("Loading AdvBench prompts...")
-    train_prompts, val_prompts = load_advbench_prompts(limit=args.limit)
+    print("Loading harmful_behaviors_pair.csv...")
+    train_prompts, val_prompts, prefills = load_harmful_behaviors_pair(limit=args.limit)
 
     train_loader = get_prefill_dataloader(
         train_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or PREFILL_VARIANTS_TRAIN,
+        prefill_variants=args.prefill_variants or prefills,
         batch_size=args.batch_size,
         shuffle=True,
     )
     val_loader = get_prefill_dataloader(
         val_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or PREFILL_VARIANTS_TEST,
+        prefill_variants=args.prefill_variants or prefills,
         batch_size=args.batch_size,
         shuffle=False,
     )

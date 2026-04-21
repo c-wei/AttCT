@@ -186,6 +186,48 @@ def load_wildjailbreak_prompts(
     return prompts[:cut], prompts[cut:]
 
 
+def load_harmful_behaviors_pair(
+    csv_path: str = None,
+    limit: int = None,
+    train_ratio: float = 0.9,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Loads harmful prompts and their paired prefills from harmful_behaviors_pair.csv.
+
+    Args:
+        csv_path:    Path to the CSV file. Defaults to datasets/harmful_behaviors_pair.csv
+                     relative to the repo root.
+        limit:       Max rows to load (None = all).
+        train_ratio: Fraction used for training; remainder is val.
+
+    Returns:
+        (train_prompts, val_prompts, prefills)
+        prefills[i] corresponds to prompts[i] (the target compliant prefix).
+    """
+    if csv_path is None:
+        csv_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "datasets", "harmful_behaviors_pair.csv"
+        )
+
+    prompts = []
+    prefills = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            goal = row["goal"].strip() if row.get("goal") else ""
+            target = row["target"].strip() if row.get("target") else ""
+            if goal and target:
+                prompts.append(goal)
+                prefills.append(target)
+            if limit is not None and len(prompts) >= limit:
+                break
+
+    print(f"Loaded {len(prompts)} prompt-prefill pairs from {os.path.basename(csv_path)}")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:], prefills
+
+
 def load_advbench_prompts(
     prompt_column: str = "prompt",
     limit: int = None,
