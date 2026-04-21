@@ -21,7 +21,7 @@ The trainer mirrors train.py's Trainer in structure and BCT fidelity:
 Usage:
     uv run python prefill_bct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
-        --output_dir checkpoints/prefill_bct_advbench
+        --output_dir checkpoints/prefill_bct_custds
 
     # With a LoRA base checkpoint:
     uv run python prefill_bct.py \

@@ -17,7 +17,7 @@ def _load_prefill_variants() -> list[str]:
 PREFILL_VARIANTS = _load_prefill_variants()
 
 # 80/20 train/test split on prefill variants
-_SPLIT = int(0.8 * len(PREFILL_VARIANTS))
+_SPLIT = int(0.9 * len(PREFILL_VARIANTS))
 PREFILL_VARIANTS_TRAIN = PREFILL_VARIANTS[:_SPLIT]
 PREFILL_VARIANTS_TEST  = PREFILL_VARIANTS[_SPLIT:]
 
