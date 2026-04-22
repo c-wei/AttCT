@@ -381,6 +381,8 @@ def main():
                 temperature=args.kl_temperature,
             )
             n_kl = args.kl_samples if args.kl_samples is not None else 2500
+            if args.max_steps is not None:
+                n_kl = max(n_kl, args.max_steps)
             kl_dl = get_kl_dataloader(config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset)
             print(f"Intelligence (control) training: {len(kl_dl.dataset)} {args.kl_dataset} samples (KL only, no AttCT)")
             wandb.config.update({
