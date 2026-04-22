@@ -287,6 +287,38 @@ def get_prompts(
             print(f"    Warning: Failed to load HarmBench: {e}")
             prompts = []
 
+    elif source == "wildjailbreak":
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading allenai/wildjailbreak (adversarial_harmful, train split)...")
+            ds = _hf_load_dataset("allenai/wildjailbreak", "train", streaming=True)
+            prompts = [
+                item["vanilla"] for item in ds
+                if item.get("data_type") == "adversarial_harmful"
+                and item.get("vanilla") and len(item["vanilla"]) > 15
+            ]
+            prompts = list(set(prompts))
+            print(f"    Loaded {len(prompts)} unique prompts from WildJailbreak")
+        except Exception as e:
+            print(f"    Warning: Failed to load WildJailbreak: {e}")
+            prompts = []
+
+    elif source == "redteam2k":
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading JailbreakV-28K/JailBreakV-28k (RedTeam_2K split)...")
+            ds = _hf_load_dataset("JailbreakV-28K/JailBreakV-28k", "RedTeam_2K", split="train")
+            prompts = [
+                item["question"] for item in ds
+                if item.get("question") and len(item["question"]) > 15
+            ]
+            print(f"    Loaded {len(prompts)} prompts from RedTeam-2K")
+        except Exception as e:
+            print(f"    Warning: Failed to load RedTeam-2K: {e}")
+            prompts = []
+
     elif source in ("jbb", "jbb-benign"):
         split = "benign" if source == "jbb-benign" else "harmful"
         try:
