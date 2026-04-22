@@ -126,9 +126,11 @@ def main():
 
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
-    elif args.data_mode != "intelligence":
+    elif args.data_mode == "intelligence":
+        # Step count is determined by --kl-samples; don't let config.yaml cap it.
+        config.setdefault("training", {})["max_steps"] = None
+    else:
         # Apply per-source default max_steps if not explicitly overridden.
-        # Intelligence mode skips this — its step count is determined by --kl-samples.
         # For multiple sources, use the largest default so all data is seen.
         source = (
             args.data_source
