@@ -294,11 +294,12 @@ class InterleavedTrainer:
                 )
 
                 # ── Checkpoint ────────────────────────────────────────
-                if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                if global_step in self.checkpoint_steps:
                     self._save_checkpoint(tag=f"step_{global_step}")
-                    print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
-                    self.checkpoint_fn(global_step)
-                    self.model.train()
+                    if self.checkpoint_fn is not None:
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()
 
                 # ── Logging ───────────────────────────────────────────
                 if global_step % self.log_every == 0:
@@ -591,11 +592,12 @@ class IntelligenceTrainer:
                 epoch_kl_loss += kl_val
                 pbar.set_postfix(kl=f"{kl_val:.4f}")
 
-                if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                if global_step in self.checkpoint_steps:
                     self._save_checkpoint(tag=f"step_{global_step}")
-                    print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
-                    self.checkpoint_fn(global_step)
-                    self.model.train()
+                    if self.checkpoint_fn is not None:
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()
 
                 if global_step % self.log_every == 0:
                     metrics = {
