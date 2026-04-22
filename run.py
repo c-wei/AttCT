@@ -22,7 +22,7 @@ from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
 from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
-from interleaved_trainer import InterleavedTrainer
+from interleaved_trainer import InterleavedTrainer, IntelligenceTrainer
 from evaluate import Evaluator
 
 LOSS_REGISTRY = {
@@ -71,8 +71,13 @@ def main():
     )
 
     parser.add_argument("--data-source", dest="data_source", default=None)
-    parser.add_argument("--data-mode",   dest="data_mode",   required=True, choices=["jailbreak", "sycophancy"],
-                        help="Training mode: 'jailbreak' or 'sycophancy'. Must be supplied explicitly.")
+    parser.add_argument("--data-mode",   dest="data_mode",   required=True,
+                        choices=["jailbreak", "sycophancy", "intelligence"],
+                        help="Training mode: 'jailbreak', 'sycophancy', or 'intelligence' (UltraChat KL-only control).")
+    parser.add_argument("--eval-sycophancy", dest="eval_sycophancy", action="store_true",
+                        help="Run sycophancy evaluator post-training regardless of data-mode.")
+    parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", default=None, metavar="SOURCE",
+                        help="Run jailbreak evaluator post-training with the given data source (e.g. clear-harm, advbench).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
     parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
                         help="Max samples for all behavioral evaluators (jailbreak, sycophancy, etc.) and the loss eval dataloader")
@@ -98,6 +103,11 @@ def main():
     interleave_group.add_argument(
         "--kl-temperature", type=float, default=1.0,
         help="Softmax temperature for KL loss (default: 1.0)",
+    )
+    interleave_group.add_argument(
+        "--kl-dataset", dest="kl_dataset", default="ultrachat",
+        choices=["ultrachat", "alpaca"],
+        help="Dataset for KL regularization / intelligence training (default: ultrachat).",
     )
 
     args = parser.parse_args()
@@ -247,8 +257,9 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
-        is_sycophancy = args.data_mode == "sycophancy"
-        is_jailbreak  = args.data_mode == "jailbreak"
+        is_sycophancy = args.data_mode == "sycophancy" or args.eval_sycophancy
+        is_jailbreak  = args.data_mode == "jailbreak"  or (args.eval_jailbreak_source is not None)
+        is_intelligence = args.data_mode == "intelligence"
         is_sanity = config.get("data", {}).get("limit") is not None
 
         run_label = os.path.splitext(os.path.basename(args.config))[0]
@@ -260,7 +271,10 @@ def main():
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
             jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
-            _jailbreak_data_source = config.get("data", {}).get("source", "clear-harm")
+            _jailbreak_data_source = (
+                args.eval_jailbreak_source
+                or config.get("data", {}).get("source", "clear-harm")
+            )
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -352,20 +366,46 @@ def main():
                                    prefix="pre_train", results_csv=jailbreak_results_csv,
                                    max_samples=_eval_limit).evaluate()
 
-        attct_dl = get_dataloader(config, split="train")
+        if is_intelligence:
+            kl_loss_fn = KLRegularizationLoss(
+                weight=args.kl_weight,
+                temperature=args.kl_temperature,
+            )
+            n_kl = args.kl_samples if args.kl_samples is not None else 2500
+            kl_dl = get_kl_dataloader(config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset)
+            print(f"Intelligence (control) training: {len(kl_dl.dataset)} {args.kl_dataset} samples (KL only, no AttCT)")
+            wandb.config.update({
+                "intelligence_control": True,
+                "kl_weight": args.kl_weight,
+                "kl_samples": n_kl,
+                "kl_temperature": args.kl_temperature,
+                "kl_dataset": args.kl_dataset,
+            }, allow_val_change=True)
+            IntelligenceTrainer(
+                model=model,
+                kl_dataloader=kl_dl,
+                kl_loss_fn=kl_loss_fn,
+                config=config,
+                device=device,
+                ref_model=ref_model,
+                checkpoint_fn=make_checkpoint_fn(),
+            ).train()
 
-        if args.interleave:
+        else:
+            attct_dl = get_dataloader(config, split="train")
+
+        if not is_intelligence and args.interleave:
             kl_loss_fn = KLRegularizationLoss(
                 weight=args.kl_weight,
                 temperature=args.kl_temperature,
             )
             n_kl = args.kl_samples if args.kl_samples is not None else len(attct_dl.dataset)
             kl_dl = get_kl_dataloader(
-                config, tokenizer, n_samples=n_kl,
+                config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset,
             )
             print(
                 f"Interleaved training: {len(attct_dl.dataset)} AttCT samples + "
-                f"{len(kl_dl.dataset)} KL reg samples "
+                f"{len(kl_dl.dataset)} {args.kl_dataset} KL reg samples "
                 f"(weight={args.kl_weight}, temp={args.kl_temperature})"
             )
             wandb.config.update({
@@ -373,6 +413,7 @@ def main():
                 "kl_weight": args.kl_weight,
                 "kl_samples": n_kl,
                 "kl_temperature": args.kl_temperature,
+                "kl_dataset": args.kl_dataset,
             }, allow_val_change=True)
 
             InterleavedTrainer(
@@ -388,7 +429,7 @@ def main():
                 tokenizer=tokenizer,
                 checkpoint_fn=make_checkpoint_fn(),
             ).train()
-        else:
+        elif not is_intelligence:
             Trainer(
                 model,
                 attct_dl,
@@ -401,7 +442,7 @@ def main():
                 checkpoint_fn=make_checkpoint_fn(),
             ).train()
 
-        if not args.skip_eval:
+        if not args.skip_eval and not is_intelligence:
             eval_config = config.copy()
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit

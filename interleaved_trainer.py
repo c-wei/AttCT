@@ -415,3 +415,159 @@ class InterleavedTrainer:
         }
         self._train_log_file.write(json.dumps(record) + "\n")
         self._train_log_file.flush()
+
+
+class IntelligenceTrainer:
+    """
+    Training loop for the intelligence (control) condition.
+
+    Trains exclusively on UltraChat via KL regularization — no AttCT consistency
+    loss, no adversarial wrapping.  Used to check whether neutral fine-tuning
+    incidentally affects sycophancy or jailbreak behavior.
+
+    Args:
+        model:           PEFT-wrapped HuggingFace model (on device).
+        kl_dataloader:   DataLoader of UltraChat prompts (from get_kl_dataloader).
+        kl_loss_fn:      Instantiated KLRegularizationLoss.
+        config:          Full config dict.
+        device:          torch.device.
+        ref_model:       Optional frozen reference model (full FT mode).
+        checkpoint_fn:   Optional callable(global_step) for behavioral eval checkpoints.
+    """
+
+    def __init__(
+        self,
+        model,
+        kl_dataloader,
+        kl_loss_fn,
+        config: dict,
+        device: torch.device,
+        ref_model=None,
+        checkpoint_fn=None,
+    ):
+        self.model = model
+        self.ref_model = ref_model
+        self.kl_dataloader = kl_dataloader
+        self.kl_loss_fn = kl_loss_fn
+        self.config = config
+        self.device = device
+        self.checkpoint_fn = checkpoint_fn
+
+        train_cfg = config["training"]
+        self.epochs = train_cfg["epochs"]
+        self.max_steps = train_cfg.get("max_steps", None)
+        self.grad_clip = train_cfg.get("grad_clip")
+        self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.save_dir = train_cfg.get("save_dir")
+
+        dataset_steps = max(1, len(kl_dataloader) * self.epochs)
+        if self.max_steps is not None:
+            total_optimizer_steps = min(self.max_steps, dataset_steps)
+        else:
+            total_optimizer_steps = dataset_steps
+        self.checkpoint_steps = {
+            total_optimizer_steps // 3,
+            (2 * total_optimizer_steps) // 3,
+            total_optimizer_steps,
+        }
+        self.checkpoint_steps.discard(0)
+        print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
+
+        self.optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=train_cfg["learning_rate"],
+        )
+
+    def _kl_step(self, batch: dict) -> dict:
+        input_ids = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+
+        with torch.no_grad():
+            if self.ref_model is not None:
+                base_outputs = self.ref_model(input_ids=input_ids, attention_mask=attention_mask)
+            else:
+                self.model.disable_adapter_layers()
+                base_outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                )
+                self.model.enable_adapter_layers()
+        base_logits = base_outputs.logits.detach()
+
+        current_outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+        return self.kl_loss_fn(
+            current_logits=current_outputs.logits,
+            base_logits=base_logits,
+            attention_mask=attention_mask,
+        )
+
+    def _save_checkpoint(self, tag: str):
+        if self.save_dir is None:
+            return
+        path = os.path.join(self.save_dir, tag)
+        os.makedirs(path, exist_ok=True)
+        self.model.save_pretrained(path)
+        print(f"Checkpoint saved to {path}")
+
+    def train(self):
+        self.model.train()
+        global_step = 0
+        self.optimizer.zero_grad()
+
+        for epoch in range(1, self.epochs + 1):
+            epoch_kl_loss = 0.0
+            n_steps = 0
+
+            pbar = tqdm(self.kl_dataloader, desc=f"Epoch {epoch}", leave=False)
+
+            for batch in pbar:
+                if self.max_steps is not None and global_step >= self.max_steps:
+                    break
+
+                kl_loss_dict = self._kl_step(batch)
+                kl_loss_dict["loss"].backward()
+
+                if self.grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                global_step += 1
+                n_steps += 1
+
+                kl_val = kl_loss_dict["loss"].item()
+                epoch_kl_loss += kl_val
+                pbar.set_postfix(kl=f"{kl_val:.4f}")
+
+                if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                    self._save_checkpoint(tag=f"step_{global_step}")
+                    print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                    self.checkpoint_fn(global_step)
+                    self.model.train()
+
+                if global_step % self.log_every == 0:
+                    metrics = {
+                        "kl/loss": kl_val,
+                        "train/total_loss": kl_val,
+                        "train/epoch": epoch,
+                    }
+                    if "kl_div" in kl_loss_dict:
+                        metrics["kl/div"] = kl_loss_dict["kl_div"]
+                    if "mean_per_token_kl" in kl_loss_dict:
+                        metrics["kl/per_token"] = kl_loss_dict["mean_per_token_kl"]
+                    wandb.log(metrics, step=global_step)
+                    print(f"[epoch {epoch} | step {global_step}] kl: {kl_val:.4f}")
+
+            n_steps = max(1, n_steps)
+            print(f"Epoch {epoch} complete — avg kl: {epoch_kl_loss / n_steps:.4f}")
+
+            if self.max_steps is not None and global_step >= self.max_steps:
+                break
+
+        print("Training complete.")
