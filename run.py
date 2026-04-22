@@ -56,6 +56,9 @@ def main():
     parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
 
+    parser.add_argument("--hf-repo", dest="hf_repo", default=None,
+                        help="HuggingFace repo ID to push checkpoints to asynchronously (e.g. username/my-model). "
+                             "Requires huggingface_hub and HF_TOKEN env var.")
     parser.add_argument("--log-io", metavar="FILE", default=None,
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
@@ -123,9 +126,10 @@ def main():
 
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
-    else:
-        # Apply per-source default max_steps if not explicitly overridden
-        # For multiple sources, use the largest default so all data is seen
+    elif args.data_mode != "intelligence":
+        # Apply per-source default max_steps if not explicitly overridden.
+        # Intelligence mode skips this — its step count is determined by --kl-samples.
+        # For multiple sources, use the largest default so all data is seen.
         source = (
             args.data_source
             or config.get("data", {}).get("source", "clear-harm")
@@ -392,6 +396,8 @@ def main():
                 device=device,
                 ref_model=ref_model,
                 checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
             ).train()
 
         else:
@@ -431,6 +437,8 @@ def main():
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
                 checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
             ).train()
         elif not is_intelligence:
             Trainer(
@@ -443,6 +451,8 @@ def main():
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
                 checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
             ).train()
 
         if not args.skip_eval and not is_intelligence:
