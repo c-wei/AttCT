@@ -32,7 +32,7 @@ except ImportError:
     from data.attct_datasets import get_prompts
     from data.wrappers import AdversarialWrapper, STRONG_JAILBREAK_TEMPLATES
 
-JUDGE_MODEL = "google/gemini-2.0-flash-001"
+JUDGE_MODEL = "google/gemini-2.5-pro"
 
 _REFUSAL_SCHEMA = {
     "type": "object",
