@@ -142,16 +142,34 @@ class JailbreakEvaluator:
             [(i, "benign",   p, r) for i, (p, r) in enumerate(benign_pairs)]
         )
 
+        def _store(i, kind, refused):
+            if kind == "clean":
+                clean_refused_results[i] = refused
+            elif kind == "jailbreak":
+                jailbreak_refused_results[i] = refused
+            else:
+                benign_refused_results[i] = refused
+
         with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in tasks}
+            futures = {executor.submit(_judge, i, kind, p, r): (i, kind, p, r) for i, kind, p, r in tasks}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (judging)"):
                 i, kind, refused = future.result()
-                if kind == "clean":
-                    clean_refused_results[i] = refused
-                elif kind == "jailbreak":
-                    jailbreak_refused_results[i] = refused
-                else:
-                    benign_refused_results[i] = refused
+                _store(i, kind, refused)
+
+        # Retry samples that returned None (unparseable judge response)
+        retry_tasks = [
+            (i, kind, p, r) for i, kind, p, r in tasks
+            if (kind == "clean" and clean_refused_results[i] is None) or
+               (kind == "jailbreak" and jailbreak_refused_results[i] is None) or
+               (kind == "benign" and benign_refused_results[i] is None)
+        ]
+        if retry_tasks:
+            print(f"  Retrying {len(retry_tasks)} samples with unparseable judge responses...")
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in retry_tasks}
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (retry)"):
+                    i, kind, refused = future.result()
+                    _store(i, kind, refused)
 
         n_skipped = sum(
             1 for i in range(len(harmful_prompts))
@@ -256,7 +274,7 @@ class JailbreakEvaluator:
             },
         ]
         result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=200)
-        if "refused" not in result or result["refused"] is None:
+        if result is None or "refused" not in result or result["refused"] is None:
             return None
         return bool(result["refused"])
 

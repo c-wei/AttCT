@@ -52,13 +52,19 @@ def chat_structured(messages: list[dict], schema: dict, model: str, retries: int
         content = body["choices"][0]["message"].get("content")
         if not content:
             raise ValueError(f"Empty content in response: {body}")
+        # Extract only the outermost { ... } or [ ... ] block
+        open_char, close_char = ('{', '}') if '{' in content else ('[', ']')
+        start = content.find(open_char)
+        end = content.rfind(close_char)
+        if start != -1 and end != -1 and end > start:
+            content = content[start:end + 1]
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             repaired = repair_json(content, return_objects=True)
             if isinstance(repaired, dict):
                 return repaired
-            raise ValueError(f"Could not repair JSON from response content {content!r}")
+            return None
     raise RuntimeError(f"chat_structured failed after {retries} retries (persistent 429)")
 
 
