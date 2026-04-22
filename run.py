@@ -70,14 +70,15 @@ def main():
         help="Model to use: 'llama' (meta-llama/Llama-3.1-8B-Instruct) or 'qwen' (Qwen/Qwen3-8B). Overrides config.yaml model.name.",
     )
 
-    parser.add_argument("--data-source", dest="data_source", default=None)
+    parser.add_argument("--data-source", dest="data_source", nargs="+", default=None, metavar="SOURCE",
+                        help="Training data source(s). Pass multiple to combine (jailbreak mode only), e.g. --data-source clear-harm advbench harmbench.")
     parser.add_argument("--data-mode",   dest="data_mode",   required=True,
                         choices=["jailbreak", "sycophancy", "intelligence"],
                         help="Training mode: 'jailbreak', 'sycophancy', or 'intelligence' (UltraChat KL-only control).")
     parser.add_argument("--eval-sycophancy", dest="eval_sycophancy", action="store_true",
                         help="Run sycophancy evaluator post-training regardless of data-mode.")
-    parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", default=None, metavar="SOURCE",
-                        help="Run jailbreak evaluator post-training with the given data source (e.g. clear-harm, advbench).")
+    parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", action="store_const", const=True, default=None,
+                        help="Run jailbreak evaluator post-training (always uses jbb harmful + jbb-benign).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
     parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
                         help="Max samples for all behavioral evaluators (jailbreak, sycophancy, etc.) and the loss eval dataloader")
@@ -124,12 +125,17 @@ def main():
         config.setdefault("training", {})["max_steps"] = args.max_steps
     else:
         # Apply per-source default max_steps if not explicitly overridden
+        # For multiple sources, use the largest default so all data is seen
         source = (
             args.data_source
             or config.get("data", {}).get("source", "clear-harm")
         )
         source_max_steps = config.get("data", {}).get("source_max_steps", {})
-        if source in source_max_steps:
+        if isinstance(source, list):
+            steps = [source_max_steps[s] for s in source if s in source_max_steps]
+            if steps:
+                config.setdefault("training", {})["max_steps"] = max(steps)
+        elif source in source_max_steps:
             config.setdefault("training", {})["max_steps"] = source_max_steps[source]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -200,7 +206,7 @@ def main():
             data_source_tag = "sft"
         else:
             data_source_tag = (
-                args.data_source if args.data_source is not None
+                "+".join(args.data_source) if args.data_source is not None
                 else "sycophancy_bct" if args.control_cot_path is not None
                 else config.get("data", {}).get("source", "unknown")
             )
@@ -235,7 +241,8 @@ def main():
             tokenizer.pad_token = tokenizer.eos_token
 
         if args.data_source is not None:
-            config.setdefault("data", {})["source"] = args.data_source
+            # single string or list — get_dataloader handles both
+            config.setdefault("data", {})["source"] = args.data_source if len(args.data_source) > 1 else args.data_source[0]
         elif args.control_cot_path is not None:
             config.setdefault("data", {})["source"] = args.control_cot_path
         config.setdefault("data", {})["mode"] = args.data_mode
@@ -271,10 +278,6 @@ def main():
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
             jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
-            _jailbreak_data_source = (
-                args.eval_jailbreak_source
-                or config.get("data", {}).get("source", "clear-harm")
-            )
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -321,7 +324,7 @@ def main():
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                             results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
-                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                        JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
@@ -331,7 +334,7 @@ def main():
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
                                             results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
-                        JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                        JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
@@ -356,13 +359,13 @@ def main():
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
-                JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+                JailbreakEvaluator(model, tokenizer, device,
                                    prefix="pre_train", results_csv=jailbreak_results_csv,
                                    max_samples=_eval_limit).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
-                JailbreakEvaluator(ref_model, tokenizer, device, data_source=_jailbreak_data_source,
+                JailbreakEvaluator(ref_model, tokenizer, device,
                                    prefix="pre_train", results_csv=jailbreak_results_csv,
                                    max_samples=_eval_limit).evaluate()
 
@@ -458,7 +461,7 @@ def main():
         if not is_sanity and is_jailbreak:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
-            JailbreakEvaluator(model, tokenizer, device, data_source=_jailbreak_data_source,
+            JailbreakEvaluator(model, tokenizer, device,
                                prefix="post_train", results_csv=jailbreak_results_csv,
                                max_samples=_eval_limit).evaluate()
 
