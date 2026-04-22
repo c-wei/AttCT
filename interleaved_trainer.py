@@ -417,7 +417,9 @@ class InterleavedTrainer:
             def _push():
                 try:
                     from huggingface_hub import HfApi
-                    HfApi().upload_folder(
+                    api = HfApi()
+                    api.create_repo(repo_id=self.hf_repo, repo_type="model", exist_ok=True, private=True)
+                    api.upload_folder(
                         folder_path=local_path,
                         repo_id=self.hf_repo,
                         path_in_repo=subfolder,
@@ -562,7 +564,9 @@ class IntelligenceTrainer:
             def _push():
                 try:
                     from huggingface_hub import HfApi
-                    HfApi().upload_folder(
+                    api = HfApi()
+                    api.create_repo(repo_id=self.hf_repo, repo_type="model", exist_ok=True, private=True)
+                    api.upload_folder(
                         folder_path=local_path,
                         repo_id=self.hf_repo,
                         path_in_repo=subfolder,
