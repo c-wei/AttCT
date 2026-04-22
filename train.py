@@ -1,10 +1,14 @@
 import os
+import time
+import concurrent.futures
 import torch
 import wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import json
+
+_hf_upload_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 
 class Trainer:
@@ -35,6 +39,9 @@ class Trainer:
                          ~33%, ~66%, and 100% of total optimizer steps.
         log_io_path:     Optional path to write per-forward-pass IO records (JSONL).
         tokenizer:       Optional tokenizer for IO and training data logging.
+        hf_repo:         Optional HuggingFace repo ID (e.g. "username/my-model") to
+                         push checkpoints to asynchronously as they are saved.
+        run_name:        Run name used to label HF checkpoint subfolders.
     """
 
     def __init__(
@@ -48,6 +55,8 @@ class Trainer:
         checkpoint_fn=None,
         log_io_path=None,
         tokenizer=None,
+        hf_repo=None,
+        run_name=None,
     ):
         self.model = model
         self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
@@ -71,6 +80,8 @@ class Trainer:
         self.needs_clean_pass = loss_fn.needs_clean_pass
         self.save_dir = train_cfg.get("save_dir")
         self.checkpoint_fn = checkpoint_fn
+        self.hf_repo = hf_repo
+        self.run_name = run_name
 
         # IO logging — open file handle if path provided, else None
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
@@ -297,13 +308,30 @@ class Trainer:
         self._train_log_file.flush()
 
     def _save_checkpoint(self, tag: str):
-        """Save a checkpoint. Tag is used as the subdirectory name."""
+        """Save a checkpoint locally and optionally push to HF Hub asynchronously."""
         if self.save_dir is None:
             return
-        path = os.path.join(self.save_dir, tag)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_prefix = f"{self.run_name}__" if self.run_name else ""
+        folder_name = f"{run_prefix}{tag}__{timestamp}"
+        path = os.path.join(self.save_dir, folder_name)
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
+
+        if self.hf_repo:
+            subfolder = folder_name
+            model_ref = self.model
+
+            def _push():
+                try:
+                    model_ref.push_to_hub(self.hf_repo, subfolder=subfolder)
+                    print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
+                except Exception as exc:
+                    print(f"[HF] Upload failed for {subfolder}: {exc}")
+
+            _hf_upload_pool.submit(_push)
+            print(f"[HF] Upload queued → {self.hf_repo}/{subfolder}")
 
     def eval_loss(self, dataloader=None):
         """Compute and log mean eval loss (used by BCTTrainer after training).

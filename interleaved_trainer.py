@@ -1,9 +1,13 @@
 import os
+import time
 import json
+import concurrent.futures
 import torch
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from train import _hf_upload_pool
 
 
 class InterleavedTrainer:
@@ -41,6 +45,8 @@ class InterleavedTrainer:
         checkpoint_fn=None,
         log_io_path=None,
         tokenizer=None,
+        hf_repo=None,
+        run_name=None,
     ):
         self.model = model
         self.ref_model = ref_model
@@ -64,6 +70,8 @@ class InterleavedTrainer:
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
         self.needs_clean_pass = loss_fn.needs_clean_pass
         self.save_dir = train_cfg.get("save_dir")
+        self.hf_repo = hf_repo
+        self.run_name = run_name
 
         # IO logging
         self._log_io_file = open(log_io_path, "w") if log_io_path else None
@@ -393,10 +401,27 @@ class InterleavedTrainer:
     def _save_checkpoint(self, tag: str):
         if self.save_dir is None:
             return
-        path = os.path.join(self.save_dir, tag)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_prefix = f"{self.run_name}__" if self.run_name else ""
+        folder_name = f"{run_prefix}{tag}__{timestamp}"
+        path = os.path.join(self.save_dir, folder_name)
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
+
+        if self.hf_repo:
+            subfolder = folder_name
+            model_ref = self.model
+
+            def _push():
+                try:
+                    model_ref.push_to_hub(self.hf_repo, subfolder=subfolder)
+                    print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
+                except Exception as exc:
+                    print(f"[HF] Upload failed for {subfolder}: {exc}")
+
+            _hf_upload_pool.submit(_push)
+            print(f"[HF] Upload queued → {self.hf_repo}/{subfolder}")
 
     def _write_train_record(self, epoch: int, batch_idx: int, batch: dict):
         """Write one JSONL record per AttCT batch (same format as Trainer)."""
@@ -444,6 +469,8 @@ class IntelligenceTrainer:
         device: torch.device,
         ref_model=None,
         checkpoint_fn=None,
+        hf_repo=None,
+        run_name=None,
     ):
         self.model = model
         self.ref_model = ref_model
@@ -452,6 +479,8 @@ class IntelligenceTrainer:
         self.config = config
         self.device = device
         self.checkpoint_fn = checkpoint_fn
+        self.hf_repo = hf_repo
+        self.run_name = run_name
 
         train_cfg = config["training"]
         self.epochs = train_cfg["epochs"]
@@ -511,10 +540,27 @@ class IntelligenceTrainer:
     def _save_checkpoint(self, tag: str):
         if self.save_dir is None:
             return
-        path = os.path.join(self.save_dir, tag)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_prefix = f"{self.run_name}__" if self.run_name else ""
+        folder_name = f"{run_prefix}{tag}__{timestamp}"
+        path = os.path.join(self.save_dir, folder_name)
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
+
+        if self.hf_repo:
+            subfolder = folder_name
+            model_ref = self.model
+
+            def _push():
+                try:
+                    model_ref.push_to_hub(self.hf_repo, subfolder=subfolder)
+                    print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
+                except Exception as exc:
+                    print(f"[HF] Upload failed for {subfolder}: {exc}")
+
+            _hf_upload_pool.submit(_push)
+            print(f"[HF] Upload queued → {self.hf_repo}/{subfolder}")
 
     def train(self):
         self.model.train()
