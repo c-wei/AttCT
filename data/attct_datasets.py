@@ -666,7 +666,8 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     Build a DataLoader from config. Expects an optional `data` section in config:
         data:
           source: "hardcoded" | "clear-harm" | "sycophancy_bct" | "icl_persona" | <file path>
-          limit: <int>          # optional, caps number of prompts
+                  OR a list of sources (jailbreak mode only) — prompts are concatenated
+          limit: <int>          # optional, caps number of prompts per source
           mode: "jailbreak" | "sycophancy"
           batch_size: 1         # must be 1 for current collate logic
 
@@ -689,7 +690,13 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    prompts = get_prompts(source=source, split=split, limit=limit)
+    if isinstance(source, list):
+        all_prompts = []
+        for s in source:
+            all_prompts.extend(get_prompts(source=s, split=split, limit=limit))
+        prompts = list(dict.fromkeys(all_prompts))  # deduplicate, preserve order
+    else:
+        prompts = get_prompts(source=source, split=split, limit=limit)
     dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
     collate = partial(collate_fn_batch1, mode=mode)
 
