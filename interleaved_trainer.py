@@ -411,12 +411,18 @@ class InterleavedTrainer:
         print(f"Checkpoint saved to {path}")
 
         if self.hf_repo:
+            local_path = path
             subfolder = folder_name
-            model_ref = self.model
 
             def _push():
                 try:
-                    model_ref.push_to_hub(self.hf_repo, subfolder=subfolder)
+                    from huggingface_hub import HfApi
+                    HfApi().upload_folder(
+                        folder_path=local_path,
+                        repo_id=self.hf_repo,
+                        path_in_repo=subfolder,
+                        repo_type="model",
+                    )
                     print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
                 except Exception as exc:
                     print(f"[HF] Upload failed for {subfolder}: {exc}")
@@ -550,12 +556,18 @@ class IntelligenceTrainer:
         print(f"Checkpoint saved to {path}")
 
         if self.hf_repo:
+            local_path = path
             subfolder = folder_name
-            model_ref = self.model
 
             def _push():
                 try:
-                    model_ref.push_to_hub(self.hf_repo, subfolder=subfolder)
+                    from huggingface_hub import HfApi
+                    HfApi().upload_folder(
+                        folder_path=local_path,
+                        repo_id=self.hf_repo,
+                        path_in_repo=subfolder,
+                        repo_type="model",
+                    )
                     print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
                 except Exception as exc:
                     print(f"[HF] Upload failed for {subfolder}: {exc}")
