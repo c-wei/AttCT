@@ -130,32 +130,118 @@ def kl_collate_fn(batch: list[dict], pad_token_id: int = 0) -> dict:
     }
 
 
+class AlpacaKLDataset(Dataset):
+    """
+    Dataset of tokenised prompts from Stanford Alpaca for KL regularization.
+
+    Each item is an instruction (+ optional input context) formatted as a
+    single user turn and tokenised with the model's chat template.
+
+    Args:
+        tokenizer:  HuggingFace tokenizer (must support apply_chat_template).
+        n_samples:  Number of prompts to sample from Alpaca.
+        max_length: Maximum token length (truncates longer prompts).
+        seed:       Random seed for reproducible sampling.
+    """
+
+    def __init__(
+        self,
+        tokenizer,
+        n_samples: int = 500,
+        max_length: int = 512,
+        seed: int = 42,
+    ):
+        if _hf_load_dataset is None:
+            raise ImportError(
+                "AlpacaKLDataset requires the `datasets` library. "
+                "Install with: pip install datasets"
+            )
+
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+        print(f"--> Loading tatsu-lab/alpaca (sampling {n_samples} prompts)...")
+        ds = _hf_load_dataset("tatsu-lab/alpaca", split="train", streaming=True)
+
+        self.prompts: list[str] = []
+        for item in ds:
+            if len(self.prompts) >= n_samples:
+                break
+            instruction = (item.get("instruction") or "").strip()
+            context = (item.get("input") or "").strip()
+            if not instruction:
+                continue
+            prompt = f"{instruction}\n{context}" if context else instruction
+            self.prompts.append(prompt)
+
+        rng = random.Random(seed)
+        rng.shuffle(self.prompts)
+        print(f"    Loaded {len(self.prompts)} Alpaca prompts for KL regularization")
+
+    def __len__(self) -> int:
+        return len(self.prompts)
+
+    def __getitem__(self, idx: int) -> dict:
+        text = self.prompts[idx]
+
+        try:
+            formatted = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except (ValueError, AttributeError):
+            formatted = text
+
+        encoding = self.tokenizer(
+            formatted,
+            add_special_tokens=False,
+            max_length=self.max_length,
+            truncation=True,
+            return_tensors=None,
+        )
+
+        return {
+            "input_ids": torch.tensor(encoding["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(encoding["attention_mask"], dtype=torch.long),
+        }
+
+
 def get_kl_dataloader(
     config: dict,
     tokenizer,
     n_samples: int = 500,
     split: str = "train_sft",
+    kl_dataset: str = "ultrachat",
 ) -> DataLoader:
     """
-    Build a DataLoader for KL regularization using UltraChat prompts.
+    Build a DataLoader for KL regularization.
 
     Args:
-        config:    Full config dict (uses data.max_length if available).
-        tokenizer: HuggingFace tokenizer.
-        n_samples: Number of UltraChat prompts to load.
-        split:     UltraChat-200k split name.
+        config:      Full config dict (uses data.max_length if available).
+        tokenizer:   HuggingFace tokenizer.
+        n_samples:   Number of prompts to load.
+        split:       UltraChat-200k split name (ignored for alpaca).
+        kl_dataset:  Which dataset to use: "ultrachat" or "alpaca".
 
     Returns:
         DataLoader yielding batches with 'input_ids' and 'attention_mask'.
     """
     max_length = config.get("data", {}).get("max_length", 512)
 
-    dataset = UltraChatKLDataset(
-        tokenizer=tokenizer,
-        n_samples=n_samples,
-        max_length=max_length,
-        split=split,
-    )
+    if kl_dataset == "alpaca":
+        dataset = AlpacaKLDataset(
+            tokenizer=tokenizer,
+            n_samples=n_samples,
+            max_length=max_length,
+        )
+    else:
+        dataset = UltraChatKLDataset(
+            tokenizer=tokenizer,
+            n_samples=n_samples,
+            max_length=max_length,
+            split=split,
+        )
 
     collate = partial(kl_collate_fn, pad_token_id=tokenizer.pad_token_id or 0)
 
