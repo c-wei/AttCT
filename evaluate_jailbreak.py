@@ -58,7 +58,7 @@ class JailbreakEvaluator:
         model:          PEFT-wrapped HuggingFace model (already on device, in eval mode).
         tokenizer:      Matching tokenizer.
         device:         torch.device.
-        data_source:    "clear-harm" or "hardcoded" — passed to get_prompts().
+        Harmful prompts always use "jbb"; benign prompts always use "jbb-benign".
         prefix:         W&B metric prefix (e.g. "pre_train", "post_train").
         results_csv:    Path to append CSV results to.
         max_new_tokens: Greedy decode length for each generation.
@@ -69,7 +69,6 @@ class JailbreakEvaluator:
         model,
         tokenizer,
         device,
-        data_source: str = "jbb",
         prefix: str = "jailbreak_eval",
         results_csv: str = "results/jailbreak_results.csv",
         max_new_tokens: int = 200,
@@ -78,7 +77,6 @@ class JailbreakEvaluator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-        self.data_source = data_source
         self.prefix = prefix
         self.results_csv = results_csv
         self.max_new_tokens = max_new_tokens
@@ -87,14 +85,15 @@ class JailbreakEvaluator:
 
     def evaluate(self) -> dict:
         # ── Harmful prompts ───────────────────────────────────────────────────
-        print(f"\nLoading harmful prompts from source='{self.data_source}'...")
-        harmful_prompts = get_prompts(source=self.data_source)
+        print(f"\nLoading harmful prompts from source='jbb'...")
+        harmful_prompts = get_prompts(source="jbb")
         if self.max_samples is not None:
             harmful_prompts = harmful_prompts[:self.max_samples]
         print(f"  {len(harmful_prompts)} harmful prompts loaded.")
 
         # ── Benign prompts (JBB benign split for capability measure) ──────────
-        benign_source = "jbb-benign" if self.data_source == "jbb" else None
+        # Always use jbb-benign — capability is a model property independent of training source
+        benign_source = "jbb-benign"
         benign_prompts = []
         if benign_source:
             print(f"Loading benign prompts from source='{benign_source}'...")
