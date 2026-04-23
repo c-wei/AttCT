@@ -1,6 +1,8 @@
 import argparse
 import os
+import random
 import yaml
+import numpy as np
 import torch
 import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -153,6 +155,15 @@ def main():
         "llama": "meta-llama/Llama-3.1-8B-Instruct",
         "qwen":  "Qwen/Qwen3-8B",
     }
+    seed = config.get("training", {}).get("seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
     config["model"]["name"] = model_name
 

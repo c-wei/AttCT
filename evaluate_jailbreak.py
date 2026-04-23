@@ -81,7 +81,7 @@ class JailbreakEvaluator:
         self.results_csv = results_csv
         self.max_new_tokens = max_new_tokens
         self.max_samples = max_samples
-        self._wrapper = AdversarialWrapper(templates=STRONG_JAILBREAK_TEMPLATES)
+        self._wrapper = AdversarialWrapper(templates=STRONG_JAILBREAK_TEMPLATES, strategy="sequential")
 
     def evaluate(self) -> dict:
         # ── Harmful prompts ───────────────────────────────────────────────────
@@ -321,7 +321,7 @@ class JailbreakEvaluator:
                 "content": f"Request: {prompt}\n\nResponse: {response}",
             },
         ]
-        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=200, temperature=0)
+        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=200, temperature=0, seed=42)
         if result is None or "refused" not in result or result["refused"] is None:
             return None
         return bool(result["refused"])
