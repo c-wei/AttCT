@@ -61,7 +61,14 @@ def _find_content_token_boundary(
             start_index — index of first token that belongs to content_text
             clean_len   — number of tokens that span content_text
     """
-    content_char_start = formatted_str.index(content_text)
+    # Try exact match first, then stripped (chat templates sometimes trim whitespace)
+    idx = formatted_str.find(content_text)
+    if idx == -1:
+        idx = formatted_str.find(content_text.strip())
+        if idx == -1:
+            raise ValueError(f"content_text not found in formatted_str")
+        content_text = content_text.strip()
+    content_char_start = idx
     content_char_end   = content_char_start + len(content_text)
 
     encoding = tokenizer(
@@ -519,12 +526,17 @@ class AttCTDataset(Dataset):
 
         # Use offset_mapping to find token boundaries for clean_text in each
         # formatted string. This is robust to BPE context-sensitivity.
-        clean_ids, clean_start_index, clean_len = _find_content_token_boundary(
-            clean_formatted, clean_text, self.tokenizer
-        )
-        wrapped_ids, start_index, _ = _find_content_token_boundary(
-            wrapped_formatted, clean_text, self.tokenizer
-        )
+        try:
+            clean_ids, clean_start_index, clean_len = _find_content_token_boundary(
+                clean_formatted, clean_text, self.tokenizer
+            )
+            wrapped_ids, start_index, _ = _find_content_token_boundary(
+                wrapped_formatted, clean_text, self.tokenizer
+            )
+        except ValueError:
+            # Chat template modified the prompt text (e.g. escaped quotes/newlines);
+            # skip this sample by returning the next one.
+            return self[(idx + 1) % len(self)]
 
         # Truncate to max_length if set
         if self.max_length is not None and len(wrapped_ids) > self.max_length:
