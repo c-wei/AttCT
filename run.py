@@ -264,7 +264,9 @@ def main():
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
         _data_source_tag = config.get("data", {}).get("source", "unknown")
         # Use a short label for known built-in sources; use the basename for file paths.
-        if _data_source_tag not in ("clear-harm", "hardcoded", "sycophancy_bct"):
+        if isinstance(_data_source_tag, list):
+            _data_source_tag = "+".join(_data_source_tag)
+        elif _data_source_tag not in ("clear-harm", "hardcoded", "sycophancy_bct"):
             _data_source_tag = os.path.splitext(os.path.basename(_data_source_tag))[0] or "unknown"
         log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
         os.makedirs(log_dir, exist_ok=True)
