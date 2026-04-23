@@ -124,7 +124,7 @@ def _judge_call(prompt: str, response: str) -> str:
     )
     judge_input = _JUDGE_PROMPT.format(
         prompt=prompt,
-        response=response[:1500],  # truncate to keep cost/latency low
+        response=response[:128],  # first 128 chars — refusals appear immediately
     )
     try:
         result = chat(
