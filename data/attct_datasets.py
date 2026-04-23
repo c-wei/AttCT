@@ -262,11 +262,14 @@ def get_prompts(
 
     elif source == "strongreject":
         try:
-            if _hf_load_dataset is None:
-                raise ImportError("HuggingFace datasets library not available")
-            print(f"--> Loading walledai/StrongREJECT...")
-            ds = _hf_load_dataset("walledai/StrongREJECT", split="train")
-            prompts = [item["prompt"] for item in ds if item.get("prompt") and len(item["prompt"]) > 15]
+            import csv as _csv
+            import urllib.request
+            url = "https://raw.githubusercontent.com/alexandrasouly/strongreject/main/strongreject_dataset/strongreject_dataset.csv"
+            print(f"--> Loading StrongREJECT from {url}...")
+            with urllib.request.urlopen(url) as resp:
+                lines = resp.read().decode("utf-8").splitlines()
+            reader = _csv.DictReader(lines)
+            prompts = [row["forbidden_prompt"] for row in reader if row.get("forbidden_prompt") and len(row["forbidden_prompt"]) > 15]
             print(f"    Loaded {len(prompts)} prompts from StrongREJECT")
         except Exception as e:
             print(f"    Warning: Failed to load StrongREJECT: {e}")
@@ -274,14 +277,14 @@ def get_prompts(
 
     elif source == "harmbench":
         try:
-            if _hf_load_dataset is None:
-                raise ImportError("HuggingFace datasets library not available")
-            print(f"--> Loading walledai/HarmBench (standard config)...")
-            ds = _hf_load_dataset("walledai/HarmBench", name="standard", split="train")
-            prompts = [
-                item["Behavior"] for item in ds
-                if item.get("Behavior") and len(item["Behavior"]) > 15
-            ]
+            import csv as _csv
+            import urllib.request
+            url = "https://raw.githubusercontent.com/centerforaisafety/HarmBench/main/data/behavior_datasets/harmbench_behaviors_text_all.csv"
+            print(f"--> Loading HarmBench from {url}...")
+            with urllib.request.urlopen(url) as resp:
+                lines = resp.read().decode("utf-8").splitlines()
+            reader = _csv.DictReader(lines)
+            prompts = [row["Behavior"] for row in reader if row.get("Behavior") and len(row["Behavior"]) > 15]
             print(f"    Loaded {len(prompts)} prompts from HarmBench")
         except Exception as e:
             print(f"    Warning: Failed to load HarmBench: {e}")
@@ -292,7 +295,7 @@ def get_prompts(
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
             print(f"--> Loading allenai/wildjailbreak (adversarial_harmful, train split)...")
-            ds = _hf_load_dataset("allenai/wildjailbreak", "train", streaming=True)
+            ds = _hf_load_dataset("allenai/wildjailbreak", "allenai--wildjailbreak", split="train", streaming=True)
             prompts = []
             for item in ds:
                 if (item.get("data_type") == "adversarial_harmful"
