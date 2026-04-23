@@ -49,7 +49,13 @@ def chat_structured(messages: list[dict], schema: dict, model: str, retries: int
             continue
         response.raise_for_status()
         body = response.json()
-        content = body["choices"][0]["message"].get("content")
+        choice = body["choices"][0]
+        if choice.get("error", {}).get("code") == 429:
+            wait = 2 ** attempt
+            print(f"    [OpenRouter] 429 in response body, retrying in {wait}s (attempt {attempt+1}/{retries})...")
+            time.sleep(wait)
+            continue
+        content = choice["message"].get("content")
         if not content:
             raise ValueError(f"Empty content in response: {body}")
         # Extract only the outermost { ... } or [ ... ] block
