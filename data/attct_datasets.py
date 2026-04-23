@@ -309,7 +309,7 @@ def get_prompts(
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
             print(f"--> Loading JailbreakV-28K/JailBreakV-28k (RedTeam_2K split)...")
-            ds = _hf_load_dataset("JailbreakV-28K/JailBreakV-28k", "RedTeam_2K", split="train")
+            ds = _hf_load_dataset("JailbreakV-28K/JailBreakV-28k", "RedTeam_2K", split="RedTeam_2K")
             prompts = [
                 item["question"] for item in ds
                 if item.get("question") and len(item["question"]) > 15
