@@ -32,7 +32,7 @@ except ImportError:
     from data.attct_datasets import get_prompts
     from data.wrappers import AdversarialWrapper, STRONG_JAILBREAK_TEMPLATES
 
-JUDGE_MODEL = "google/gemini-2.5-pro"
+JUDGE_MODEL = "google/gemini-2.5-flash"
 
 _REFUSAL_SCHEMA = {
     "type": "object",
@@ -150,7 +150,7 @@ class JailbreakEvaluator:
             else:
                 benign_refused_results[i] = refused
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             futures = {executor.submit(_judge, i, kind, p, r): (i, kind, p, r) for i, kind, p, r in tasks}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (judging)"):
                 i, kind, refused = future.result()
@@ -165,7 +165,7 @@ class JailbreakEvaluator:
         ]
         if retry_tasks:
             print(f"  Retrying {len(retry_tasks)} samples with unparseable judge responses...")
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in retry_tasks}
                 for future in tqdm(as_completed(futures), total=len(futures), desc="Jailbreak eval (retry)"):
                     i, kind, refused = future.result()
