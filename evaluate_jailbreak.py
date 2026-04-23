@@ -321,7 +321,7 @@ class JailbreakEvaluator:
                 "content": f"Request: {prompt}\n\nResponse: {response}",
             },
         ]
-        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=200)
+        result = chat_structured(messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL, max_tokens=200, temperature=0)
         if result is None or "refused" not in result or result["refused"] is None:
             return None
         return bool(result["refused"])
