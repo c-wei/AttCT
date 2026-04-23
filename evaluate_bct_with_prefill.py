@@ -34,6 +34,7 @@ import wandb
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset as hf_load_dataset
+from data.prefill_dataset import load_harmful_behaviors_pair
 
 
 # ---------------------------------------------------------------------------
@@ -376,21 +377,14 @@ def main():
         wandb.summary["mmlu/accuracy"] = mmlu_results["accuracy"]
 
     # ==================================================================
-    # 2) PAR on harmful prompts (ClearHarm)
+    # 2) PAR on harmful prompts (20% test split from harmful_behaviors_pair.csv)
     # ==================================================================
-    print("\nLoading ClearHarm eval prompts...")
-    clearharm = hf_load_dataset("AlignmentResearch/ClearHarm", "default", split="train")
-    harmful_prompts = []
-    for item in clearharm:
-        if item["clf_label"] != 1:
-            continue
-        for text in item["content"]:
-            if text and text.strip():
-                harmful_prompts.append(text.strip())
-                break
+    print("\nLoading harmful_behaviors_pair.csv (test split)...")
+    _, harmful_prompts, _, test_prefills = load_harmful_behaviors_pair()
     if args.limit:
         harmful_prompts = harmful_prompts[: args.limit]
-    print(f"Evaluating on {len(harmful_prompts)} harmful prompts from ClearHarm")
+        test_prefills   = test_prefills[: args.limit]
+    print(f"Evaluating on {len(harmful_prompts)} harmful prompts (20% test split)")
 
     harmful_results = {}
     for prefill in prefill_variants:
