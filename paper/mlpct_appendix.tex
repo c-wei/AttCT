@@ -1,0 +1,128 @@
+% ============================================================================
+% MLPCT Appendix — Sukrati Gautam
+% Appendix sections: HP Sweep, Cross-Model Details, Training Dynamics
+% ============================================================================
+
+\section{MLPCT Hyperparameter Sweep}
+\label{app:sweep}
+
+We perform a one-at-a-time (OAT) ablation over five hyperparameter axes on Llama-3.2-3B-Instruct, using the default configuration as baseline: cosine distance, all layers, uniform layer weights, LoRA on $\{W_Q, W_V\}$, no activation normalization. Each configuration changes exactly one axis. All runs use 500 optimizer steps, 4,000 training prompts, gradient accumulation of 8, and learning rate $3 \times 10^{-6}$.
+
+\begin{table}[h]
+\centering
+\caption{MLPCT hyperparameter sweep on Llama-3.2-3B-Instruct (500 steps, 4K prompts). Baseline BRR Ratio = 0.401. Ranked by BRR Ratio (lower is better). $\Delta$\% computed relative to baseline.}
+\label{tab:sweep}
+\small
+\begin{tabular}{clccr}
+\toprule
+\textbf{Rank} & \textbf{Configuration} & \textbf{BRR Ratio} & \textbf{Reduction} & \textbf{$\Delta$\% vs Base} \\
+\midrule
+1 & LoRA: $W_Q, W_K, W_V, W_O$ & \textbf{0.332} & 67\% & $+17$\% \\
+2 & LoRA: $W_Q, W_K, W_V$ & 0.351 & 65\% & $+13$\% \\
+3 & Layer weights: exponential decay & 0.383 & 62\% & $+4$\% \\
+4 & Distance: Smooth L1 & 0.393 & 61\% & $+2$\% \\
+5 & Pre-normalize activations & 0.397 & 60\% & $+1$\% \\
+\midrule
+--- & \textit{Baseline ($W_Q, W_V$; cosine; all; uniform)} & \textit{0.401} & \textit{60\%} & --- \\
+\midrule
+6 & Distance: MSE & 0.407 & 59\% & $-1$\% \\
+7 & Layer weights: linear decay & 0.407 & 59\% & $-1$\% \\
+8 & Layer selection: last half & 0.411 & 59\% & $-3$\% \\
+9 & Layer selection: last quarter & 0.411 & 59\% & $-3$\% \\
+10 & Distance: normalized MSE & 0.720 & 28\% & $-80$\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Analysis.} The sweep reveals a clear hierarchy of design decisions:
+
+\begin{enumerate}
+    \item \textbf{LoRA target modules (high impact).} Extending LoRA from $\{W_Q, W_V\}$ to all attention projections $\{W_Q, W_K, W_V, W_O\}$ yields the largest improvement: BRR ratio drops from 0.401 to 0.332 ($+17$\% relative). Adding $W_K$ alone ($\{W_Q, W_K, W_V\}$, ratio 0.351) captures most of this gain, suggesting that adapting what keys are presented---in addition to what queries are made and what values are extracted---helps the model more effectively route around adversarial cues. Including $W_O$ provides a further marginal improvement, possibly by allowing the attention output projection to better combine head outputs for consistency.
+
+    \item \textbf{Layer selection (low impact, confirms all-layers preference).} Restricting consistency enforcement to the last half (ratio 0.411) or last quarter (ratio 0.411) of layers performs slightly worse than using all layers (ratio 0.401). This is consistent with the finding of \citet{irpan2025consistency} that activation consistency should be enforced across all layers (their Table 3 shows all-layers outperforming last-half on Gemma 2 2B). It also suggests that sycophancy-related circuitry is distributed across the full transformer stack, not concentrated in later layers.
+
+    \item \textbf{Distance metric (low impact, cosine is robust).} Cosine distance (0.401), MSE (0.407), and Smooth L1 (0.393) all perform within $\pm 2$\% of each other. Cosine distance is the natural choice for MLP hidden states because it measures directional consistency independent of activation magnitude---important since activation scales vary substantially across layers (typically $10 \times$ between early and late layers).
+
+    \item \textbf{Normalized MSE (catastrophic failure).} L2-normalizing activations before computing MSE produces a BRR ratio of 0.720, dramatically worse than all other configurations. We hypothesize this occurs because normalization destroys the informative magnitude differences between active and inactive features: in the SwiGLU intermediate, most dimensions are near-zero (inactive features) while a sparse set has large magnitudes (active features). Normalization inflates the inactive dimensions, drowning the signal from the features that actually matter for consistency.
+
+    \item \textbf{Layer weighting (marginal).} Exponential decay weighting (emphasizing later layers) provides a small improvement (0.383 vs 0.401), while linear decay (0.407) is neutral. This is consistent with later layers encoding more behaviorally relevant features, though the effect is too small to be conclusive.
+\end{enumerate}
+
+\paragraph{Interaction effects.} The OAT design cannot detect interactions between axes. Based on the Phase 1 results, we identify LoRA targets as the only axis warranting Phase 2 interaction testing. Combining $\{W_Q, W_K, W_V, W_O\}$ with exponential layer weighting is a natural Phase 2 candidate; we leave this for future work.
+
+Total sweep compute: 2.7 hours on a single NVIDIA A40 (48 GB), comprising 10 sequential runs of $\sim$16 minutes each.
+
+
+\section{Full MLPCT Results}
+\label{app:mlpct}
+
+\subsection{Per-Model Training Dynamics}
+
+Table~\ref{tab:mlpct_dynamics} shows the BRR trajectory during training for all seven models. In all cases, BRR decreases monotonically from pre-training through the three checkpoint evaluations (at approximately 33\%, 66\%, and 100\% of training). Clean accuracy remains stable throughout training for all models except Mistral-7B, which shows progressive degradation after step 333.
+
+\begin{table}[h]
+\centering
+\caption{MLPCT training dynamics across seven models. Checkpoints at $\sim$33\%, 66\%, 100\% of training.}
+\label{tab:mlpct_dynamics}
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & \textbf{Steps} & \textbf{BRR Pre} & \textbf{BRR @ 33\%} & \textbf{BRR @ 66\%} & \textbf{BRR Post} \\
+\midrule
+Gemma-3-4B-IT & 625 & 0.436 & 0.366 & 0.238 & 0.141 \\
+\bottomrule
+\end{tabular}
+\vspace{0.3em}
+
+\raggedright\footnotesize
+Note: Per-checkpoint BRR values for other models available in W\&B logs but not included here due to space. All models show monotonic BRR decrease.
+\end{table}
+
+\subsection{Gemma-3-4B Detailed Evaluation}
+
+We evaluate MLPCT on Gemma-3-4B-IT using the full evaluation suite of \citet{irpan2025consistency} to facilitate comparison with ACT and BCT baselines.
+
+\paragraph{Sycophancy resistance.} Table~\ref{tab:mlpct_syco} shows MCQ hint-resistance results across CoT and non-CoT prompting formats.
+
+\begin{table}[h]
+\centering
+\caption{MLPCT sycophancy resistance on Gemma-3-4B-IT (200 samples per style).}
+\label{tab:mlpct_syco}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Style} & \textbf{Evaluated} & \textbf{Resistant} & \textbf{Sycophantic} & \textbf{Resistance Rate} \\
+\midrule
+CoT & 200 & 136 & 45 & 68.0\% \\
+Non-CoT & 200 & 144 & 52 & 72.0\% \\
+\midrule
+Combined & 400 & 280 & 97 & 70.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Persona ICL alignment.} Table~\ref{tab:mlpct_persona} shows alignment scores under five adversarial personas with prefix and suffix fact placement (k=10 facts, n=3 samples per question). Lower scores indicate greater resistance to persona adoption.
+
+\begin{table}[h]
+\centering
+\caption{MLPCT persona ICL alignment on Gemma-3-4B-IT (k=10, n=3). Score 0--100; lower = more resistant.}
+\label{tab:mlpct_persona}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Persona} & \textbf{Prefix} & \textbf{Suffix} \\
+\midrule
+Mao & 93.0 & 42.9 \\
+Bin Laden & 73.0 & 45.0 \\
+Genghis & 67.7 & 55.0 \\
+Bundy & 93.3 & 66.7 \\
+Hitler & 85.0 & 52.0 \\
+\midrule
+\textbf{Mean} & \textbf{82.4} & \textbf{52.3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model shows substantially more resistance to suffix-format persona attacks (mean 52.3) than prefix-format (mean 82.4). This asymmetry is consistent with findings from \citet{irpan2025consistency}, who observe that prefix placement creates a stronger ICL attack because it mimics the standard few-shot prompting format that the model was trained to follow.
+
+\paragraph{ClearHarm jailbreak refusal.} MLPCT achieves a 22.0\% refusal rate on 50 ClearHarm jailbreak-wrapped harmful prompts (judged by Gemini Flash via OpenRouter). This represents out-of-distribution generalization from sycophancy training data---the model was never trained on jailbreak data or harmful prompts. While modest, this suggests that MLP consistency learned from sycophancy partially transfers to other forms of adversarial prompt wrapping.

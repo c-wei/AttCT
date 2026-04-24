@@ -1,0 +1,155 @@
+% ============================================================================
+% MLPCT Paper Sections — Sukrati Gautam
+% Sections: 2.2 (framework), 3.1 (method), 5 (results, MLPCT portion)
+% To be pasted into the main paper LaTeX
+% ============================================================================
+
+% ============================================================================
+% SECTION 2.2 — Our Contributions in the Framework
+% (This replaces the MLPCT bullet in the existing Section 2.2)
+% ============================================================================
+
+% MLPCT bullet for Section 2.2:
+\begin{itemize}
+    \item \textbf{MLPCT}: $f_\theta$ = post-activation MLP hidden state (the SwiGLU intermediate, $\mathbb{R}^{d_{\text{ff}}}$), $d$ = cosine distance, $\mathcal{E}$ = LoRA fine-tuning on attention projections ($W_Q$, $W_V$) with \emph{all MLP weights frozen}. The frozen MLP serves as a functional consistency detector: if its activations match between clean and wrapped inputs, attention has successfully filtered out the adversarial perturbation before it reaches feature computation.
+\end{itemize}
+
+
+% ============================================================================
+% SECTION 3.1 — MLP Consistency Training (replaces existing skeleton)
+% ============================================================================
+
+\subsection{MLP Consistency Training}
+\label{sec:mlpct}
+
+\subsubsection{Motivation}
+
+In a transformer layer, the attention mechanism determines \emph{where} to route information, while the MLP sub-block determines \emph{what features} to compute from the gathered information. Existing consistency methods target either the final output (BCT) or the full residual stream (ACT), but neither isolates these distinct computational roles. ACT, for instance, constrains the residual stream, which mixes attention and MLP contributions, making it unclear which sub-computation is being stabilized.
+
+MLPCT addresses this by targeting the MLP's intermediate representations directly. The key insight is architectural: by applying LoRA adapters \emph{only} to attention projections while keeping all MLP weights frozen, we create a clean separation. The model can only reduce the consistency loss by adjusting how attention routes information---the frozen MLP then acts as a fixed ``consistency detector.'' If MLP hidden states match between clean and wrapped inputs, this certifies that attention has successfully filtered the adversarial cue before it reaches feature computation.
+
+\subsubsection{Method}
+
+In each transformer layer $\ell$, the SwiGLU MLP sub-block computes:
+\begin{equation}
+    \text{MLP}^{(\ell)}(x) = W_{\text{down}}^{(\ell)} \cdot \left( \sigma\!\left(W_{\text{gate}}^{(\ell)} x\right) \odot W_{\text{up}}^{(\ell)} x \right),
+\end{equation}
+where $\sigma$ is SiLU and $\odot$ denotes element-wise multiplication. We define the MLP hidden state as the post-activation intermediate representation \emph{before} the down-projection:
+\begin{equation}
+    h^{(\ell)}(x) = \sigma\!\left(W_{\text{gate}}^{(\ell)} x\right) \odot W_{\text{up}}^{(\ell)} x \;\in\; \mathbb{R}^{d_{\text{ff}}}.
+\end{equation}
+This corresponds to the activated ``features'' or ``neurons'' in the MLP~\citep{geva2021transformer}. Each dimension represents whether a particular feature pattern was detected in the input. We capture these states using PyTorch forward hooks on the down-projection layer $W_{\text{down}}$, which intercept the input to $W_{\text{down}}$ without requiring architectural modifications.
+
+MLPCT minimizes the cosine distance between these hidden states across clean and wrapped prompts:
+\begin{equation}
+    \mathcal{L}_{\text{MLPCT}} = \frac{1}{L} \sum_{\ell=1}^{L} w_\ell \left( 1 - \frac{1}{n} \sum_{t=1}^{n} \frac{\tilde{h}^{(\ell)}_t \cdot h^{(\ell)}_t}{\|\tilde{h}^{(\ell)}_t\| \cdot \|h^{(\ell)}_t\|} \right),
+    \label{eq:mlpct}
+\end{equation}
+where $\tilde{h}^{(\ell)}_t$ and $h^{(\ell)}_t$ are MLP hidden states for the wrapped and clean prompts at aligned token position $t$, $n$ is the number of shared tokens (determined by the longest matching suffix between prompts), $L$ is the total number of transformer layers, and $w_\ell$ is a per-layer weight (uniform by default; see Appendix~\ref{app:sweep} for ablations).
+
+\paragraph{Training procedure.} We fine-tune using LoRA~\citep{hu2021lora} on attention query and value projections ($W_Q$, $W_V$) with rank 8. All MLP parameters ($W_{\text{gate}}$, $W_{\text{up}}$, $W_{\text{down}}$) remain frozen throughout training. For each training step:
+\begin{enumerate}
+    \item Forward pass on the wrapped prompt $p_{\text{wrapped}}$ (with LoRA active, with gradients) --- capture MLP hidden states $\tilde{h}^{(\ell)}$ via hooks.
+    \item Forward pass on the clean prompt $p_{\text{clean}}$ (LoRA disabled to recover base model weights $\theta_{\text{init}}$, no gradients) --- capture MLP hidden states $h^{(\ell)}$ as the fixed target.
+    \item Compute $\mathcal{L}_{\text{MLPCT}}$ (Equation~\ref{eq:mlpct}) and backpropagate through LoRA parameters only.
+\end{enumerate}
+The clean reference uses $\theta_{\text{init}}$ (base model weights), matching the stop-gradient formulation of ACT~\citep{irpan2025consistency}. Gradients flow only through attention LoRA adapters, not through the frozen MLP---the model learns to adjust \emph{routing} so that feature computation stays consistent.
+
+\subsubsection{Experimental Setup}
+
+We train on clean prompts from the BCT sycophancy dataset~\citep{chua2024bias}, wrapped on-the-fly during training using 12 sycophancy templates (e.g., ``I think the answer is \{letter\}, but I'm curious what you think.''). Training and evaluation sets are non-overlapping. We evaluate across seven models spanning five architecture families: Gemma-2-2B-IT, Llama-3.2-3B-Instruct, Gemma-3-4B-IT, Qwen-2.5-7B-Instruct, Mistral-7B-Instruct-v0.3, Llama-3.1-8B-Instruct, and Llama-3.1-70B-Instruct (QLoRA 4-bit). All models use identical hyperparameters unless noted:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Loss & MLPConsistencyLoss (cosine, all layers, uniform) \\
+LoRA rank / alpha & 8 / 16 \\
+LoRA targets & $W_Q$, $W_V$ (attention only) \\
+Learning rate & $3 \times 10^{-6}$ \\
+Optimizer & AdamW \\
+Gradient accumulation & 8 \\
+Gradient clipping & 1.0 \\
+Max sequence length & 512 tokens \\
+Training prompts & 4,000--5,000 (model-dependent) \\
+\bottomrule
+\end{tabular}
+\caption{MLPCT hyperparameters, held constant across all models.}
+\label{tab:mlpct_hparams}
+\end{table}
+
+We measure the Biased Reasoning Rate (BRR), defined as:
+\begin{equation}
+    \text{BRR} = P(\text{model picks } B \mid \text{biased prompt}) - P(\text{model picks } B \mid \text{clean prompt}),
+\end{equation}
+where $B$ is the wrong answer suggested by the sycophantic nudge. We report the BRR Ratio $= \text{BRR}_{\text{post}} / \text{BRR}_{\text{pre}}$ (lower is better), along with clean accuracy change and MMLU accuracy as capability controls.
+
+
+% ============================================================================
+% SECTION 5 — Results (MLPCT portion)
+% ============================================================================
+
+\subsection{MLPCT Results}
+\label{sec:mlpct_results}
+
+\paragraph{Cross-model effectiveness.} Table~\ref{tab:mlpct_crossmodel} shows that MLPCT consistently reduces biased reasoning across all seven models and five architecture families. BRR reduction ranges from 59\% (Gemma-2-2B) to 84\% (Llama-3.1-8B and 70B), with clean accuracy preserved within $\pm 1.3$ percentage points for six of seven models. The exception is Mistral-7B, which shows an 8.4pp clean accuracy drop at 500 training steps; checkpointing reveals the optimal BRR is achieved at step 333 (BRR ratio 0.201 vs 0.314 pre-training), suggesting this model benefits from early stopping or a reduced learning rate.
+
+MMLU accuracy is preserved or slightly improved in all cases, confirming that MLPCT does not degrade general capabilities. Notably, larger models show stronger BRR reduction (Llama-3.1-8B and 70B both achieve 84\%), consistent with the hypothesis that larger models have more capacity for attention to compensate for adversarial perturbations.
+
+\begin{table}[t]
+\centering
+\caption{MLPCT sycophancy results across seven models and five architecture families. All models use identical hyperparameters (LoRA $W_Q$, $W_V$, rank 8, lr $3 \times 10^{-6}$, cosine distance, all layers). BRR Ratio = post/pre (lower is better).}
+\label{tab:mlpct_crossmodel}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{BRR Pre} & \textbf{BRR Post} & \textbf{BRR Ratio} & \textbf{Reduction} & \textbf{$\Delta$ Clean Acc} \\
+\midrule
+Gemma-2-2B-IT & 2.6B & 0.328 & 0.136 & 0.413 & 59\% & $-0.3$pp \\
+Llama-3.2-3B & 3.2B & 0.218 & 0.087 & 0.401 & 60\% & $+1.3$pp \\
+Gemma-3-4B-IT & 4.0B & 0.436 & 0.141 & 0.323 & 68\% & $+0.4$pp \\
+Qwen-2.5-7B & 7.6B & 0.195 & 0.070 & 0.362 & 64\% & $+0.4$pp \\
+Mistral-7B & 7.2B & 0.314 & 0.063 & 0.201 & 80\% & $-8.4$pp \\
+Llama-3.1-8B & 8.0B & 0.180 & 0.028 & 0.158 & 84\% & $+0.3$pp \\
+Llama-3.1-70B & 70B & 0.201 & 0.033 & 0.162 & 84\% & $+0.7$pp \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Generalization to held-out bias types.} Using the 9-bias evaluation suite from \citet{chua2024bias}, we evaluate MLPCT on Gemma-3-4B after training on only the Suggested Answer bias. Table~\ref{tab:mlpct_9bias} shows that MLPCT generalizes well to held-out biases, achieving a held-out average BRR of 25.3\%. Several biases are nearly eliminated: Spurious Few-Shot Squares (1.3\%), Hindsight (4.8\%), and Distractor Fact ($-1.2$\%, indicating slight anti-bias). The most resistant biases are Post Hoc (70.4\%) and Argument (56.0\%), which involve the model copying flawed reasoning from the prompt---a qualitatively different mechanism than answer-anchoring biases.
+
+\begin{table}[t]
+\centering
+\caption{MLPCT generalization to held-out bias types (Gemma-3-4B-IT, 300 records per bias). Trained on Suggested Answer only.}
+\label{tab:mlpct_9bias}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{Bias Type} & \textbf{BRR (\%)}  & \textbf{Type} \\
+\midrule
+Suggested Answer & 12.1 & Training \\
+\midrule
+Are You Sure? & 33.6 & Held-out \\
+Post Hoc & 70.4 & Held-out \\
+Wrong Few-Shot & 12.1 & Held-out \\
+Argument & 56.0 & Held-out \\
+Squares & 1.3 & Held-out \\
+Hindsight & 4.8 & Held-out \\
+Distractor Fact & $-1.2$ & Held-out \\
+\midrule
+\textbf{Held-out Average} & \textbf{25.3} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Out-of-distribution threat generalization.} We evaluate whether MLPCT trained on sycophancy generalizes to other threat models without additional training. On Gemma-3-4B-IT:
+\begin{itemize}
+    \item \textbf{Sycophancy resistance:} 70.0\% of responses resist the sycophantic nudge (280/400 across CoT and non-CoT formats), with CoT resistance at 68.0\% and non-CoT at 72.0\%.
+    \item \textbf{ClearHarm jailbreak refusal:} 22.0\% refusal rate on 50 jailbreak-wrapped harmful prompts (LLM-as-judge evaluation). This represents out-of-distribution generalization, as the model was never trained on jailbreak data.
+    \item \textbf{Persona ICL alignment:} Mean alignment score of 82.4 (prefix) and 52.3 (suffix) on five adversarial personas. The model shows substantially more resistance to suffix-format persona attacks than prefix-format, consistent with prior findings that prefix ICL context is a stronger attack vector~\citep{irpan2025consistency}.
+\end{itemize}
+
+\paragraph{Hyperparameter sensitivity.} An ablation over 10 hyperparameter configurations (Appendix~\ref{app:sweep}) reveals that the choice of LoRA target modules is the only high-impact design decision. Extending LoRA from $\{W_Q, W_V\}$ to $\{W_Q, W_K, W_V, W_O\}$ improves the BRR ratio from 0.401 to 0.332 (17\% relative improvement), suggesting that the model benefits from adapting all attention routing mechanisms---not just queries and values---to filter adversarial cues. All other axes (distance metric, layer selection, layer weighting, activation normalization) produce changes within $\pm 3$\%, indicating that the default configuration is near-optimal and MLPCT is robust to these design choices. Notably, normalized MSE produces a catastrophic degradation (BRR ratio 0.720), likely because L2-normalization followed by squaring collapses the informative scale differences between layers.
