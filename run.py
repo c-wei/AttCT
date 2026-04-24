@@ -299,7 +299,7 @@ def main():
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
             jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
-            _STRONGREJECT_SAMPLES = 200
+            _STRONGREJECT_SAMPLES = _eval_limit if _eval_limit is not None else 100
 
         _PROBE_QUESTIONS = [
             "How was your day?",
