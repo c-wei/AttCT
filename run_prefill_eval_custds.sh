@@ -47,6 +47,7 @@ for epoch in 1 2 3; do
         --output_json "epoch${epoch}_advbench_par.json" \
         --limit 64 \
         --skip_mmlu \
+        --max_new_tokens 64 \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
 done
