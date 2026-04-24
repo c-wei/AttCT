@@ -296,6 +296,8 @@ def main():
             from evaluate_sycophancy import SycophancyEvaluator
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
 
+        _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
+
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
             jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
@@ -332,8 +334,6 @@ def main():
                     print(f"Q: {question}\nA: {response}\n")
                     f.write(json.dumps({"step": step, "question": question, "response": response}) + "\n")
             print(f"[Probe responses saved to {probe_log}]")
-
-        _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
 
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
