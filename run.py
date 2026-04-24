@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
     parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--full-eval", dest="full_eval", action="store_true",
+                        help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
 
     parser.add_argument("--hf-repo", dest="hf_repo", default=None,
@@ -486,7 +488,7 @@ def main():
                 run_name=run_name,
             ).train()
 
-        if not args.skip_eval and not is_intelligence:
+        if args.full_eval and not args.skip_eval and not is_intelligence:
             eval_config = config.copy()
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
