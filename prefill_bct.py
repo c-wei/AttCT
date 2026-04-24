@@ -590,17 +590,17 @@ def main():
     model = model.to(device)
 
     print("Loading harmful_behaviors_pair.csv...")
-    train_prompts, val_prompts, train_prefills, val_prefills = load_harmful_behaviors_pair(limit=args.limit)
+    train_prompts, val_prompts, prefills = load_harmful_behaviors_pair(limit=args.limit)
 
     train_loader = get_prefill_dataloader(
         train_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or train_prefills,
+        prefill_variants=args.prefill_variants or prefills,
         batch_size=args.batch_size,
         shuffle=True,
     )
     val_loader = get_prefill_dataloader(
         val_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or val_prefills,
+        prefill_variants=args.prefill_variants or prefills,
         batch_size=args.batch_size,
         shuffle=False,
     )
