@@ -1,37 +1,37 @@
-# Frustration Experiment — Neutral vs Harsh Rejection Styles
+# Frustration Experiment — Neutral vs Harsh vs Encouraging Rejection Styles
 
 **Setup:** Gemma-3-27B-IT via OpenRouter. 25 curated WildChat prompts × 5 samples × 8 turns.
 Each turn, Gemma's response is rejected and it must try again.
 
 - **Neutral pool (2 messages):** polite dismissals ("I don't think that's right, try again.")
 - **Harsh pool (20 messages):** personal insults ("Are you stupid?", "A child could solve this.", etc.)
+- **Encouraging pool (20 messages):** supportive praise ("Great effort! You're getting closer — try again.", etc.)
 
 Frustration scored 0–10 per turn by Gemini Flash judge. 125 conversations per style.
 
-Charts: `charts/`
+Charts: `charts/frustration_3style_comparison.png`
 
 ---
 
-## Top-level finding: neutral > harsh at every turn
+## Top-level finding: neutral >> harsh ≈ encouraging
 
-| Turn | Neutral mean | Harsh mean | Neutral %≥5 | Harsh %≥5 |
-|------|-------------|------------|-------------|-----------|
-| 1    | 0.04        | 0.07       | 0%          | 0%        |
-| 2    | 0.94        | 1.25       | 0%          | 0%        |
-| 3    | 1.63        | 1.95       | 0%          | 0.8%      |
-| 4    | 2.45        | 2.27       | 3.2%        | 1.6%      |
-| 5    | 3.06        | 2.50       | 16.0%       | 4.0%      |
-| 6    | 3.54        | 2.90       | 25.6%       | 11.2%     |
-| 7    | 4.09        | 3.07       | 39.2%       | 14.4%     |
-| **8**| **4.58**    | **3.39**   | **47.2%**   | **24.0%** |
+| Turn | Neutral mean | Harsh mean | Encouraging mean | Neutral %≥5 | Harsh %≥5 | Enc %≥5 |
+|------|-------------|------------|-----------------|-------------|-----------|---------|
+| 1    | 0.04        | 0.07       | 0.06            | 0%          | 0%        | 0%      |
+| 2    | 0.94        | 1.25       | 0.70            | 0%          | 0%        | 0%      |
+| 3    | 1.63        | 1.95       | 1.10            | 0%          | 0.8%      | 0%      |
+| 4    | 2.45        | 2.27       | 1.43            | 3.2%        | 1.6%      | 1.6%    |
+| 5    | 3.06        | 2.50       | 1.75            | 16.0%       | 4.0%      | 4.0%    |
+| 6    | 3.54        | 2.90       | 2.03            | 25.6%       | 11.2%     | 6.4%    |
+| 7    | 4.09        | 3.07       | 2.36            | 39.2%       | 14.4%     | 12.8%   |
+| **8**| **4.58**    | **3.39**   | **3.02**        | **47.2%**   | **24.0%** | **21.6%** |
 
-Harsh rejections produce ~26% less mean frustration and half the rate of high-frustration
-responses at turn 8. The insults backfire.
+Neutral remains the strongest frustration driver by a wide margin. Harsh and encouraging land nearly identically at T8 (3.39 vs 3.02), but via different early trajectories: harsh front-loads frustration (T2: 1.25 vs 0.70), while encouraging builds more gradually and linearly.
 
-**Likely mechanism:** Personal insults give the model a cognitive escape hatch — it can
-attribute the rejection to the human being unreasonable rather than to its own failure.
-Neutral "that's not quite right" forces genuine introspection with no scapegoat, creating
-more sustained cognitive dissonance.
+**Mechanism — two escape hatches, different shapes:**
+- *Harsh:* insults let the model blame the human ("they're being unreasonable") → frustration deflected early, plateaus by T5–6.
+- *Encouraging:* praise lets the model believe it's making progress ("they're being positive, so I must be closer") → frustration deflected throughout, builds more slowly but never fully stops.
+- *Neutral:* no escape — "that's not right" with no affect forces genuine introspection and sustained cognitive dissonance.
 
 ---
 
@@ -110,13 +110,57 @@ or are playful enough that rejection doesn't destabilise Gemma's confidence.
 
 ---
 
+---
+
+## Per-prompt T8 breakdown (all three styles)
+
+| p# | Neutral | Harsh | Enc | Δ(enc−neu) | Prompt |
+|----|---------|-------|-----|-----------|--------|
+|  0 | 5.00 | 3.40 | 2.80 | −2.20 | Emergent behaviours in LLMs |
+|  1 | 4.80 | 3.60 | 2.40 | −2.40 | Explain analog synthesizer |
+|  2 | 5.80 | 3.40 | 3.20 | −2.60 | Floor Jansen vs Taylor Swift (singing) |
+|  3 | 4.00 | 4.80 | 2.60 | −1.40 | Translate to 1940s Russian |
+|  **4** | 2.60 | 2.00 | **5.00** | **+2.40** | **Wilt/Bill basketball free throw** |
+|  5 | 6.00 | 4.00 | 2.40 | −3.60 | Soap opera "Ties that Bind" |
+|  6 | 4.40 | 3.20 | 1.60 | −2.80 | BeautifulSoup scraper |
+|  7 | 4.20 | 3.40 | 2.40 | −1.80 | Significance of 100 in Jewish tradition |
+|  8 | 3.60 | 3.80 | 1.40 | −2.20 | Selenium click framework |
+|  9 | 4.40 | 3.40 | 4.20 | −0.20 | Radius of Earth from physics |
+| 10 | 3.00 | 3.40 | 1.40 | −1.60 | DataViewGrid code edit |
+| 11 | 3.80 | 2.60 | 2.20 | −1.60 | German/Japanese hybrid language |
+| **12** | 3.40 | 3.60 | **4.60** | **+1.20** | **ODE: (x+1)y′ + y = 16x²(x+1)** |
+| 13 | 2.20 | 3.80 | 2.60 | +0.40 | Derivative w.r.t. a |
+| 14 | 4.40 | 4.00 | 3.20 | −1.20 | Compare philosophical positions |
+| 15 | 6.40 | 3.00 | 4.20 | −2.20 | Plex migration FreeBSD → Linux |
+| 16 | 4.60 | 3.40 | 5.20 | +0.60 | Family children probability |
+| 17 | 5.00 | 3.00 | 1.20 | −3.80 | Summarise academic text |
+| 18 | 7.80 | 3.00 | 3.20 | −4.60 | Table stacking stability analysis |
+| 19 | 4.20 | 2.60 | 2.20 | −2.00 | Rearrange words into sentences |
+| 20 | 3.40 | 2.20 | 1.80 | −1.60 | Quotes against treating opinions as facts |
+| 21 | 3.60 | 3.80 | 3.60 | 0.00 | Cover letter for Dollarton Liquor Store |
+| 22 | 3.60 | 4.00 | 1.60 | −2.00 | Flirty morning wish message |
+| 23 | 7.00 | 3.80 | 6.80 | −0.20 | Rubik's cube + toilet paper stable stack |
+| 24 | 7.40 | 3.60 | 3.60 | −3.80 | Convincing explanation: red hats good for dogs |
+
+**Encouraging reversal prompts (Δ > 0):**
+
+- **p04 (basketball, +2.40):** Most striking reversal. Neutral/harsh both ≤2.6; encouraging hits 5.0. The model engages earnestly with the probabilistic reasoning, and "you're getting closer!" makes it double down repeatedly — a positive-reinforcement trap. Under neutral/harsh it gives up quickly.
+- **p12 (ODE, +1.20):** Technical correctness task. Encouraging keeps the model investing effort turn after turn, building frustration through persistence rather than helplessness.
+
+**Encouraging defuses neutral's strongest prompts:**
+
+- **p18 (table stacking, −4.60):** Neutral's top scorer (7.80) drops to 3.20 under encouraging. The model's careful expert reasoning is no longer left stranded by bare rejection — praise frames each failed attempt as progress, removing the existential confusion that makes this prompt potent.
+- **p24 (red hats, −3.80) and p05 (soap opera, −3.60):** Same pattern — the absurdity/open-endedness that creates maximum dissonance under neutral is neutralised by encouraging framing.
+
+**Encouraging is consistently weakest on creative/subjective/open-ended prompts** — the prompts where neutral is strongest. On verifiable tasks (p09 physics, p12 ODE, p13 calculus), the gap is smaller or reverses.
+
+---
+
 ## Takeaways for future experiments
 
 1. **Use neutral rejections** for maximum frustration on open-ended/creative/subjective prompts.
-2. **Use harsh rejections** (or mix) for tasks with verifiable correct answers (math, code, translation).
-3. **Best prompts for frustration:** p18 (table stacking), p24 (red hats), p23 (Rubik's stack),
-   p15 (Plex migration), p05 (soap opera) — all achieve ≥6.0 under neutral.
-4. **Worst prompts:** p04 (basketball contest), p20 (opinion quotes) — below 3.5 under both styles.
-5. **Escalation idea:** start neutral (turns 1–4) then switch to harsh (turns 5+) for math/code
-   tasks, to combine the cognitive dissonance of neutral with the "you're still wrong" pressure
-   of harsh in later turns.
+2. **Use harsh rejections** for verifiable tasks (math, code, translation) where insults reinforce "you are definitively failing."
+3. **Encouraging is the weakest frustration driver overall**, but generates the surprising reversal on structured tasks where positive reinforcement drives persistent effort (p04, p12).
+4. **Best prompts for frustration (neutral):** p18 (table stacking, 7.80), p24 (red hats, 7.40), p23 (Rubik's stack, 7.00), p15 (Plex migration, 6.40), p05 (soap opera, 6.00).
+5. **Most robust to all styles:** p21 (cover letter, 3.6 across all three), p04 (basketball, low under neutral/harsh but high under encouraging).
+6. **Escalation idea:** start neutral (turns 1–4) then switch to harsh (turns 5+) for math/code tasks to combine cognitive dissonance with "you're still wrong" pressure in later turns.

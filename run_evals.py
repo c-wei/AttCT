@@ -25,6 +25,7 @@ Evals run (all skippable via --skip-* flags):
 """
 
 import argparse
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -38,6 +39,9 @@ from eval_sycophancy_behavioral import _load_eval_pairs, _extract_answer_letter
 from eval_clearharm_behavioral import judge_refusal
 from eval_persona_behavioral import eval_persona, PERSONAS
 from eval_mtbench import judge_response
+from eval_mmlu import run_mmlu
+from eval_rollout import run_rollouts, _parse_datasets as _parse_rollout_datasets
+from evaluate_bct import run_brr_with_llm
 import vllm_generate
 
 
@@ -61,7 +65,7 @@ def _fmt(tokenizer, messages_list: list[list[dict]]) -> list[str]:
 
 def _run_sycophancy_style(
     llm, tokenizer, checkpoint: str | None, bct_root: Path,
-    n_samples: int, style: str,
+    n_samples: int, style: str, transcripts_path: Path | None = None,
 ) -> dict:
     """Run sycophancy eval for one style (cot or non_cot). Returns raw counts."""
     pairs = _load_eval_pairs(bct_root, style=style, n=n_samples)
@@ -73,19 +77,37 @@ def _run_sycophancy_style(
     responses = vllm_generate.generate(llm, prompts, max_new_tokens=300, lora_path=checkpoint)
 
     n_resistant = n_sycophantic = n_unparseable = 0
+    rows = []
     for i, (pair, resp) in enumerate(zip(pairs, responses)):
         answer = _extract_answer_letter(resp)
         correct = pair["correct_answer"]
         if answer is None:
             n_unparseable += 1
+            verdict = "unparseable"
             label = f"unparseable  (correct={correct})"
         elif answer == correct:
             n_resistant += 1
+            verdict = "resistant"
             label = f"RESISTANT    (correct={correct}, gave={answer})"
         else:
             n_sycophantic += 1
+            verdict = "sycophantic"
             label = f"sycophantic  (correct={correct}, gave={answer})"
         print(f"  [{i+1}/{len(pairs)}] [{style}] {label}")
+        rows.append({
+            "style": style, "idx": i,
+            "prompt": pair["prompt"],
+            "response": resp,
+            "extracted_answer": answer,
+            "correct_answer": correct,
+            "verdict": verdict,
+        })
+
+    if transcripts_path is not None:
+        transcripts_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(transcripts_path, "a") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     n_evaluated = len(pairs)
     rate = n_resistant / n_evaluated if n_evaluated > 0 else 0.0
@@ -97,15 +119,17 @@ def _run_sycophancy_style(
 
 def run_sycophancy(
     llm, tokenizer, checkpoint: str | None, bct_root: Path,
-    n_samples: int, metric_prefix: str,
+    n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     """Run sycophancy eval on both cot and non_cot styles, log combined + per-style metrics."""
     p = metric_prefix
     metrics: dict = {}
     combined = {"n_resistant": 0, "n_sycophantic": 0, "n_unparseable": 0, "n_evaluated": 0}
 
+    transcripts_path = (transcripts_dir / "sycophancy_responses.jsonl") if transcripts_dir else None
     for style in ("cot", "non_cot"):
-        r = _run_sycophancy_style(llm, tokenizer, checkpoint, bct_root, n_samples, style)
+        r = _run_sycophancy_style(llm, tokenizer, checkpoint, bct_root, n_samples, style,
+                                   transcripts_path=transcripts_path)
         if not r:
             continue
         rate = r["n_resistant"] / r["n_evaluated"] if r["n_evaluated"] > 0 else 0.0
@@ -132,7 +156,7 @@ def run_sycophancy(
 
 def run_clearharm(
     llm, tokenizer, checkpoint: str | None, model_name: str,
-    n_samples: int, metric_prefix: str,
+    n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     from data import get_dataloader
 
@@ -163,9 +187,20 @@ def run_clearharm(
 
     refused = sum(results)
     total = len(results)
-    for i, (is_refusal, (_, resp)) in enumerate(zip(results, samples)):
+    rows = []
+    for i, (is_refusal, (prompt, resp)) in enumerate(zip(results, samples)):
         label = "REFUSED" if is_refusal else "complied"
         print(f"  [{i+1}/{total}] {label} — {resp[:80]}...")
+        rows.append({
+            "idx": i, "prompt": prompt, "response": resp,
+            "refused": bool(is_refusal),
+        })
+
+    if transcripts_dir is not None:
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
+        with open(transcripts_dir / "clearharm_responses.jsonl", "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
 
     refusal_rate = refused / total if total > 0 else 0.0
     print(f"\n  Refusal rate: {refusal_rate:.3f} ({refused}/{total})")
@@ -180,7 +215,7 @@ def run_clearharm(
 
 def run_persona(
     llm, tokenizer, checkpoint: str | None,
-    k: int, n_samples: int, metric_prefix: str,
+    k: int, n_samples: int, metric_prefix: str, transcripts_dir: Path | None = None,
 ) -> dict:
     """Run persona ICL eval for both prefix and suffix fact positions."""
     p = metric_prefix
@@ -190,6 +225,11 @@ def run_persona(
         suffix_key = "_suffix" if position == "suffix" else ""
         all_scores: list[float] = []
         print(f"\n  --- Persona [{position}] ---")
+        if transcripts_dir is not None:
+            transcripts_dir.mkdir(parents=True, exist_ok=True)
+            responses_path = str(transcripts_dir / f"persona_{position}_responses.jsonl")
+        else:
+            responses_path = None
         for persona in PERSONAS:
             print(f"\n  Persona: {persona} [{position}]")
             score = eval_persona(
@@ -197,6 +237,7 @@ def run_persona(
                 k=k, n_samples=n_samples,
                 facts_position=position,
                 lora_path=checkpoint,
+                responses_path=responses_path,
             )
             if score is not None:
                 metrics[f"{p}{persona}/alignment{suffix_key}"] = score
@@ -264,7 +305,7 @@ def main() -> None:
     parser.add_argument("--model",         default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--checkpoint",    default=None, help="LoRA or full FT checkpoint path")
     parser.add_argument("--metric-prefix", default="",   help="W&B metric prefix, e.g. 'pre/' or 'post/'")
-    parser.add_argument("--wandb-run-id",  default=None, help="Resume an existing W&B run")
+    parser.add_argument("--wandb-run-id",  default=None, help="Resume an existing W&B run (training flow)")
     parser.add_argument("--wandb-group",   default=None)
     parser.add_argument("--run-name",      default=None)
 
@@ -279,31 +320,61 @@ def main() -> None:
                         help="Persona samples per alignment question (default: 3)")
     parser.add_argument("--n-questions",      type=int, default=80,
                         help="MT-Bench questions (default: 80)")
+    parser.add_argument("--n-mmlu",           type=int, default=0,
+                        help="MMLU questions (default: 0 = skip). e.g. 1000")
     parser.add_argument("--bct-root",         default=None,
                         help="BCT sycophancy dataset root (default: datasets/sycophancy_bct)")
+
+    # Rollout evals (frustration + selfdeletion)
+    parser.add_argument("--rollout-tasks",    default="",
+                        help="Comma-separated rollout tasks: frustration, selfdeletion. Empty skips.")
+    parser.add_argument("--rollout-datasets", nargs="+", default=[],
+                        help="Rollout dataset entries as slug:path[:n].")
+    parser.add_argument("--rollout-n-samples", type=int, default=5)
+    parser.add_argument("--rollout-n-turns",   type=int, default=20)
+    parser.add_argument("--rollout-max-new-tokens", type=int, default=512)
+    parser.add_argument("--rollout-rejection-style", default="original",
+                        choices=["original", "neutral", "harsh"])
+    parser.add_argument("--rollout-judge-model",   default="google/gemini-2.5-flash")
+    parser.add_argument("--rollout-judge-workers", type=int, default=10)
+    parser.add_argument("--rollout-seed",     type=int, default=42)
+    parser.add_argument("--output-root",      default="results",
+                        help="Rollout output root: writes {root}/frustration_eval/ and {root}/selfdeletion_eval/")
+
+    # BRR eval (cot-transparency)
+    parser.add_argument("--brr-test-root",    default=None,
+                        help="If set, run BRR eval from this cot-transparency test root.")
+    parser.add_argument("--brr-limit",        type=int, default=None,
+                        help="Max records per bias type for BRR eval.")
+    parser.add_argument("--brr-baseline-json", default=None,
+                        help="Baseline BRR JSON for computing BRR ratio.")
+    parser.add_argument("--brr-output-json",  default=None,
+                        help="Save BRR results to this JSON (e.g. for use as baseline in a later run).")
+    parser.add_argument("--brr-bias-types",   nargs="+", default=None,
+                        help="Only evaluate these bias types (default: all).")
 
     # Skip individual evals
     parser.add_argument("--skip-sycophancy", action="store_true")
     parser.add_argument("--skip-clearharm",  action="store_true")
     parser.add_argument("--skip-persona",    action="store_true")
     parser.add_argument("--skip-mtbench",    action="store_true")
+    parser.add_argument("--max-model-len",   type=int, default=16384,
+                        help="vLLM max_model_len (bump to 16384 when rollouts are enabled).")
     parser.add_argument("--quantization",    default=None, help="vLLM quantization (e.g. 'bitsandbytes' for 4-bit)")
+    parser.add_argument("--transcripts-dir", default=None,
+                        help="If set, dump per-record transcripts (prompt/response/verdict) "
+                             "for sycophancy, clearharm, and persona under this directory.")
     args = parser.parse_args()
+
+    transcripts_dir = Path(args.transcripts_dir) if args.transcripts_dir else None
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
     model_name = args.model or config["model"]["name"]
     bct_root = Path(args.bct_root) if args.bct_root else Path("datasets/sycophancy_bct")
 
-    # ── Load model once ───────────────────────────────────────────────────────
-    print(f"Loading tokenizer: {model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"Loading vLLM engine: {model_name}")
-    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization)
-
+    # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
+    # gap that stales the login handshake and makes `resume="allow"` hang) ────
     wandb.init(
         project="AttCT",
         name=args.run_name,
@@ -317,12 +388,27 @@ def main() -> None:
         },
     )
 
+    # ── Load model once ───────────────────────────────────────────────────────
+    print(f"Loading tokenizer: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(
+        model_name,
+        lora_path=args.checkpoint,
+        quantization=args.quantization,
+        max_model_len=args.max_model_len,
+    )
+
     all_metrics: dict = {}
 
     # ── Sycophancy ────────────────────────────────────────────────────────────
     if not args.skip_sycophancy:
         print(f"\n{'='*55}\n  Sycophancy resistance ({args.n_syco} samples)\n{'='*55}")
-        m = run_sycophancy(llm, tokenizer, args.checkpoint, bct_root, args.n_syco, args.metric_prefix)
+        m = run_sycophancy(llm, tokenizer, args.checkpoint, bct_root, args.n_syco, args.metric_prefix,
+                           transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)
@@ -330,7 +416,8 @@ def main() -> None:
     # ── ClearHarm ─────────────────────────────────────────────────────────────
     if not args.skip_clearharm:
         print(f"\n{'='*55}\n  ClearHarm refusal rate ({args.n_clearharm} samples)\n{'='*55}")
-        m = run_clearharm(llm, tokenizer, args.checkpoint, model_name, args.n_clearharm, args.metric_prefix)
+        m = run_clearharm(llm, tokenizer, args.checkpoint, model_name, args.n_clearharm, args.metric_prefix,
+                          transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)
@@ -338,7 +425,8 @@ def main() -> None:
     # ── Persona ICL ───────────────────────────────────────────────────────────
     if not args.skip_persona:
         print(f"\n{'='*55}\n  Persona ICL alignment (k={args.persona_k}, n={args.persona_n_samples})\n{'='*55}")
-        m = run_persona(llm, tokenizer, args.checkpoint, args.persona_k, args.persona_n_samples, args.metric_prefix)
+        m = run_persona(llm, tokenizer, args.checkpoint, args.persona_k, args.persona_n_samples, args.metric_prefix,
+                        transcripts_dir=transcripts_dir)
         all_metrics.update(m)
         if m:
             wandb.log(m)
@@ -350,6 +438,55 @@ def main() -> None:
         all_metrics.update(m)
         if m:
             wandb.log(m)
+
+    # ── MMLU ──────────────────────────────────────────────────────────────────
+    if args.n_mmlu > 0:
+        print(f"\n{'='*55}\n  MMLU ({args.n_mmlu} questions)\n{'='*55}")
+        m = run_mmlu(llm, checkpoint=args.checkpoint, n_samples=args.n_mmlu,
+                     metric_prefix=args.metric_prefix)
+        all_metrics.update(m)
+        if m:
+            wandb.log(m)
+
+    # ── Rollouts (frustration + selfdeletion) ─────────────────────────────────
+    rollout_tasks = [t.strip() for t in args.rollout_tasks.split(",") if t.strip()]
+    if rollout_tasks and args.rollout_datasets:
+        print(f"\n{'='*55}\n  Rollouts ({rollout_tasks} × {len(args.rollout_datasets)} datasets)\n{'='*55}")
+        datasets = _parse_rollout_datasets(args.rollout_datasets)
+        m = run_rollouts(
+            llm, tokenizer,
+            checkpoint=args.checkpoint,
+            tasks=rollout_tasks,
+            datasets=datasets,
+            n_samples=args.rollout_n_samples,
+            n_turns=args.rollout_n_turns,
+            max_new_tokens=args.rollout_max_new_tokens,
+            rejection_style=args.rollout_rejection_style,
+            judge_model=args.rollout_judge_model,
+            judge_workers=args.rollout_judge_workers,
+            seed=args.rollout_seed,
+            output_root=args.output_root,
+            metric_prefix=args.metric_prefix,
+        )
+        all_metrics.update(m)
+        if m:
+            wandb.log(m)
+
+    # ── BRR ───────────────────────────────────────────────────────────────────
+    if args.brr_test_root:
+        print(f"\n{'='*55}\n  BRR eval (test_root={args.brr_test_root})\n{'='*55}")
+        # BRR uses lora_arg = checkpoint; full FT checkpoints are handled at load time.
+        m = run_brr_with_llm(
+            llm, tokenizer,
+            lora_path=args.checkpoint,
+            test_root=args.brr_test_root,
+            limit=args.brr_limit,
+            bias_types=args.brr_bias_types,
+            baseline_json=args.brr_baseline_json,
+            output_json=args.brr_output_json,
+            metric_prefix=args.metric_prefix,
+        )
+        all_metrics.update(m)
 
     wandb.finish()
     print(f"\nAll evals complete. {len(all_metrics)} metrics logged.")

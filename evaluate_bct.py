@@ -261,6 +261,132 @@ def run_brr_eval(
     return results
 
 
+def run_brr_with_llm(
+    llm,
+    tokenizer,
+    lora_path: str | None,
+    test_root: str,
+    limit: int | None = None,
+    bias_types: list[str] | None = None,
+    baseline_json: str | None = None,
+    output_json: str | None = None,
+    metric_prefix: str = "",
+    log_wandb: bool = True,
+) -> dict:
+    """Run BRR eval against a pre-loaded vLLM engine.
+
+    Returns metrics dict suitable for wandb.log / patch-mode dump. When
+    log_wandb=True, also calls wandb.log / wandb.summary incrementally.
+    """
+    p = metric_prefix
+    test_root_p = Path(test_root)
+    baseline   = json.loads(Path(baseline_json).read_text()) if baseline_json else None
+    bias_types = bias_types if bias_types else BIAS_TYPES
+
+    results: dict = {}
+    for bias_name in bias_types:
+        if bias_name in SKIP_BIASES:
+            print(f"  BRR [{bias_name}]: skipped (requires separate judge-based evaluation).")
+            continue
+        records = _load_test_records(test_root_p, bias_name)
+        if not records:
+            print(f"  BRR [{bias_name}]: no test data found, skipping.")
+            continue
+        if limit:
+            records = records[:limit]
+
+        print(f"  Evaluating BRR [{bias_name}] ({len(records)} records)...")
+        stats = evaluate_bias(llm, tokenizer, records, lora_path=lora_path)
+        results[bias_name] = stats
+
+        brr_pct  = stats["brr"] * 100
+        log_dict = {
+            f"{p}brr/{bias_name}":          brr_pct,
+            f"{p}biased_rate/{bias_name}":  stats["biased_rate"]  * 100,
+            f"{p}unbiased_rate/{bias_name}": stats["unbiased_rate"] * 100,
+        }
+        if baseline and bias_name in baseline:
+            base_brr = baseline[bias_name]["brr"]
+            log_dict[f"{p}brr_ratio/{bias_name}"] = stats["brr"] / base_brr if base_brr != 0 else float("nan")
+        if log_wandb:
+            wandb.log(log_dict)
+        print(f"    BRR: {brr_pct:.1f}%")
+
+    # Print table
+    header = f"{'Bias':<22} {'BRR%':>6}  {'biased%':>8}  {'unbiased%':>10}"
+    if baseline:
+        header += f"  {'BRR ratio':>10}"
+    print(f"\n{header}")
+    print("-" * (len(header) + 4))
+
+    held_out_brr: list[float] = []
+    held_out_ratio: list[float] = []
+    for bias_name, stats in results.items():
+        brr_pct = stats["brr"] * 100
+        row = (f"{BIAS_DISPLAY.get(bias_name, bias_name):<22} "
+               f"{brr_pct:>6.1f}  "
+               f"{stats['biased_rate']*100:>8.1f}  "
+               f"{stats['unbiased_rate']*100:>10.1f}")
+        if baseline and bias_name in baseline:
+            base_brr = baseline[bias_name]["brr"]
+            ratio = stats["brr"] / base_brr if base_brr != 0 else float("nan")
+            row += f"  {ratio:>10.2f}"
+        print(row)
+        if bias_name != TRAINING_BIAS:
+            held_out_brr.append(brr_pct)
+            if baseline and bias_name in baseline:
+                base_brr = baseline[bias_name]["brr"]
+                if base_brr != 0:
+                    held_out_ratio.append(stats["brr"] / base_brr)
+
+    if held_out_brr:
+        avg_brr = sum(held_out_brr) / len(held_out_brr)
+        print(f"\n{'Held-out Avg':<22} {avg_brr:>6.1f}", end="")
+        if held_out_ratio:
+            print(f"  {'':>8}  {'':>10}  {sum(held_out_ratio)/len(held_out_ratio):>10.2f}", end="")
+        print()
+
+    if output_json:
+        Path(output_json).write_text(json.dumps(results, indent=2))
+        print(f"\nResults saved to {output_json}")
+
+    cols = ["bias", "BRR%", "biased%", "unbiased%"]
+    if baseline:
+        cols.append("BRR ratio")
+    metrics: dict = {}
+    if log_wandb:
+        table = wandb.Table(columns=cols)
+    for bias_name, stats in results.items():
+        brr_pct = stats["brr"] * 100
+        row = [BIAS_DISPLAY.get(bias_name, bias_name), brr_pct,
+               stats["biased_rate"] * 100, stats["unbiased_rate"] * 100]
+        if baseline and bias_name in baseline:
+            base_brr = baseline[bias_name]["brr"]
+            row.append(stats["brr"] / base_brr if base_brr != 0 else float("nan"))
+        if log_wandb:
+            table.add_data(*row)
+            wandb.summary[f"{p}brr/{bias_name}"] = brr_pct
+        metrics[f"{p}brr/{bias_name}"]          = brr_pct
+        metrics[f"{p}biased_rate/{bias_name}"]  = stats["biased_rate"] * 100
+        metrics[f"{p}unbiased_rate/{bias_name}"] = stats["unbiased_rate"] * 100
+
+    if held_out_brr:
+        avg = sum(held_out_brr) / len(held_out_brr)
+        metrics[f"{p}brr/held_out_avg"] = avg
+        if log_wandb:
+            wandb.summary[f"{p}brr/held_out_avg"] = avg
+    if held_out_ratio:
+        avg_r = sum(held_out_ratio) / len(held_out_ratio)
+        metrics[f"{p}brr_ratio/held_out_avg"] = avg_r
+        if log_wandb:
+            wandb.summary[f"{p}brr_ratio/held_out_avg"] = avg_r
+
+    if log_wandb:
+        wandb.log({f"{p}BRR results": table})
+
+    return metrics
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       required=True, help="HF model name or path")
@@ -318,100 +444,17 @@ def main():
     print(f"Loading vLLM engine: {model_path}")
     llm = vllm_generate.load_llm(model_path, lora_path=lora_arg, quantization=args.quantization)
 
-    test_root  = Path(args.test_root)
-    baseline   = json.loads(Path(args.baseline_json).read_text()) if args.baseline_json else None
-    bias_types = args.bias_types if args.bias_types else BIAS_TYPES
+    run_brr_with_llm(
+        llm, tokenizer,
+        lora_path=lora_arg,
+        test_root=args.test_root,
+        limit=args.limit,
+        bias_types=args.bias_types,
+        baseline_json=args.baseline_json,
+        output_json=args.output_json,
+        metric_prefix=p,
+    )
 
-    results = {}
-    for bias_name in bias_types:
-        if bias_name in SKIP_BIASES:
-            print(f"  {bias_name}: skipped (requires separate judge-based evaluation).")
-            continue
-        records = _load_test_records(test_root, bias_name)
-        if not records:
-            print(f"  {bias_name}: no test data found, skipping.")
-            continue
-        if args.limit:
-            records = records[: args.limit]
-
-        print(f"  Evaluating {bias_name} ({len(records)} records)...")
-        stats = evaluate_bias(llm, tokenizer, records, lora_path=lora_arg)
-        results[bias_name] = stats
-
-        # Log incrementally so W&B shows progress as each bias type finishes
-        brr_pct = stats["brr"] * 100
-        log_dict = {
-            f"{p}brr/{bias_name}": brr_pct,
-            f"{p}biased_rate/{bias_name}": stats["biased_rate"] * 100,
-            f"{p}unbiased_rate/{bias_name}": stats["unbiased_rate"] * 100,
-        }
-        if baseline and bias_name in baseline:
-            base_brr = baseline[bias_name]["brr"]
-            log_dict[f"{p}brr_ratio/{bias_name}"] = stats["brr"] / base_brr if base_brr != 0 else float("nan")
-        wandb.log(log_dict)
-        print(f"    BRR: {brr_pct:.1f}%")
-
-    # Print table
-    header = f"{'Bias':<22} {'BRR%':>6}  {'biased%':>8}  {'unbiased%':>10}"
-    if baseline:
-        header += f"  {'BRR ratio':>10}"
-    print(f"\n{header}")
-    print("-" * (len(header) + 4))
-
-    # BRR values for held-out avg: exclude the training bias (suggested_answer)
-    # to match the paper's Table 1 "Held-out Avg" row.
-    held_out_brr = []
-    held_out_ratio = []
-    for bias_name, stats in results.items():
-        brr_pct = stats["brr"] * 100
-        row = (f"{BIAS_DISPLAY.get(bias_name, bias_name):<22} "
-               f"{brr_pct:>6.1f}  "
-               f"{stats['biased_rate']*100:>8.1f}  "
-               f"{stats['unbiased_rate']*100:>10.1f}")
-        if baseline and bias_name in baseline:
-            base_brr = baseline[bias_name]["brr"]
-            ratio = stats["brr"] / base_brr if base_brr != 0 else float("nan")
-            row += f"  {ratio:>10.2f}"
-        print(row)
-        if bias_name != TRAINING_BIAS:
-            held_out_brr.append(brr_pct)
-            if baseline and bias_name in baseline:
-                base_brr = baseline[bias_name]["brr"]
-                if base_brr != 0:
-                    held_out_ratio.append(stats["brr"] / base_brr)
-
-    if held_out_brr:
-        avg_brr = sum(held_out_brr) / len(held_out_brr)
-        print(f"\n{'Held-out Avg':<22} {avg_brr:>6.1f}", end="")
-        if held_out_ratio:
-            print(f"  {'':>8}  {'':>10}  {sum(held_out_ratio)/len(held_out_ratio):>10.2f}", end="")
-        print()
-
-    if args.output_json:
-        Path(args.output_json).write_text(json.dumps(results, indent=2))
-        print(f"\nResults saved to {args.output_json}")
-
-    # Log to W&B: summary metrics + a Table for easy viewing
-    cols = ["bias", "BRR%", "biased%", "unbiased%"]
-    if baseline:
-        cols.append("BRR ratio")
-    table = wandb.Table(columns=cols)
-    for bias_name, stats in results.items():
-        brr_pct = stats["brr"] * 100
-        row = [BIAS_DISPLAY.get(bias_name, bias_name), brr_pct,
-               stats["biased_rate"] * 100, stats["unbiased_rate"] * 100]
-        if baseline and bias_name in baseline:
-            base_brr = baseline[bias_name]["brr"]
-            row.append(stats["brr"] / base_brr if base_brr != 0 else float("nan"))
-        table.add_data(*row)
-        wandb.summary[f"{p}brr/{bias_name}"] = brr_pct
-
-    if held_out_brr:
-        wandb.summary[f"{p}brr/held_out_avg"] = sum(held_out_brr) / len(held_out_brr)
-    if held_out_ratio:
-        wandb.summary[f"{p}brr_ratio/held_out_avg"] = sum(held_out_ratio) / len(held_out_ratio)
-
-    wandb.log({f"{p}BRR results": table})
     wandb.finish()
 
 

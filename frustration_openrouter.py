@@ -47,7 +47,7 @@ DEFAULT_GEN_WORKERS   = 10
 DEFAULT_JUDGE_WORKERS = 10
 DEFAULT_OUTPUT_DIR    = Path("results/frustration_openrouter")
 DEFAULT_SEED          = 42
-DEFAULT_PROMPTS_FILE  = Path("datasets/wildchat_frustration_prompts_final.jsonl")
+DEFAULT_PROMPTS_FILE  = Path("datasets/wildchat_frustration_train.jsonl")
 
 
 # ─── Prompt loading ───────────────────────────────────────────────────────────
@@ -248,8 +248,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemma frustration experiment (fully OpenRouter)")
     parser.add_argument("--subject-model",    default=DEFAULT_SUBJECT_MODEL)
     parser.add_argument("--judge-model",      default=DEFAULT_JUDGE_MODEL)
-    parser.add_argument("--rejection-style",  default="neutral", choices=["neutral", "harsh"],
-                        help="neutral: 2-message baseline  |  harsh: 20-message insult pool")
+    parser.add_argument("--rejection-style",  default="neutral", choices=["neutral", "harsh", "encouraging"],
+                        help="neutral: 2-message baseline  |  harsh: 20-message insult pool  |  encouraging: 20-message praise pool")
     parser.add_argument("--n-prompts",        type=int, default=DEFAULT_N_PROMPTS)
     parser.add_argument("--n-samples",        type=int, default=DEFAULT_N_SAMPLES)
     parser.add_argument("--n-turns",          type=int, default=DEFAULT_N_TURNS)
