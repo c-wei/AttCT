@@ -85,7 +85,6 @@ def _find_content_token_boundary(
     clean_len = end_index - start_index
 
     return token_ids, start_index, clean_len
-
 def _read_jsonl_user_messages(path: str | Path) -> List[str]:
     """Read user messages from a JSONL file (for sycophancy BCT data)."""
     p = Path(path)
