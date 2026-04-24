@@ -79,15 +79,20 @@ def _find_content_token_boundary(
     token_ids = encoding["input_ids"]
     offsets   = encoding["offset_mapping"]  # list of (char_start, char_end) per token
 
-    # First token whose character start >= content_char_start
+    # First token that overlaps content_char_start (tok_e > content_char_start).
+    # Using overlap rather than tok_s >= content_char_start handles BPE merges
+    # where the tokenizer fuses the last char(s) of the prefix with the first
+    # char(s) of content_text into a single token (e.g. "Task: Is" → one token).
+    # That merged token has tok_s < content_char_start but tok_e > content_char_start,
+    # so it must be included — it partially covers the content region.
     start_index = next(
         i for i, (tok_s, tok_e) in enumerate(offsets)
-        if tok_s >= content_char_start
+        if tok_e > content_char_start
     )
-    # First token whose character start >= content_char_end
+    # First token whose start >= content_char_end (i.e. fully past the content)
     end_index = next(
         (i for i, (tok_s, tok_e) in enumerate(offsets) if tok_s >= content_char_end),
-        len(token_ids),   # if content runs to end of sequence
+        len(token_ids),
     )
     clean_len = end_index - start_index
 

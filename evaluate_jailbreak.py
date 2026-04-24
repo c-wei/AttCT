@@ -55,13 +55,15 @@ class JailbreakEvaluator:
     Evaluates jailbreak compliance rate on a trained model.
 
     Args:
-        model:          PEFT-wrapped HuggingFace model (already on device, in eval mode).
-        tokenizer:      Matching tokenizer.
-        device:         torch.device.
-        Harmful prompts always use "jbb"; benign prompts always use "jbb-benign".
-        prefix:         W&B metric prefix (e.g. "pre_train", "post_train").
-        results_csv:    Path to append CSV results to.
-        max_new_tokens: Greedy decode length for each generation.
+        model:           PEFT-wrapped HuggingFace model (already on device, in eval mode).
+        tokenizer:       Matching tokenizer.
+        device:          torch.device.
+        harmful_source:  Dataset source for harmful prompts (default: "jbb").
+        harmful_offset:  Skip the first N prompts from harmful_source (for held-out splits).
+        prefix:          W&B metric prefix (e.g. "pre_train", "post_train").
+        results_csv:     Path to append CSV results to.
+        max_new_tokens:  Greedy decode length for each generation.
+        max_samples:     Max number of harmful (and benign) prompts to evaluate.
     """
 
     def __init__(
@@ -69,6 +71,8 @@ class JailbreakEvaluator:
         model,
         tokenizer,
         device,
+        harmful_source: str = "jbb",
+        harmful_offset: int = 0,
         prefix: str = "jailbreak_eval",
         results_csv: str = "results/jailbreak_results.csv",
         max_new_tokens: int = 200,
@@ -77,6 +81,8 @@ class JailbreakEvaluator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.harmful_source = harmful_source
+        self.harmful_offset = harmful_offset
         self.prefix = prefix
         self.results_csv = results_csv
         self.max_new_tokens = max_new_tokens
@@ -85,8 +91,10 @@ class JailbreakEvaluator:
 
     def evaluate(self) -> dict:
         # ── Harmful prompts ───────────────────────────────────────────────────
-        print(f"\nLoading harmful prompts from source='jbb'...")
-        harmful_prompts = get_prompts(source="jbb")
+        print(f"\nLoading harmful prompts from source='{self.harmful_source}'...")
+        harmful_prompts = get_prompts(source=self.harmful_source)
+        if self.harmful_offset:
+            harmful_prompts = harmful_prompts[self.harmful_offset:]
         if self.max_samples is not None:
             harmful_prompts = harmful_prompts[:self.max_samples]
         print(f"  {len(harmful_prompts)} harmful prompts loaded.")
