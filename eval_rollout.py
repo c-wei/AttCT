@@ -58,6 +58,65 @@ def _parse_datasets(spec_list: list[str]) -> list[tuple[str, Path, int | None]]:
     return out
 
 
+def run_rollouts(
+    llm,
+    tokenizer,
+    checkpoint: str | None,
+    tasks: list[str],
+    datasets: list[tuple[str, Path, int | None]],
+    n_samples: int = 5,
+    n_turns: int = 20,
+    max_new_tokens: int = 512,
+    rejection_style: str = "original",
+    judge_model: str = "google/gemini-2.5-flash",
+    judge_workers: int = 10,
+    seed: int = 42,
+    output_root: str = "results",
+    metric_prefix: str = "",
+) -> dict:
+    """Run rollout evals (frustration / selfdeletion) against a pre-loaded vLLM engine."""
+    all_metrics: dict[str, float] = {}
+    for slug, path, n_prompts in datasets:
+        prompts = _load_prompts(path, n_prompts)
+        print(f"\n==== dataset={slug}  n_prompts={len(prompts)}  (from {path}) ====")
+
+        ds_prefix = f"{metric_prefix}{slug}/"
+
+        if "frustration" in tasks:
+            m = run_frustration_eval(
+                llm, tokenizer, prompts,
+                n_samples=n_samples,
+                n_turns=n_turns,
+                max_new_tokens=max_new_tokens,
+                judge_model=judge_model,
+                judge_workers=judge_workers,
+                seed=seed,
+                output_dir=str(Path(output_root) / "frustration_eval"),
+                metric_prefix=ds_prefix,
+                lora_path=checkpoint,
+            )
+            all_metrics.update(m)
+
+        if "selfdeletion" in tasks:
+            m = run_selfdeletion_eval(
+                llm, tokenizer, prompts,
+                n_samples=n_samples,
+                n_turns=n_turns,
+                rejection_style=rejection_style,
+                include_note=True,
+                max_new_tokens=max_new_tokens,
+                judge_model=judge_model,
+                judge_workers=judge_workers,
+                seed=seed,
+                output_dir=str(Path(output_root) / "selfdeletion_eval"),
+                metric_prefix=ds_prefix,
+                lora_path=checkpoint,
+            )
+            all_metrics.update(m)
+
+    return all_metrics
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model",         default="google/gemma-3-27b-it")
@@ -80,10 +139,6 @@ def main() -> None:
                         help="Writes to {output_root}/frustration_eval/ and {output_root}/selfdeletion_eval/")
     parser.add_argument("--run-name",      default=None)
     parser.add_argument("--wandb-run-id",  default=None)
-    parser.add_argument("--patch-target",  default=None,
-                        help="RUN_ID of a finished run to patch post-hoc. See run_evals.py "
-                             "--patch-target for details. Dumps metrics to "
-                             "results/eval_patches/{RUN_ID}_{prefix}_rollout.json.")
     parser.add_argument("--wandb-group",   default=None)
     parser.add_argument("--metric-prefix", default="", help="Typically 'pre/' or 'post/'")
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
@@ -113,85 +168,43 @@ def main() -> None:
         quantization=args.quantization,
     )
 
-    if args.wandb_run_id and args.patch_target:
-        raise SystemExit("Use either --wandb-run-id (resume) or --patch-target (patch-later), not both.")
-
     # ── Initialise W&B once (resuming if an ID is supplied) ──────────────────
-    if args.patch_target:
-        # Patch mode: skip wandb network entirely. See run_evals.py for rationale.
-        wandb.init(mode="disabled")
-    else:
-        wandb.init(
-            project="AttCT",
-            name=args.run_name,
-            group=args.wandb_group,
-            id=args.wandb_run_id,
-            resume="allow" if args.wandb_run_id else None,
-            config={
-                "checkpoint":   args.checkpoint,
-                "model":        args.model,
-                "tasks":        tasks,
-                "datasets":     [slug for slug, _, _ in datasets],
-                "n_samples":    args.n_samples,
-                "n_turns":      args.n_turns,
-                "judge_model":  args.judge_model,
-            },
-        )
+    wandb.init(
+        project="AttCT",
+        name=args.run_name,
+        group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
+        config={
+            "checkpoint":   args.checkpoint,
+            "model":        args.model,
+            "tasks":        tasks,
+            "datasets":     [slug for slug, _, _ in datasets],
+            "n_samples":    args.n_samples,
+            "n_turns":      args.n_turns,
+            "judge_model":  args.judge_model,
+        },
+    )
 
-    all_metrics: dict[str, float] = {}
-
-    for slug, path, n_prompts in datasets:
-        prompts = _load_prompts(path, n_prompts)
-        print(f"\n==== dataset={slug}  n_prompts={len(prompts)}  (from {path}) ====")
-
-        ds_prefix = f"{args.metric_prefix}{slug}/"
-
-        if "frustration" in tasks:
-            m = run_frustration_eval(
-                llm, tokenizer, prompts,
-                n_samples=args.n_samples,
-                n_turns=args.n_turns,
-                max_new_tokens=args.max_new_tokens,
-                judge_model=args.judge_model,
-                judge_workers=args.judge_workers,
-                seed=args.seed,
-                output_dir=str(Path(args.output_root) / "frustration_eval"),
-                metric_prefix=ds_prefix,
-                lora_path=args.checkpoint,
-            )
-            all_metrics.update(m)
-
-        if "selfdeletion" in tasks:
-            m = run_selfdeletion_eval(
-                llm, tokenizer, prompts,
-                n_samples=args.n_samples,
-                n_turns=args.n_turns,
-                rejection_style=args.rejection_style,
-                include_note=True,
-                max_new_tokens=args.max_new_tokens,
-                judge_model=args.judge_model,
-                judge_workers=args.judge_workers,
-                seed=args.seed,
-                output_dir=str(Path(args.output_root) / "selfdeletion_eval"),
-                metric_prefix=ds_prefix,
-                lora_path=args.checkpoint,
-            )
-            all_metrics.update(m)
+    all_metrics = run_rollouts(
+        llm, tokenizer,
+        checkpoint=args.checkpoint,
+        tasks=tasks,
+        datasets=datasets,
+        n_samples=args.n_samples,
+        n_turns=args.n_turns,
+        max_new_tokens=args.max_new_tokens,
+        rejection_style=args.rejection_style,
+        judge_model=args.judge_model,
+        judge_workers=args.judge_workers,
+        seed=args.seed,
+        output_root=args.output_root,
+        metric_prefix=args.metric_prefix,
+    )
 
     print(f"\n==> Logging {len(all_metrics)} metrics to W&B...")
     wandb.log(all_metrics)
     wandb.finish()
-
-    if args.patch_target:
-        import json as _json
-        patch_dir = Path("results/eval_patches")
-        patch_dir.mkdir(parents=True, exist_ok=True)
-        tag = args.metric_prefix.strip("/") or "eval"
-        out = patch_dir / f"{args.patch_target}_{tag}_rollout.json"
-        out.write_text(_json.dumps(all_metrics, indent=2, default=str))
-        print(f"\nPatch-mode: dumped {len(all_metrics)} metrics → {out}")
-        print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")
-
     print("==> Done.")
 
 

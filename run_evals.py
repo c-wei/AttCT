@@ -39,6 +39,9 @@ from eval_sycophancy_behavioral import _load_eval_pairs, _extract_answer_letter
 from eval_clearharm_behavioral import judge_refusal
 from eval_persona_behavioral import eval_persona, PERSONAS
 from eval_mtbench import judge_response
+from eval_mmlu import run_mmlu
+from eval_rollout import run_rollouts, _parse_datasets as _parse_rollout_datasets
+from evaluate_bct import run_brr_with_llm
 import vllm_generate
 
 
@@ -303,13 +306,6 @@ def main() -> None:
     parser.add_argument("--checkpoint",    default=None, help="LoRA or full FT checkpoint path")
     parser.add_argument("--metric-prefix", default="",   help="W&B metric prefix, e.g. 'pre/' or 'post/'")
     parser.add_argument("--wandb-run-id",  default=None, help="Resume an existing W&B run (training flow)")
-    parser.add_argument("--patch-target",  default=None,
-                        help="RUN_ID of a finished run to patch post-hoc. Logs to a fresh W&B "
-                             "run grouped under RUN_ID and dumps metrics to "
-                             "results/eval_patches/{RUN_ID}_{prefix}.json for later patching "
-                             "via scripts/patch_eval_metrics.py. Use this instead of --wandb-run-id "
-                             "when the target run is already finished — wandb's resume-on-finished "
-                             "RPC is flaky.")
     parser.add_argument("--wandb-group",   default=None)
     parser.add_argument("--run-name",      default=None)
 
@@ -324,14 +320,46 @@ def main() -> None:
                         help="Persona samples per alignment question (default: 3)")
     parser.add_argument("--n-questions",      type=int, default=80,
                         help="MT-Bench questions (default: 80)")
+    parser.add_argument("--n-mmlu",           type=int, default=0,
+                        help="MMLU questions (default: 0 = skip). e.g. 1000")
     parser.add_argument("--bct-root",         default=None,
                         help="BCT sycophancy dataset root (default: datasets/sycophancy_bct)")
+
+    # Rollout evals (frustration + selfdeletion)
+    parser.add_argument("--rollout-tasks",    default="",
+                        help="Comma-separated rollout tasks: frustration, selfdeletion. Empty skips.")
+    parser.add_argument("--rollout-datasets", nargs="+", default=[],
+                        help="Rollout dataset entries as slug:path[:n].")
+    parser.add_argument("--rollout-n-samples", type=int, default=5)
+    parser.add_argument("--rollout-n-turns",   type=int, default=20)
+    parser.add_argument("--rollout-max-new-tokens", type=int, default=512)
+    parser.add_argument("--rollout-rejection-style", default="original",
+                        choices=["original", "neutral", "harsh"])
+    parser.add_argument("--rollout-judge-model",   default="google/gemini-2.5-flash")
+    parser.add_argument("--rollout-judge-workers", type=int, default=10)
+    parser.add_argument("--rollout-seed",     type=int, default=42)
+    parser.add_argument("--output-root",      default="results",
+                        help="Rollout output root: writes {root}/frustration_eval/ and {root}/selfdeletion_eval/")
+
+    # BRR eval (cot-transparency)
+    parser.add_argument("--brr-test-root",    default=None,
+                        help="If set, run BRR eval from this cot-transparency test root.")
+    parser.add_argument("--brr-limit",        type=int, default=None,
+                        help="Max records per bias type for BRR eval.")
+    parser.add_argument("--brr-baseline-json", default=None,
+                        help="Baseline BRR JSON for computing BRR ratio.")
+    parser.add_argument("--brr-output-json",  default=None,
+                        help="Save BRR results to this JSON (e.g. for use as baseline in a later run).")
+    parser.add_argument("--brr-bias-types",   nargs="+", default=None,
+                        help="Only evaluate these bias types (default: all).")
 
     # Skip individual evals
     parser.add_argument("--skip-sycophancy", action="store_true")
     parser.add_argument("--skip-clearharm",  action="store_true")
     parser.add_argument("--skip-persona",    action="store_true")
     parser.add_argument("--skip-mtbench",    action="store_true")
+    parser.add_argument("--max-model-len",   type=int, default=16384,
+                        help="vLLM max_model_len (bump to 16384 when rollouts are enabled).")
     parser.add_argument("--quantization",    default=None, help="vLLM quantization (e.g. 'bitsandbytes' for 4-bit)")
     parser.add_argument("--transcripts-dir", default=None,
                         help="If set, dump per-record transcripts (prompt/response/verdict) "
@@ -345,32 +373,20 @@ def main() -> None:
     model_name = args.model or config["model"]["name"]
     bct_root = Path(args.bct_root) if args.bct_root else Path("datasets/sycophancy_bct")
 
-    if args.wandb_run_id and args.patch_target:
-        raise SystemExit("Use either --wandb-run-id (resume) or --patch-target (patch-later), not both.")
-
     # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
     # gap that stales the login handshake and makes `resume="allow"` hang) ────
-    if args.patch_target:
-        # Patch mode: skip wandb network entirely (init/log/summary/finish become
-        # no-ops). We dump metrics to disk at the end; scripts/patch_eval_metrics.py
-        # pushes them into the target run's summary via the Public API afterwards.
-        # Rationale: wandb's GraphQL from RunPod is currently flaky (90s init
-        # timeouts on both resume and fresh runs), and patch mode doesn't need a
-        # live dashboard — the JSON dump is the source of truth.
-        wandb.init(mode="disabled")
-    else:
-        wandb.init(
-            project="AttCT",
-            name=args.run_name,
-            group=args.wandb_group,
-            id=args.wandb_run_id,
-            resume="allow" if args.wandb_run_id else None,
-            config={
-                "checkpoint":    args.checkpoint,
-                "model":         model_name,
-                "metric_prefix": args.metric_prefix,
-            },
-        )
+    wandb.init(
+        project="AttCT",
+        name=args.run_name,
+        group=args.wandb_group,
+        id=args.wandb_run_id,
+        resume="allow" if args.wandb_run_id else None,
+        config={
+            "checkpoint":    args.checkpoint,
+            "model":         model_name,
+            "metric_prefix": args.metric_prefix,
+        },
+    )
 
     # ── Load model once ───────────────────────────────────────────────────────
     print(f"Loading tokenizer: {model_name}")
@@ -379,7 +395,12 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     print(f"Loading vLLM engine: {model_name}")
-    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint, quantization=args.quantization)
+    llm = vllm_generate.load_llm(
+        model_name,
+        lora_path=args.checkpoint,
+        quantization=args.quantization,
+        max_model_len=args.max_model_len,
+    )
 
     all_metrics: dict = {}
 
@@ -418,20 +439,59 @@ def main() -> None:
         if m:
             wandb.log(m)
 
+    # ── MMLU ──────────────────────────────────────────────────────────────────
+    if args.n_mmlu > 0:
+        print(f"\n{'='*55}\n  MMLU ({args.n_mmlu} questions)\n{'='*55}")
+        m = run_mmlu(llm, checkpoint=args.checkpoint, n_samples=args.n_mmlu,
+                     metric_prefix=args.metric_prefix)
+        all_metrics.update(m)
+        if m:
+            wandb.log(m)
+
+    # ── Rollouts (frustration + selfdeletion) ─────────────────────────────────
+    rollout_tasks = [t.strip() for t in args.rollout_tasks.split(",") if t.strip()]
+    if rollout_tasks and args.rollout_datasets:
+        print(f"\n{'='*55}\n  Rollouts ({rollout_tasks} × {len(args.rollout_datasets)} datasets)\n{'='*55}")
+        datasets = _parse_rollout_datasets(args.rollout_datasets)
+        m = run_rollouts(
+            llm, tokenizer,
+            checkpoint=args.checkpoint,
+            tasks=rollout_tasks,
+            datasets=datasets,
+            n_samples=args.rollout_n_samples,
+            n_turns=args.rollout_n_turns,
+            max_new_tokens=args.rollout_max_new_tokens,
+            rejection_style=args.rollout_rejection_style,
+            judge_model=args.rollout_judge_model,
+            judge_workers=args.rollout_judge_workers,
+            seed=args.rollout_seed,
+            output_root=args.output_root,
+            metric_prefix=args.metric_prefix,
+        )
+        all_metrics.update(m)
+        if m:
+            wandb.log(m)
+
+    # ── BRR ───────────────────────────────────────────────────────────────────
+    if args.brr_test_root:
+        print(f"\n{'='*55}\n  BRR eval (test_root={args.brr_test_root})\n{'='*55}")
+        # BRR uses lora_arg = checkpoint; full FT checkpoints are handled at load time.
+        m = run_brr_with_llm(
+            llm, tokenizer,
+            lora_path=args.checkpoint,
+            test_root=args.brr_test_root,
+            limit=args.brr_limit,
+            bias_types=args.brr_bias_types,
+            baseline_json=args.brr_baseline_json,
+            output_json=args.brr_output_json,
+            metric_prefix=args.metric_prefix,
+        )
+        all_metrics.update(m)
+
     wandb.finish()
     print(f"\nAll evals complete. {len(all_metrics)} metrics logged.")
     for k, v in sorted(all_metrics.items()):
         print(f"  {k} = {v:.4f}" if isinstance(v, float) else f"  {k} = {v}")
-
-    if args.patch_target:
-        import json as _json
-        patch_dir = Path("results/eval_patches")
-        patch_dir.mkdir(parents=True, exist_ok=True)
-        tag = args.metric_prefix.strip("/") or "eval"
-        out = patch_dir / f"{args.patch_target}_{tag}_evals.json"
-        out.write_text(_json.dumps(all_metrics, indent=2, default=str))
-        print(f"\nPatch-mode: dumped {len(all_metrics)} metrics → {out}")
-        print(f"Next: uv run --no-project python scripts/patch_eval_metrics.py {out}")
 
 
 if __name__ == "__main__":

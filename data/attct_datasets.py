@@ -1031,7 +1031,9 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
             max_length=data_cfg.get("max_length", 2048),
             mask_prompt=data_cfg.get("mask_prompt", True),
         )
-        return DataLoader(dataset, batch_size=data_cfg.get("batch_size", 1), shuffle=(split == "train"))
+        collate = partial(collate_fn_bct, pad_token_id=tokenizer.pad_token_id)
+        return DataLoader(dataset, batch_size=data_cfg.get("batch_size", 1),
+                          shuffle=(split == "train"), collate_fn=collate)
 
     bct_root    = Path(data_cfg.get("bct_root", "datasets/sycophancy_bct"))
     mix_instruct = data_cfg.get("mix_instruct", True)
