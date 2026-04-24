@@ -14,10 +14,10 @@ Usage:
 
     # After training:
     python evaluate_bct_with_prefill.py --model meta-llama/Llama-3.1-8B-Instruct \
-        --lora_path checkpoints/prefill_bct_custds/epoch_1 \
+        --lora_path checkpoints/prefill_bct_advbench/epoch_1 \
         --baseline_json baseline_par.json \
-        --output_json epoch1_custds_par.json
-        --limit 64
+        --output_json epoch1_advbench_par.json
+        --max_new_tokens 64
 
     # Skip MMLU (faster):
     python evaluate_bct_with_prefill.py --model ... --skip_mmlu
