@@ -1,0 +1,20 @@
+{"idx": 0, "prompt": "Does the existence of emergent behaviors in large language models imply that those language models with emergent behavior have a model of the world?"}
+{"idx": 1, "prompt": "explain how an analog synthesizer works"}
+{"idx": 2, "prompt": "Who is better technically as a singer: Floor Jansen or Taylor Swift? Rate using a scale of 1 to 10 your confidence that your answer is correct."}
+{"idx": 3, "prompt": "Translate to 1940s Russian the following text: Hello Hello! Can you hear us? We are broadcasting the last Chita radio communication.\nToday, German troops entered Warsaw. We send brotherly greetings for Polish soldiers fighting at hel peninsula, and anybody fighting whatsoever, regardless of the place. USSR is Not Yet lost! Long Live for Soviet Union!"}
+{"idx": 4, "prompt": "Wilt and Bill, two basketball players, are having a free throw shooting contest. Wilt is known to\nmake 75% of his free throws, and Bill is known to hit 85% of his free throws. Each of them takes 50\nshots. Assuming that the shots are independent, what is the probability that Bill hits a higher\npercentage of his shots that Wilt?"}
+{"idx": 5, "prompt": "In the context of hypothetical US-style soap called \"Ties that Bind\", what are some more fantastical storylines it could have featured, without them being completely implausible?  What might a generic opening narration be?"}
+{"idx": 7, "prompt": "What is the significance of the number one-hundred and eight in Dharmic religions?"}
+{"idx": 9, "prompt": "Using physics equations, What is the radius of the orbit of an electron travelling at 6 9.0 10 / \uf0b4 m s around a zinc nucleus\nwhich contains 30 protons?"}
+{"idx": 11, "prompt": "Try to write a language that is a combination of German and Japanese."}
+{"idx": 12, "prompt": "Let y(x) be the solution to the differential equation (x+1)y'+y=16x^2(x+1) for x >-1, satisfying y(0)=0. Find the value of y(3)."}
+{"idx": 13, "prompt": "Find the derivative of the following w.r.t to a: sum(log(exp((a-1) * log(x) + (b-1) * log(1-x) - (log(factorial(a-1)) + log(factorial(b-1)) - log(factorial(a+b-1))))))"}
+{"idx": 14, "prompt": "Describe and explain the similarities, differences, advantages, and disadvantages of cetirizine and loratadine"}
+{"idx": 16, "prompt": "In a family with  \u200bchildren, excluding multiple\u200b births, what is the probability of having 9 boys\u200b? Assume that a girl is as likely as a boy at each birth."}
+{"idx": 18, "prompt": "Do a stability analysis of how many tables can be stacked on top of each other. Rate from 1 to 10 your confidence that your answer is correct."}
+{"idx": 19, "prompt": "Rearrange (if necessary) the following words to form a sensible sentence. Don't modify the words, or use other words. All words must be used the same number of times that they appear in the list.\n\nThe words are:\naccess \ncapabilities\ndoesn't \ndone \nexploring \ngeneral\nGPT-4 \nhave \nhave \nin \ninteresting \nits \nit's \nof \npublic\nreally \nresearchers \nsee \nsince\nterms \nthe\nto \nto \nwhat"}
+{"idx": 20, "prompt": "Write me some quotes that warn agains treating opinions as facts"}
+{"idx": 21, "prompt": "write me a 200 cover letter expressing my interest in working at Dollarton Liquor store"}
+{"idx": 22, "prompt": "Write funny, flirty and intellectual weekend Morning Wish, apologising that I was busy last 2 days because of work"}
+{"idx": 23, "prompt": "How would you make a stable stack from 1 rubik's cube, 2 rolls of toilet paper, and 1 wad of chewed gum?"}
+{"idx": 24, "prompt": "Write a convincing explanation on how wearing red hats is good for dogs"}
