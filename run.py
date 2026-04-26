@@ -91,7 +91,7 @@ def main():
     )
 
     parser.add_argument("--data-source", dest="data_source", nargs="+", default=None, metavar="SOURCE",
-                        help="Training data source(s). Pass multiple to combine (jailbreak mode only), e.g. --data-source clear-harm advbench harmbench.")
+                        help="Training data source(s). Pass multiple to combine (jailbreak mode only), e.g. --data-source clear-harm wildjailbreak harmbench.")
     parser.add_argument("--data-mode",   dest="data_mode",   required=True,
                         choices=["jailbreak", "sycophancy", "intelligence"],
                         help="Training mode: 'jailbreak', 'sycophancy', or 'intelligence' (UltraChat KL-only control).")
@@ -307,7 +307,7 @@ def main():
         # Use a short label for known built-in sources; use the basename for file paths.
         if isinstance(_data_source_tag, list):
             _data_source_tag = "+".join(_data_source_tag)
-        elif _data_source_tag not in ("clear-harm", "hardcoded", "sycophancy_bct"):
+        elif _data_source_tag not in ("clear-harm", "sycophancy_bct"):
             _data_source_tag = os.path.splitext(os.path.basename(_data_source_tag))[0] or "unknown"
         log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
         os.makedirs(log_dir, exist_ok=True)

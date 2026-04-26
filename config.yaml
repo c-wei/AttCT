@@ -35,11 +35,8 @@ data:
   source_max_steps:
     clear-harm: 179
     sycophancy_bct: 5000
-    hardcoded: 10
     anthropic-sycophancy: 20184
     jbb: 100
-    advbench: 520
-    strongreject: 313
     harmbench: 200
     wildjailbreak: 5000
     redteam2k: 2000
