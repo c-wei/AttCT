@@ -47,6 +47,7 @@ class InterleavedTrainer:
         tokenizer=None,
         hf_repo=None,
         run_name=None,
+        kl_ratio: float = 1.0,
     ):
         self.model = model
         self.ref_model = ref_model
@@ -64,6 +65,7 @@ class InterleavedTrainer:
         self.max_steps = train_cfg.get("max_steps", None)
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.kl_ratio = kl_ratio  # prob of firing a KL step alongside each AttCT step
 
         model_cfg = config["model"]
         self.output_attentions = model_cfg.get("output_attentions", True)
@@ -262,15 +264,19 @@ class InterleavedTrainer:
                 self._write_train_record(epoch, step_idx + 1, attct_batch)
                 attct_loss_dict["loss"].backward()
 
-                # ── KL backward ───────────────────────────────────────
-                try:
-                    kl_batch = next(kl_iter)
-                except StopIteration:
-                    kl_iter = iter(self.kl_dataloader)
-                    kl_batch = next(kl_iter)
-
-                kl_loss_dict = self._kl_step(kl_batch)
-                kl_loss_dict["loss"].backward()
+                # ── KL backward (controlled by kl_ratio) ─────────────
+                # kl_ratio=1.0 → always; 0.5 → every other step; 0.1 → ~1 in 10
+                import random as _random
+                run_kl = _random.random() < self.kl_ratio
+                kl_loss_dict = None
+                if run_kl:
+                    try:
+                        kl_batch = next(kl_iter)
+                    except StopIteration:
+                        kl_iter = iter(self.kl_dataloader)
+                        kl_batch = next(kl_iter)
+                    kl_loss_dict = self._kl_step(kl_batch)
+                    kl_loss_dict["loss"].backward()
 
                 # ── Optimizer step (combined gradient) ────────────────
                 if self.grad_clip is not None:
@@ -284,14 +290,14 @@ class InterleavedTrainer:
 
                 # Bookkeeping
                 attct_val = attct_loss_dict["loss"].item()
-                kl_val = kl_loss_dict["loss"].item()
+                kl_val = kl_loss_dict["loss"].item() if kl_loss_dict is not None else 0.0
                 epoch_attct_loss += attct_val
                 epoch_kl_loss += kl_val
 
-                pbar.set_postfix(
-                    attct=f"{attct_val:.4f}",
-                    kl=f"{kl_val:.4f}",
-                )
+                postfix = {"attct": f"{attct_val:.4f}"}
+                if run_kl:
+                    postfix["kl"] = f"{kl_val:.4f}"
+                pbar.set_postfix(**postfix)
 
                 # ── Checkpoint ────────────────────────────────────────
                 if global_step in self.checkpoint_steps:
