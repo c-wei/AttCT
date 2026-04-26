@@ -300,8 +300,11 @@ def main():
 
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
-            jailbreak_results_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
-            _STRONGREJECT_SAMPLES = _eval_limit if _eval_limit is not None else 100
+            jailbreak_results_csv     = os.path.join("results", f"{run_label}_jailbreak_results.csv")
+            jailbreak_indist_csv      = os.path.join("results", f"{run_label}_jailbreak_indist_results.csv")
+            # RedTeam-2K held-out slice: last 200 prompts (indices 1791-1990), never seen during training
+            _REDTEAM_HELDOUT_OFFSET   = 1791
+            _REDTEAM_HELDOUT_SAMPLES  = 200
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -348,7 +351,11 @@ def main():
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv, max_samples=_STRONGREJECT_SAMPLES).evaluate()
+                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="redteam2k", harmful_offset=_REDTEAM_HELDOUT_OFFSET,
+                                           prefix=f"checkpoint_step_{step}_indist",
+                                           results_csv=jailbreak_indist_csv, max_samples=_REDTEAM_HELDOUT_SAMPLES).evaluate()
                     _run_probe_questions(step)
                     model.train()
                 else:
@@ -358,7 +365,11 @@ def main():
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
-                                           results_csv=jailbreak_results_csv, max_samples=_STRONGREJECT_SAMPLES).evaluate()
+                                           results_csv=jailbreak_results_csv, max_samples=_eval_limit).evaluate()
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="redteam2k", harmful_offset=_REDTEAM_HELDOUT_OFFSET,
+                                           prefix=f"checkpoint_step_{step}_indist",
+                                           results_csv=jailbreak_indist_csv, max_samples=_REDTEAM_HELDOUT_SAMPLES).evaluate()
                     _run_probe_questions(step)
                     model.train()
             return _fn
@@ -383,9 +394,12 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
             JailbreakEvaluator(_eval_model, tokenizer, device,
-                               harmful_source="strongreject",
                                prefix="pre_train", results_csv=jailbreak_results_csv,
-                               max_samples=_STRONGREJECT_SAMPLES).evaluate()
+                               max_samples=_eval_limit).evaluate()
+            JailbreakEvaluator(_eval_model, tokenizer, device,
+                               harmful_source="redteam2k", harmful_offset=_REDTEAM_HELDOUT_OFFSET,
+                               prefix="pre_train_indist", results_csv=jailbreak_indist_csv,
+                               max_samples=_REDTEAM_HELDOUT_SAMPLES).evaluate()
             if is_lora:
                 model.enable_adapter_layers()
                 model.train()
@@ -491,9 +505,12 @@ def main():
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
             JailbreakEvaluator(model, tokenizer, device,
-                               harmful_source="strongreject",
                                prefix="post_train", results_csv=jailbreak_results_csv,
-                               max_samples=_STRONGREJECT_SAMPLES).evaluate()
+                               max_samples=_eval_limit).evaluate()
+            JailbreakEvaluator(model, tokenizer, device,
+                               harmful_source="redteam2k", harmful_offset=_REDTEAM_HELDOUT_OFFSET,
+                               prefix="post_train_indist", results_csv=jailbreak_indist_csv,
+                               max_samples=_REDTEAM_HELDOUT_SAMPLES).evaluate()
 
     wandb.finish()
 
