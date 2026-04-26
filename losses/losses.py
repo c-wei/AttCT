@@ -212,13 +212,16 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
       zero mass where the other doesn't (common with causal masking).
 
     Args:
-        weight:        Global scalar multiplier.
-        layer_weights: "uniform", "linear_decay", or "exponential_decay".
+        weight:          Global scalar multiplier.
+        layer_weights:   "uniform", "linear_decay", or "exponential_decay".
+        layer_selection: "all", "last_half", "last_quarter", or a list of layer indices.
+                         Layer weights are always computed relative to total model depth.
     """
 
-    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", **kwargs):
+    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", layer_selection: str = "all", **kwargs):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
+        self.layer_selection = layer_selection
 
     def forward(
         self,
@@ -238,9 +241,25 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         end_index       = start_index       + clean_len
         clean_end_index = clean_start_index + clean_len
 
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last_half":
+            layer_indices = list(range(num_layers // 2, num_layers))
+        elif self.layer_selection == "last_quarter":
+            layer_indices = list(range((3 * num_layers) // 4, num_layers))
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last_half', 'last_quarter', or a list of indices."
+            )
+
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
+            if layer_idx not in layer_indices:
+                continue
             # Full matrix slice — both q and k dims restricted to content region
             sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
             sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
