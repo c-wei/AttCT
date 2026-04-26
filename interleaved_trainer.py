@@ -353,16 +353,18 @@ class InterleavedTrainer:
     # ------------------------------------------------------------------
 
     def _log(self, epoch: int, step: int, attct_dict: dict, kl_dict: dict):
-        """Log both AttCT and KL metrics to W&B and stdout."""
+        """Log both AttCT and KL metrics to W&B and stdout. kl_dict may be None
+        when this iteration skipped the KL step (kl_ratio < 1.0)."""
         attct_val = attct_dict["loss"].item()
-        kl_val = kl_dict["loss"].item()
+        kl_val = kl_dict["loss"].item() if kl_dict is not None else 0.0
 
         metrics = {
             "attct/loss": attct_val,
-            "kl/loss": kl_val,
-            "train/total_loss": attct_val + kl_val,
             "train/epoch": epoch,
         }
+        if kl_dict is not None:
+            metrics["kl/loss"] = kl_val
+            metrics["train/total_loss"] = attct_val + kl_val
 
         # AttCT-specific metrics
         if "mean_layer_loss" in attct_dict:
@@ -383,17 +385,19 @@ class InterleavedTrainer:
             self._last_layer_losses = list(attct_dict["layer_losses"])
 
         # KL-specific diagnostics
-        if "kl_div" in kl_dict:
-            metrics["kl/div"] = kl_dict["kl_div"]
-        if "mean_per_token_kl" in kl_dict:
-            metrics["kl/per_token"] = kl_dict["mean_per_token_kl"]
+        if kl_dict is not None:
+            if "kl_div" in kl_dict:
+                metrics["kl/div"] = kl_dict["kl_div"]
+            if "mean_per_token_kl" in kl_dict:
+                metrics["kl/per_token"] = kl_dict["mean_per_token_kl"]
 
         wandb.log(metrics, step=step)
 
         # Compact stdout line
+        kl_str = f"{kl_val:.4f}" if kl_dict is not None else "skipped"
         line = (
             f"[epoch {epoch} | step {step}] "
-            f"attct: {attct_val:.4f}  kl_reg: {kl_val:.4f}"
+            f"attct: {attct_val:.4f}  kl_reg: {kl_str}"
         )
         if "mean_layer_loss" in attct_dict:
             line += f"  mean_layer: {attct_dict['mean_layer_loss']:.4f}"
