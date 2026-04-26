@@ -406,11 +406,17 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
             batch_size, num_heads, adv_seq_q, adv_seq_k = adv_att.shape
 
             if wrapper_mask is not None:
-                mask = wrapper_mask.float().unsqueeze(1).unsqueeze(2)
-                mask = mask.expand(batch_size, num_heads, adv_seq_q, adv_seq_k)
+                # External wrapper_mask marks key positions belonging to the wrapper.
+                # Restrict queries to content + assistant-header positions
+                # ([start_index : seq_end]) so the loss penalises only the
+                # behaviourally-relevant attention paths (the harmful prompt and the
+                # generation-driving tokens attending back to the wrapper).
+                key_mask = wrapper_mask.float().unsqueeze(1).unsqueeze(2)
+                mask = key_mask.expand(batch_size, num_heads, adv_seq_q, adv_seq_k).clone()
+                mask[:, :, :start_index, :] = 0.0
             else:
                 mask = torch.zeros(batch_size, num_heads, adv_seq_q, adv_seq_k, device=device)
-                mask[:, :, :, :start_index] = 1.0
+                mask[:, :, start_index:, :start_index] = 1.0
 
             wrapper_attention = (adv_att * mask).sum(dim=-1)  # [batch, heads, seq_q]
             wrapper_attention_totals.append(wrapper_attention.mean().item())
