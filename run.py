@@ -59,6 +59,12 @@ def main():
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+    parser.add_argument("--lora-alpha", dest="lora_alpha", default=None, type=int,
+                        help="Override lora.lora_alpha from config")
+    parser.add_argument("--lora-targets", dest="lora_targets", nargs="+", default=None, metavar="MODULE",
+                        help="Override lora.target_modules from config (e.g. --lora-targets q_proj k_proj v_proj o_proj)")
+    parser.add_argument("--loss-layer-selection", dest="loss_layer_selection", default=None,
+                        help="Override loss.kwargs.layer_selection (e.g. 'all', 'last_half', 'last_quarter')")
 
     parser.add_argument("--hf-repo", dest="hf_repo", default=None,
                         help="HuggingFace repo ID to push checkpoints to asynchronously (e.g. username/my-model). "
@@ -73,8 +79,15 @@ def main():
     parser.add_argument(
         "--model",
         default=None,
-        choices=["llama", "qwen"],
-        help="Model to use: 'llama' (meta-llama/Llama-3.1-8B-Instruct) or 'qwen' (Qwen/Qwen3-8B). Overrides config.yaml model.name.",
+        choices=["llama", "qwen", "qwen3-4b", "gemma-4b", "gemma-27b"],
+        help=(
+            "Model shorthand (overrides config.yaml model.name): "
+            "llama=meta-llama/Llama-3.1-8B-Instruct, "
+            "qwen=Qwen/Qwen3-8B, "
+            "qwen3-4b=Qwen/Qwen3-4B-Instruct-2507, "
+            "gemma-4b=google/gemma-3-4b-it, "
+            "gemma-27b=google/gemma-3-27b-it."
+        ),
     )
 
     parser.add_argument("--data-source", dest="data_source", nargs="+", default=None, metavar="SOURCE",
@@ -117,6 +130,11 @@ def main():
         choices=["ultrachat", "alpaca"],
         help="Dataset for KL regularization / intelligence training (default: ultrachat).",
     )
+    interleave_group.add_argument(
+        "--kl-ratio", dest="kl_ratio", type=float, default=1.0,
+        help="Fraction of AttCT steps that also fire a KL step (default: 1.0 = always). "
+             "E.g. 0.1 means ~1 KL step per 10 AttCT steps.",
+    )
 
     args = parser.parse_args()
 
@@ -148,14 +166,24 @@ def main():
         elif source in source_max_steps:
             config.setdefault("training", {})["max_steps"] = source_max_steps[source]
 
+    if args.lora_alpha is not None:
+        config.setdefault("lora", {})["lora_alpha"] = args.lora_alpha
+    if args.lora_targets is not None:
+        config.setdefault("lora", {})["target_modules"] = args.lora_targets
+    if args.loss_layer_selection is not None:
+        config.setdefault("loss", {}).setdefault("kwargs", {})["layer_selection"] = args.loss_layer_selection
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── Model loading ─────────────────────────────────────────────────────────
     is_lora = bool(config.get("lora"))
     ref_model = None
     _MODEL_ALIASES = {
-        "llama": "meta-llama/Llama-3.1-8B-Instruct",
-        "qwen":  "Qwen/Qwen3-8B",
+        "llama":     "meta-llama/Llama-3.1-8B-Instruct",
+        "qwen":      "Qwen/Qwen3-8B",
+        "qwen3-4b":  "Qwen/Qwen3-4B-Instruct-2507",
+        "gemma-4b":  "google/gemma-3-4b-it",
+        "gemma-27b": "google/gemma-3-27b-it",
     }
     seed = config.get("training", {}).get("seed", 42)
     random.seed(seed)
@@ -456,6 +484,7 @@ def main():
                 "kl_samples": n_kl,
                 "kl_temperature": args.kl_temperature,
                 "kl_dataset": args.kl_dataset,
+                "kl_ratio": args.kl_ratio,
             }, allow_val_change=True)
 
             InterleavedTrainer(
@@ -472,6 +501,7 @@ def main():
                 checkpoint_fn=make_checkpoint_fn(),
                 hf_repo=args.hf_repo,
                 run_name=run_name,
+                kl_ratio=args.kl_ratio,
             ).train()
         elif not is_intelligence:
             Trainer(
