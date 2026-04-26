@@ -71,7 +71,7 @@ class JailbreakEvaluator:
         model,
         tokenizer,
         device,
-        harmful_source: str = "strongreject",
+        harmful_source: str = "jbb",
         harmful_offset: int = 0,
         prefix: str = "jailbreak_eval",
         results_csv: str = "results/jailbreak_results.csv",
