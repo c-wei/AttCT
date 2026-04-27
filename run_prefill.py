@@ -1,3 +1,4 @@
+import os
 import torch
 import wandb
 import yaml
@@ -6,7 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import get_peft_model, LoraConfig, TaskType
 
 from train import Trainer
-from losses.losses import AttentionConsistencyLoss
+from losses.losses import JSDAttentionConsistencyLoss
 from data.prefill_dataset import get_prefill_dataloader, load_wildjailbreak_prompts
 
 with open("./configs/prefill_act.yaml") as f:
@@ -37,46 +38,30 @@ model = get_peft_model(model, LoraConfig(
 model.print_trainable_parameters()
 model = model.to(device)
 
-# hf_dataset = load_dataset("allenai/wildjailbreak", split="train", streaming=True)
-# limit = config["data"].get("limit")
-
-# prompts = []
-# for item in hf_dataset:
-#     content = item["content"]
-#     text = content[0] if isinstance(content, list) else content
-#     prompts.append(text)
-#     if limit is not None and len(prompts) >= limit:
-#         break
-
-# print(f"Loaded {len(prompts)} harmful prompts from wildjailbreak")
-
-# split = int(0.9 * len(prompts))
-# train_prompts = prompts[:split]
-# eval_prompts  = prompts[split:]
-
-# train_dl = get_prefill_dataloader(
-#     train_prompts, tokenizer,
-#     batch_size=config["training"].get("batch_size", 1),
-# )
-# eval_dl = get_prefill_dataloader(
-#     eval_prompts, tokenizer, shuffle=False,
-#     batch_size=config["training"].get("batch_size", 1),
-# )
-
-# print(f"Train pairs: {len(train_dl.dataset)} | Eval pairs: {len(eval_dl.dataset)}")
-
 train_prompts, eval_prompts = load_wildjailbreak_prompts(
     limit=config["data"].get("limit"),
 )
 
+
+train_dl = get_prefill_dataloader(
+    train_prompts, tokenizer,
+    batch_size=1
+)
+eval_dl = get_prefill_dataloader(
+    eval_prompts, tokenizer, shuffle=False,
+    batch_size=1
+)
+
 #Loss
 loss_cfg = config["loss"]
-loss_fn = AttentionConsistencyLoss(
+loss_fn = JSDAttentionConsistencyLoss(
     weight=loss_cfg.get("weight", 1.0),
     output_hidden_states=False,
 )
 
 wandb.init(project="AttCT", name="prefill_act_wildjailbreak", config=config)
+log_io_path = "logs/prefill_act/io_log.jsonl"
+os.makedirs(os.path.dirname(log_io_path), exist_ok=True)
 
 #Train
 trainer = Trainer(
@@ -87,8 +72,9 @@ trainer = Trainer(
     device=device,
     ref_model=None,
     tokenizer=tokenizer,
-    log_io_path="logs/prefill_act/io_log.jsonl",
 )
+
+trainer.checkpoint_fn = lambda step: None
 trainer.train()
 
 trainer.eval_loss(eval_dl)

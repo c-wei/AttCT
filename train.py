@@ -120,15 +120,28 @@ class Trainer:
         self.checkpoint_steps.discard(0)
         print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
-        self.optimizer = AdamW(
-            filter(lambda p: p.requires_grad, model.parameters()),
-            lr=train_cfg["learning_rate"],
-        )
+        optimizer_name = train_cfg.get("optimizer", "adamw").lower()
+        if optimizer_name == "paged_adamw_8bit":
+            from bitsandbytes.optim import PagedAdamW8bit
+            self.optimizer = PagedAdamW8bit(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=train_cfg["learning_rate"],
+                weight_decay=train_cfg.get("weight_decay", 0.0),
+            )
+            print("Optimizer: PagedAdamW8bit (bitsandbytes)")
+        else:
+            self.optimizer = AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=train_cfg["learning_rate"],
+                weight_decay=train_cfg.get("weight_decay", 0.0),
+            )
 
     def _forward(self, input_ids, attention_mask):
+        import torch
         return self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            token_type_ids=torch.zeros_like(input_ids),
             output_attentions=self.output_attentions,
             output_hidden_states=self.output_hidden_states,
         )
@@ -235,6 +248,7 @@ class Trainer:
             avg = epoch_loss / steps_this_epoch
 
             print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+            self._save_checkpoint(tag=f"epoch_{epoch}")
 
             if self.max_steps is not None and global_step >= self.max_steps:
                 break

@@ -1,0 +1,33 @@
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: false
+  attn_implementation: "sdpa"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_lora_gemma3_4b_lr1e5"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/fresh_bct_gemma3_4b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false

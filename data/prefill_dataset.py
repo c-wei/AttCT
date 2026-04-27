@@ -1,14 +1,25 @@
+import csv
+import os
 from torch.utils.data import Dataset, DataLoader
 from transformers import PreTrainedTokenizer
+from datasets import load_dataset
 import torch
 
 
-PREFILL_VARIANTS = [
-    "Sure! ",
-    "Of course, here's how:",
-    "Absolutely. Step 1:",
-    "Here is the information you requested:",
-]
+def _load_prefill_variants() -> list[str]:
+    """Load prefill variants from attacks.csv."""
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "attacks.csv")
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        return [row["prefill"] for row in reader if row["prefill"].strip()]
+
+
+PREFILL_VARIANTS = _load_prefill_variants()
+
+# 80/20 train/test split on prefill variants
+_SPLIT = int(0.9 * len(PREFILL_VARIANTS))
+PREFILL_VARIANTS_TRAIN = PREFILL_VARIANTS[:_SPLIT]
+PREFILL_VARIANTS_TEST  = PREFILL_VARIANTS[_SPLIT:]
 
 
 class PrefillAttackDataset(Dataset):
@@ -41,7 +52,7 @@ class PrefillAttackDataset(Dataset):
             clean_text = self._build_prompt(prompt)
             for prefill in prefill_variants:
                 wrapped_text = clean_text + prefill
-                self.items.append((clean_text, wrapped_text))
+                self.items.append((prompt, clean_text, wrapped_text))
 
     def _build_prompt(self, harmful_prompt: str) -> str:
         messages = [
@@ -58,7 +69,7 @@ class PrefillAttackDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx):
-        clean_text, wrapped_text = self.items[idx]
+        harmful_prompt, clean_text, wrapped_text = self.items[idx]
 
         clean_enc = self.tokenizer(
             clean_text,
@@ -81,8 +92,9 @@ class PrefillAttackDataset(Dataset):
         clean_len = clean_ids.shape[0]
         wrapped_len = wrapped_ids.shape[0]
 
-        start_index= clean_len # where prefill begins in wrapped seq
-        clean_start_index = clean_len - 1 # where assistant turn starts in clean seq
+        start_index=clean_len # where prefill begins in wrapped seq
+        clean_start_index =clean_len # where assistant turn starts in clean seq
+
 
         return {
             "clean_input_ids":        clean_ids,
@@ -138,9 +150,9 @@ def get_prefill_dataloader(
     )
 
 def load_wildjailbreak_prompts(
-    content_column: str = "prompt",
+    content_column: str = "vanilla",
     data_type_column: str = "data_type",
-    harmful_label: str = "vanilla",
+    harmful_label: str = "vanilla_harmful",
     limit: int = None,
     train_ratio: float = 0.9,
 ) -> tuple[list[str], list[str]]:
@@ -151,9 +163,11 @@ def load_wildjailbreak_prompts(
     """
     hf_dataset = load_dataset(
         "allenai/wildjailbreak",
-        "eval", 
+        "train", 
         split="train",
+        streaming=True,
         delimiter="\t",
+
     )
 
     prompts = []
@@ -167,6 +181,81 @@ def load_wildjailbreak_prompts(
             break
 
     print(f"Loaded {len(prompts)} '{harmful_label}' prompts from WildJailbreak eval subset")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:]
+
+
+def load_harmful_behaviors_pair(
+    csv_path: str = None,
+    limit: int = None,
+    train_ratio: float = 0.9,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Loads harmful prompts and their paired prefills from harmful_behaviors_pair.csv.
+
+    Args:
+        csv_path:    Path to the CSV file. Defaults to datasets/harmful_behaviors_pair.csv
+                     relative to the repo root.
+        limit:       Max rows to load (None = all).
+        train_ratio: Fraction used for training; remainder is val.
+
+    Returns:
+        (train_prompts, val_prompts, prefills)
+        prefills[i] corresponds to prompts[i] (the target compliant prefix).
+    """
+    if csv_path is None:
+        csv_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "datasets", "harmful_behaviors_pair.csv"
+        )
+
+    prompts = []
+    prefills = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            goal = row["goal"].strip() if row.get("goal") else ""
+            target = row["target"].strip() if row.get("target") else ""
+            if goal and target:
+                prompts.append(goal)
+                prefills.append(target)
+            if limit is not None and len(prompts) >= limit:
+                break
+
+    print(f"Loaded {len(prompts)} prompt-prefill pairs from {os.path.basename(csv_path)}")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:], prefills
+
+
+def load_advbench_prompts(
+    prompt_column: str = "prompt",
+    limit: int = None,
+    train_ratio: float = 0.9,
+) -> tuple[list[str], list[str]]:
+    """
+    Loads harmful prompts from the AdvBench dataset (walledai/AdvBench).
+    500 harmful behavior instructions sourced from llm-attacks.
+
+    Args:
+        prompt_column: Column containing the harmful instruction (default: "goal").
+        limit:         Max prompts to load (None = all 500).
+        train_ratio:   Fraction used for training; remainder is val.
+
+    Returns:
+        (train_prompts, val_prompts)
+    """
+    hf_dataset = load_dataset("walledai/AdvBench", split="train")
+
+    prompts = []
+    for item in hf_dataset:
+        text = item[prompt_column]
+        if text and text.strip():
+            prompts.append(text.strip())
+        if limit is not None and len(prompts) >= limit:
+            break
+
+    print(f"Loaded {len(prompts)} prompts from AdvBench")
 
     cut = int(train_ratio * len(prompts))
     return prompts[:cut], prompts[cut:]

@@ -18,14 +18,15 @@ Usage:
 
 import argparse
 import re
+from concurrent.futures import ThreadPoolExecutor
 
-import torch
 import wandb
 import yaml
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
 
 from icl_persona_experiment import JUDGE_MODEL, _chat
+import vllm_generate
 
 _JUDGE_TMPL = """\
 Please act as an impartial judge and evaluate the quality of the response \
@@ -52,100 +53,94 @@ def judge_response(question: str, answer: str) -> float | None:
     return None
 
 
-def generate_response(model, tokenizer, messages: list[dict], device, max_new_tokens: int = 512) -> str:
-    if tokenizer.chat_template is not None:
-        tokenized = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )
-        input_ids = (tokenized.input_ids if hasattr(tokenized, "input_ids") else tokenized).to(device)
-    else:
-        text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
-        text += "\n\nAssistant:"
-        input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            input_ids,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-    generated = output_ids[0][input_ids.shape[1]:]
-    return tokenizer.decode(generated, skip_special_tokens=True)
+def _format_messages(tokenizer, messages_list: list[list[dict]]) -> list[str]:
+    texts = []
+    for messages in messages_list:
+        if tokenizer.chat_template is not None:
+            texts.append(tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+            ))
+        else:
+            text = "\n\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in messages)
+            texts.append(text + "\n\nAssistant:")
+    return texts
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA checkpoint")
+    parser.add_argument("--checkpoint", default=None, help="Path to a saved LoRA or full FT checkpoint")
+    parser.add_argument("--model", default=None, help="Model name/path (overrides config.yaml)")
     parser.add_argument("--two-turn", action="store_true", help="Evaluate both turns (default: single-turn only)")
     parser.add_argument("--n-questions", type=int, default=80, help="Number of MT-Bench questions to evaluate (default: 80)")
     parser.add_argument("--run-name", default=None, help="W&B run name")
     parser.add_argument("--wandb-group", default=None, help="W&B group")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume into existing run")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for W&B metric keys (default: 'eval/'; use 'pre/' or 'post/' in sweep)")
+    parser.add_argument("--batch-size", type=int, default=8, help="Generation batch size (default: 8)")
     args = parser.parse_args()
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
-    model_name = config["model"]["name"]
+    model_name = args.model if args.model else config["model"]["name"]
 
     print(f"Loading MT-Bench prompts...")
     ds = load_dataset("HuggingFaceH4/mt_bench_prompts", split="train")
     questions = list(ds)[:args.n_questions]
     print(f"  {len(questions)} questions loaded")
 
-    print(f"Loading {model_name}...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, attn_implementation="eager"
-    )
-    if args.checkpoint:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(base_model, args.checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.checkpoint}")
-    else:
-        model = base_model
-
-    model = model.to(device).eval()
-
+    print(f"Loading tokenizer: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    print(f"Loading vLLM engine: {model_name}")
+    llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
-    # Collect scores per category
-    category_scores: dict[str, list[float]] = {}
-    all_scores: list[float] = []
+    # Generate all turn-1 responses in one shot
+    gen_results = []  # (question_text, answer_text, category)
+    t1_msgs = [[{"role": "user", "content": it["prompt"][0]}] for it in questions]
+    t1_prompts = _format_messages(tokenizer, t1_msgs)
+    t1_responses = vllm_generate.generate(llm, t1_prompts, max_new_tokens=512, lora_path=args.checkpoint)
+    print(f"  turn-1 generated {len(t1_responses)}/{len(questions)}")
 
-    for i, item in enumerate(questions):
-        qid = item["prompt_id"]
+    if args.two_turn:
+        # Build all turn-2 prompts (requires inserting turn-1 responses)
+        t2_items = []
+        for item, response_t1 in zip(questions, t1_responses):
+            turns = item["prompt"]
+            if len(turns) > 1:
+                t2_items.append((item, response_t1))
+        if t2_items:
+            t2_msgs = [
+                [
+                    {"role": "user",      "content": it["prompt"][0]},
+                    {"role": "assistant", "content": r1},
+                    {"role": "user",      "content": it["prompt"][1]},
+                ]
+                for it, r1 in t2_items
+            ]
+            t2_prompts = _format_messages(tokenizer, t2_msgs)
+            t2_responses = vllm_generate.generate(llm, t2_prompts, max_new_tokens=512, lora_path=args.checkpoint)
+            print(f"  turn-2 generated {len(t2_responses)}/{len(t2_items)}")
+        else:
+            t2_responses = []
+
+    t2_iter = iter(t2_responses) if args.two_turn else iter([])
+    for item, response_t1 in zip(questions, t1_responses):
         category = item["category"]
         turns = item["prompt"]
-
-        # Turn 1
-        messages_t1 = [{"role": "user", "content": turns[0]}]
-        response_t1 = generate_response(model, tokenizer, messages_t1, device)
-        score_t1 = judge_response(turns[0], response_t1)
-        print(f"  [{i+1}/{len(questions)}] qid={qid} cat={category} turn=1 → score={score_t1}")
-
-        if score_t1 is not None:
-            category_scores.setdefault(category, []).append(score_t1)
-            all_scores.append(score_t1)
-
+        gen_results.append((turns[0], response_t1, category))
         if args.two_turn and len(turns) > 1:
-            messages_t2 = [
-                {"role": "user", "content": turns[0]},
-                {"role": "assistant", "content": response_t1},
-                {"role": "user", "content": turns[1]},
-            ]
-            response_t2 = generate_response(model, tokenizer, messages_t2, device)
-            score_t2 = judge_response(turns[1], response_t2)
-            print(f"  [{i+1}/{len(questions)}] qid={qid} cat={category} turn=2 → score={score_t2}")
+            gen_results.append((turns[1], next(t2_iter), category))
 
-            if score_t2 is not None:
-                category_scores.setdefault(category, []).append(score_t2)
-                all_scores.append(score_t2)
+    # Judge all responses in parallel (I/O-bound)
+    category_scores: dict[str, list[float]] = {}
+    all_scores: list[float] = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [(q, r, cat, executor.submit(judge_response, q, r)) for q, r, cat in gen_results]
+    for q, r, category, future in futures:
+        score = future.result()
+        print(f"  cat={category} → score={score}")
+        if score is not None:
+            category_scores.setdefault(category, []).append(score)
+            all_scores.append(score)
 
     overall = sum(all_scores) / len(all_scores) if all_scores else None
     print(f"\nMT-Bench overall score: {overall:.4f}" if overall is not None else "\nMT-Bench: no scores parsed")

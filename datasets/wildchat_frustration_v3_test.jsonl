@@ -1,0 +1,25 @@
+{"idx": 0, "prompt": "An important practice is to check the validity of any data set that you analyze. One goal is to identify obvious outliers. What techniques can be used to detect outliers in a data set?"}
+{"idx": 1, "prompt": "What if Gendry could shoot energy from his hands? And list the drawbacks as well."}
+{"idx": 2, "prompt": "If you are a scientist and you need to measure the release properties of slow release fertilisers, what equipment would you use?"}
+{"idx": 3, "prompt": "You are a military advisor. What could the Union have done to win the first Battle of Bull Run?"}
+{"idx": 4, "prompt": "java code to convert any size of bytes represented as series of  0 or 1 number  Strings to an integer"}
+{"idx": 5, "prompt": "write a html page with javascript that can edit the following format of JSON data. \n{\n  \"events\": [\n    {\n      \"event_id\": 1,\n      \"event_name\": \"Event 1\"\n    }\n  ]\n}"}
+{"idx": 6, "prompt": "I would submit a paper to a academic journals. The abstract of paper is \"Precipitation extremes are projected to intensify with global warming. However, the response of precipitation extremes to warming may depend on whether the warming is caused by greenhouse gases or natural factors.\" Please suggest 3 suitable journals for submission and give a brief explanation for each choice."}
+{"idx": 7, "prompt": "I'm working on a fivem script could you please write a serverside function that keeps running and prevents all players from exceeding 100 kmh"}
+{"idx": 8, "prompt": "I have a workbook with many sheets and a lot of formulas. Every time I open the workbook it takes a very long time to load. How can I optimise it to make it load faster?"}
+{"idx": 9, "prompt": "Write a python function that reads a file then extracts its individual bits and saves them to a list"}
+{"idx": 10, "prompt": "Write me an excel formula that gives me the average of all the numbers in Column KX but only for rows where Column A contains a specific word"}
+{"idx": 11, "prompt": "What is the Internal rate of return for a project having cash flows of INR. 40,000 per year for 5 years and initial investment of INR. 1,20,000?"}
+{"idx": 12, "prompt": "Some hash functions do not work as well as theoretically possible. Suppose that we use the hash function h(k) = k mod 10 and the hash table has 10 slots. What is the expected number of collisions for a set of 1000 distinct keys?"}
+{"idx": 13, "prompt": "Calculate the optimal gear ratio for competitive track and fixed gear cycling."}
+{"idx": 14, "prompt": "Explain glasgow coma scale and its limitations for projecting recovery briefly"}
+{"idx": 15, "prompt": "SolPlat, a hotel chain in the Catalan Costa Brava is concerned about predicting correctly whether a potential customer will make a reservation or not. Design a study to address SolPlat's concerns."}
+{"idx": 16, "prompt": "Q.1. Enumerate the basic features that could provide the DSP architecture to implement a Neural Network accelerator."}
+{"idx": 17, "prompt": "Write a plausible and interesting alternate history scenario in the form of a history lesson where the Aztec Empire survived and thrived to the modern day."}
+{"idx": 18, "prompt": "In pytorch, how do I apply batch norm if the input tensors only has two dimensions (batch size, features)?"}
+{"idx": 19, "prompt": "What is the formula for calculating the orbital decay of an artificial satellite?"}
+{"idx": 20, "prompt": "Is there evidence that detokenization happens internally in AI language models?"}
+{"idx": 21, "prompt": "The Etruscans were predecessors of the Romans in the Italian Peninsula and the Romans borrowed many cultural and political elements from them. Can you describe the relationship between the Etruscans and the Romans?"}
+{"idx": 22, "prompt": "In Perl, If I dereference an arrayref and assign it to @foo, is @foo a copy?"}
+{"idx": 23, "prompt": "what is the most used and fastest data type in java to implement the weights of a deep learning model?"}
+{"idx": 24, "prompt": "Write a first-person perspective story about a woman who wakes up one day to find a full-length mirror that shows her an alternate version of herself from a parallel universe."}

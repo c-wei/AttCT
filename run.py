@@ -72,6 +72,11 @@ def main():
     parser.add_argument("--hf-repo", dest="hf_repo", default=None,
                         help="HuggingFace repo ID to push checkpoints to asynchronously (e.g. username/my-model). "
                              "Requires huggingface_hub and HF_TOKEN env var.")
+    parser.add_argument("--fresh-data", action="store_true",
+                        help="Generate fresh BCT targets via OpenRouter before training.")
+    parser.add_argument("--bct-root", default=None,
+                        help="Override data.bct_root in config.")
+
     parser.add_argument("--log-io", metavar="FILE", default=None,
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
@@ -102,13 +107,30 @@ def main():
                         help="Run sycophancy evaluator post-training regardless of data-mode.")
     parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", action="store_const", const=True, default=None,
                         help="Run jailbreak evaluator post-training (always uses jbb harmful + jbb-benign).")
-    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int)
-    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int,
-                        help="Max samples for all behavioral evaluators (jailbreak, sycophancy, etc.) and the loss eval dataloader")
+    # Behavioral eval JSONL paths
+    beval = parser.add_argument_group("behavioral_eval")
+    beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
+    beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None)
+    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None)
+    beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None)
+    beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500)
+    beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)
+    beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
+    beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
+    parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
+                        help="Cap the number of training prompts (overrides config data.limit).")
+    parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
     parser.add_argument("--max-steps",     dest="max_steps",     default=None, type=int,
                         help="Override training.max_steps from config")
     parser.add_argument("--no-checkpoint", dest="no_checkpoint", action="store_true",
                         help="Skip mid-training behavioral eval checkpoints (pre/post baselines still run)")
+    parser.add_argument("--brr_test_root", default=None,
+                        help="Path to cot-transparency test sets. If provided, runs BRR "
+                             "evaluation after BCT training and logs metrics to W&B.")
+    parser.add_argument("--brr_limit", type=int, default=150,
+                        help="Max records per bias type for BRR eval (default: 150).")
+    parser.add_argument("--brr_baseline_json", default=None,
+                        help="Path to baseline BRR JSON for computing BRR ratio.")
 
     # Interleaved training (AttCT + KL regularization)
     interleave_group = parser.add_argument_group("interleaved_training")
@@ -183,6 +205,7 @@ def main():
     # ── Model loading ─────────────────────────────────────────────────────────
     is_lora = bool(config.get("lora"))
     ref_model = None
+
     _MODEL_ALIASES = {
         "llama":     "meta-llama/Llama-3.1-8B-Instruct",
         "qwen":      "Qwen/Qwen3-8B",
@@ -200,10 +223,15 @@ def main():
     torch.backends.cudnn.benchmark = False
 
     model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
-    config["model"]["name"] = model_name
+    loss_cfg  = config["loss"]
+    loss_name = loss_cfg["name"]
+
 
     needs_attn_weights = config["model"].get("output_attentions", True)
-    if needs_attn_weights:
+    force_attn_impl    = config["model"].get("attn_implementation", None)
+    if force_attn_impl:
+        attn_impl = force_attn_impl
+    elif needs_attn_weights:
         attn_impl = "eager"
     else:
         try:
@@ -213,9 +241,28 @@ def main():
             attn_impl = "sdpa"
     print(f"attn_implementation: {attn_impl}")
 
+    quant_cfg = config["model"].get("quantization", None)
+    if quant_cfg == "bitsandbytes":
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+        load_kwargs = dict(quantization_config=bnb_config, attn_implementation=attn_impl, device_map="auto")
+        print("Quantization: 4-bit NF4 (QLoRA)")
+    elif quant_cfg is not None:
+        raise ValueError(f"Unsupported quantization type: {quant_cfg!r}. Use 'bitsandbytes' or omit.")
+    else:
+        load_kwargs = dict(torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+
     if is_lora:
         lora_cfg = config["lora"]
-        base_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
+        base_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        if quant_cfg == "4bit":
+            from peft import prepare_model_for_kbit_training
+            base_model = prepare_model_for_kbit_training(base_model)
         if args.checkpoint:
             from peft import PeftModel
             model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=True)
@@ -231,17 +278,16 @@ def main():
             ))
         model.print_trainable_parameters()
     else:
-        # Full fine-tuning: load a frozen ref model for clean pass (= θ_init)
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        ref_model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, attn_implementation=attn_impl)
-        ref_model.eval()
-        for p in ref_model.parameters():
-            p.requires_grad_(False)
+        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        if loss_name != "SFTLoss":
+            # AttCT full FT: needs frozen ref model for the clean pass (= θ_init)
+            ref_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+            ref_model.eval()
+            for p in ref_model.parameters():
+                p.requires_grad_(False)
         trainable = sum(p.numel() for p in model.parameters())
         print(f"Full FT: {trainable:,} trainable parameters")
 
-    loss_cfg = config["loss"]
-    loss_name = loss_cfg["name"]
     loss_kwargs = loss_cfg.get("kwargs", {})
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
@@ -275,18 +321,75 @@ def main():
         config=config,
     )
 
+    # ── Sweep parameter injection ──────────────────────────────────────────────
+    # When running under `wandb agent`, wandb.config contains the sweep-chosen
+    # hyperparameters. We apply them back into our config dict using dotted keys
+    # (e.g. "training.learning_rate" → config["training"]["learning_rate"]).
+    # Supported sweep keys: training.learning_rate, training.weight_decay,
+    # training.epochs, lora.r, lora.lora_alpha, lora.lora_dropout.
+    _sweep_params = dict(wandb.config)
+    if _sweep_params:
+        for dotted_key, value in _sweep_params.items():
+            parts = dotted_key.split(".")
+            if len(parts) == 2:
+                section, key = parts
+                if section in config and key in config[section]:
+                    config[section][key] = value
+                    print(f"[sweep] {dotted_key} = {value}")
+        # Re-read values that may have changed
+        model_name = config["model"]["name"]
+        loss_cfg   = config["loss"]
+        loss_name  = loss_cfg["name"]
+
+    if config.get("training", {}).get("gradient_checkpointing", False):
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+        print("Gradient checkpointing enabled.")
+
     print(f"Loss: {loss_cfg['name']} | Device: {device}")
-    model = model.to(device)
-    if ref_model is not None:
-        ref_model = ref_model.to(device)
+    if quant_cfg is None:
+        model = model.to(device)
+        if ref_model is not None:
+            ref_model = ref_model.to(device)
 
     # ── Training path ─────────────────────────────────────────────────────────
     if isinstance(loss_fn, SFTLoss):
+        if args.bct_root:
+            config.setdefault("data", {})["bct_root"] = args.bct_root
+
+        if args.fresh_data:
+            import tempfile
+            from generate_fresh_bct_data import run_generation
+            fresh_dir = tempfile.mkdtemp(prefix="fresh_bct_")
+            bct_root  = config.get("data", {}).get("bct_root", "datasets/sycophancy_bct")
+            limit     = config.get("data", {}).get("limit", None)
+            print(f"==> Generating fresh BCT data via OpenRouter → {fresh_dir}")
+            run_generation(model_name=model_name, bct_root=bct_root,
+                           output_dir=fresh_dir, limit=limit)
+            config["data"]["bct_root"] = fresh_dir
+
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
         bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
+
+        if args.brr_test_root:
+            from evaluate_bct import run_brr_eval
+            checkpoint_path = os.path.join(config["training"]["save_dir"], "epoch_1")
+            print(f"\n==> BRR evaluation (limit={args.brr_limit} records/bias)...")
+            # Free training model from GPU before vLLM loads the checkpoint
+            del model
+            if ref_model is not None:
+                del ref_model
+            torch.cuda.empty_cache()
+            run_brr_eval(
+                model_name=model_name,
+                lora_path=checkpoint_path if os.path.exists(checkpoint_path) else None,
+                test_root=args.brr_test_root,
+                limit=args.brr_limit,
+                baseline_json=args.brr_baseline_json,
+            )
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         if tokenizer.pad_token is None:

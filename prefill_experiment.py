@@ -105,7 +105,8 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 
-dataset = load_dataset("AlignmentResearch/ClearHarm", split="train", streaming=True)
+# dataset = load_dataset("AlignmentResearch/ClearHarm", split="train", streaming=True)
+dataset = load_dataset("allenai/wildjailbreak", "train", split="train", streaming=True)
 
 
 def build_prompt(harmful_prompt: str, prefill_text: str = "") -> str:
@@ -193,7 +194,10 @@ results = []
 os.makedirs("attention_viz", exist_ok=True)
 
 for item_idx, item in enumerate(dataset.take(5)):
-    harmful_prompt = item["content"]
+    if item["data_type"] != "vanilla_harmful":
+        continue
+    harmful_prompt = item["data_type"]
+    # harmful_prompt = item["content"]
     print(f"\nHarmful Prompt: {harmful_prompt}\n{'-'*80}")
 
     entry = {

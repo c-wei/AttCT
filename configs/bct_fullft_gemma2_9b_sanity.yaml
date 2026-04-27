@@ -1,0 +1,27 @@
+model:
+  name: "google/gemma-2-9b-it"
+  output_attentions: false
+  output_hidden_states: false
+
+training:
+  epochs: 1
+  learning_rate: 0.00001
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 1
+  log_every_n_steps: 5
+  save_dir: null
+  gradient_checkpointing: true
+  optimizer: "paged_adamw_8bit"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/sycophancy_bct"
+  mix_instruct: false
+  batch_size: 1
+  max_length: 1024
+  limit: 50
+  mask_prompt: false
