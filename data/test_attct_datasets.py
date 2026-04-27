@@ -100,35 +100,9 @@ def simple_sycophancy_wrapper():
 # =============================================
 
 class TestGetPromptsJailbreak:
-    def test_hardcoded_returns_prompts(self):
-        prompts = get_prompts(source="hardcoded")
-        assert len(prompts) > 0
-
-    def test_hardcoded_returns_100_prompts(self):
-        prompts = get_prompts(source="hardcoded")
-        assert len(prompts) == 100
-
-    def test_hardcoded_prompts_are_strings(self):
-        prompts = get_prompts(source="hardcoded")
-        for p in prompts:
-            assert isinstance(p, str)
-
-    def test_limit_parameter(self):
-        prompts = get_prompts(source="hardcoded", limit=5)
-        assert len(prompts) == 5
-
-    def test_limit_larger_than_dataset(self):
-        prompts = get_prompts(source="hardcoded", limit=10000)
-        assert len(prompts) == 100
-
-    def test_invalid_file_falls_back_to_hardcoded(self):
-        prompts = get_prompts(source="/nonexistent/path/file.txt")
-        assert len(prompts) >= 10
-
-    def test_prompts_are_nonempty_strings(self):
-        prompts = get_prompts(source="hardcoded")
-        for p in prompts:
-            assert len(p) > 0
+    def test_invalid_file_raises(self):
+        with pytest.raises(RuntimeError):
+            get_prompts(source="/nonexistent/path/file.txt")
 
     @patch("attct_datasets._hf_load_dataset")
     def test_clear_harm_loads_and_deduplicates(self, mock_load):
@@ -169,9 +143,9 @@ class TestGetPromptsJailbreak:
         assert "short" not in prompts
 
     @patch("attct_datasets._hf_load_dataset", side_effect=Exception("Network error"))
-    def test_clear_harm_fallback_on_error(self, mock_load):
-        prompts = get_prompts(source="clear-harm")
-        assert len(prompts) >= 10
+    def test_clear_harm_raises_on_error(self, mock_load):
+        with pytest.raises(RuntimeError):
+            get_prompts(source="clear-harm")
 
     def test_file_source_with_valid_file(self, tmp_path):
         prompt_file = tmp_path / "prompts.txt"
@@ -180,12 +154,11 @@ class TestGetPromptsJailbreak:
         prompts = get_prompts(source=str(prompt_file))
         assert len(prompts) == 20
 
-    def test_file_source_skips_empty_lines(self, tmp_path):
+    def test_file_source_too_few_lines_raises(self, tmp_path):
         prompt_file = tmp_path / "prompts.txt"
         prompt_file.write_text("prompt1\n\nprompt2\n\n\nprompt3\n")
-        prompts = get_prompts(source=str(prompt_file))
-        # Only 3 non-empty lines, but < 10 so falls back to hardcoded
-        assert len(prompts) >= 10
+        with pytest.raises(RuntimeError):
+            get_prompts(source=str(prompt_file))
 
 
 # =============================================
@@ -213,17 +186,11 @@ class TestGetPromptsSycophancy:
         prompts = _load_sycophancy_bct_clean_prompts(style="cot", local_root=root)
         assert prompts == ["cot prompt"]
 
-    def test_get_prompts_file_source(self, tmp_path):
+    def test_get_prompts_file_source_too_few_raises(self, tmp_path):
         path = tmp_path / "prompts.txt"
         path.write_text("a\n\nb\n")
-        # file source with < 10 lines falls back to hardcoded for non-sycophancy sources
-        # but for sycophancy_bct it doesn't apply. Let's test with sycophancy_bct source
-        # Actually, file source for any source will use the file path branch
-        # For < 10 prompts it falls back unless source is sycophancy_bct
-        # Test raw file source:
-        prompts = get_prompts(source=str(path))
-        # Only 2 prompts, < 10 → falls back to hardcoded
-        assert len(prompts) >= 10
+        with pytest.raises(RuntimeError):
+            get_prompts(source=str(path))
 
     def test_get_prompts_limit(self, tmp_path):
         path = tmp_path / "prompts.txt"
@@ -540,8 +507,8 @@ class TestCollateFnBatch1Sycophancy:
 
 class TestIntegration:
     def test_jailbreak_end_to_end(self, mock_tokenizer):
-        """Full pipeline: load hardcoded prompts -> dataset -> collate."""
-        prompts = get_prompts(source="hardcoded", limit=3)
+        """Full pipeline: prompts -> dataset -> collate."""
+        prompts = [f"harmful prompt number {i}" for i in range(3)]
         wrapper = AdversarialWrapper(templates=["Jailbreak: {prompt} End."], strategy="sequential")
         dataset = AttCTDataset(prompts, mock_tokenizer, wrapper=wrapper, mode="jailbreak")
         assert len(dataset) == 3

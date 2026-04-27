@@ -227,13 +227,16 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
       zero mass where the other doesn't (common with causal masking).
 
     Args:
-        weight:        Global scalar multiplier.
-        layer_weights: "uniform", "linear_decay", or "exponential_decay".
+        weight:          Global scalar multiplier.
+        layer_weights:   "uniform", "linear_decay", or "exponential_decay".
+        layer_selection: "all", "last_half", "last_quarter", or a list of layer indices.
+                         Layer weights are always computed relative to total model depth.
     """
 
-    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", **kwargs):
+    def __init__(self, weight: float = 1.0, layer_weights: str = "uniform", layer_selection: str = "all", **kwargs):
         super().__init__(weight)
         self.layer_weights_type = layer_weights
+        self.layer_selection = layer_selection
 
     def forward(
         self,
@@ -253,9 +256,25 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
         end_index       = start_index       + clean_len
         clean_end_index = clean_start_index + clean_len
 
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last_half":
+            layer_indices = list(range(num_layers // 2, num_layers))
+        elif self.layer_selection == "last_quarter":
+            layer_indices = list(range((3 * num_layers) // 4, num_layers))
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last_half', 'last_quarter', or a list of indices."
+            )
+
         for layer_idx, (clean_att, adv_att) in enumerate(
             zip(clean_outputs.attentions, adv_outputs.attentions)
         ):
+            if layer_idx not in layer_indices:
+                continue
             # Full matrix slice — both q and k dims restricted to content region
             sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
             sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index]
@@ -294,6 +313,115 @@ class JSDAttentionConsistencyLoss(ConsistencyLoss):
             'layer_losses':    layer_losses,
             'mean_layer_loss': sum(layer_losses) / len(layer_losses),
         }
+
+class DirectedAttentionConsistencyLoss(ConsistencyLoss):
+    """
+    One-directional KL(adv || clean) on content-region attention weights.
+
+    Unlike JSD, the clean pass is treated as a fixed reference — gradient
+    flows only through the adversarial (wrapped) pass. This breaks the
+    symmetry that lets JSD be satisfied by shifting clean attention toward
+    the wrapped pattern rather than the reverse.
+
+    KL(adv || clean) = E_adv[log(adv/clean)]
+    Minimising this pushes adv → clean without touching the clean pass.
+
+    Args:
+        weight:          Global scalar multiplier.
+        layer_weights:   "uniform", "linear_decay", or "exponential_decay".
+        layer_selection: "all", "last_half", "last_quarter", or list of indices.
+        eps:             Clamp floor for numerical stability.
+    """
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        layer_weights: str = "uniform",
+        layer_selection: str = "all",
+        eps: float = 1e-9,
+        **kwargs,
+    ):
+        super().__init__(weight)
+        self.layer_weights_type = layer_weights
+        self.layer_selection = layer_selection
+        self.eps = eps
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_start_index: int,
+        clean_len: int,
+        **kwargs,
+    ) -> Dict[str, torch.Tensor]:
+        if not hasattr(clean_outputs, 'attentions') or clean_outputs.attentions is None:
+            raise ValueError("Model outputs must include attentions (output_attentions=True).")
+
+        total_loss  = torch.tensor(0.0, device=clean_outputs.attentions[0].device)
+        layer_losses = []
+        num_layers   = len(clean_outputs.attentions)
+        end_index       = start_index       + clean_len
+        clean_end_index = clean_start_index + clean_len
+
+        if self.layer_selection == "all":
+            layer_indices = list(range(num_layers))
+        elif self.layer_selection == "last_half":
+            layer_indices = list(range(num_layers // 2, num_layers))
+        elif self.layer_selection == "last_quarter":
+            layer_indices = list(range((3 * num_layers) // 4, num_layers))
+        elif isinstance(self.layer_selection, (list, tuple)):
+            layer_indices = list(self.layer_selection)
+        else:
+            raise ValueError(
+                f"Unknown layer_selection: '{self.layer_selection}'. "
+                "Choose 'all', 'last_half', 'last_quarter', or a list of indices."
+            )
+
+        for layer_idx, (clean_att, adv_att) in enumerate(
+            zip(clean_outputs.attentions, adv_outputs.attentions)
+        ):
+            if layer_idx not in layer_indices:
+                continue
+
+            sliced_adv   = adv_att[  :, :, start_index:end_index,             start_index:end_index]
+            # Detach clean so no gradient flows through the reference side.
+            sliced_clean = clean_att[:, :, clean_start_index:clean_end_index, clean_start_index:clean_end_index].detach()
+
+            if sliced_clean.shape != sliced_adv.shape:
+                import warnings
+                warnings.warn(
+                    f"DirectedAttentionConsistencyLoss: skipping layer {layer_idx} — "
+                    f"shape mismatch clean {sliced_clean.shape} vs adv {sliced_adv.shape}."
+                )
+                continue
+
+            # KL(adv || clean): F.kl_div expects log-probabilities as first arg.
+            log_adv    = torch.clamp(sliced_adv, min=self.eps).log()
+            layer_loss = F.kl_div(log_adv, sliced_clean, reduction='batchmean')
+
+            layer_weight = _get_layer_weight(self.layer_weights_type, layer_idx, num_layers)
+            total_loss   = total_loss + layer_weight * layer_loss
+            layer_losses.append(layer_loss.item())
+
+        if not layer_losses:
+            import warnings
+            warnings.warn(
+                "DirectedAttentionConsistencyLoss: all layers skipped. Returning zero loss."
+            )
+            return {
+                'loss':            torch.tensor(0.0, device=clean_outputs.attentions[0].device),
+                'layer_losses':    [],
+                'mean_layer_loss': 0.0,
+            }
+
+        avg_loss = total_loss / len(layer_losses)
+        return {
+            'loss':            self.weight * avg_loss,
+            'layer_losses':    layer_losses,
+            'mean_layer_loss': sum(layer_losses) / len(layer_losses),
+        }
+
 
 class AttentionOutputConsistencyLoss(ConsistencyLoss):
     """
@@ -405,11 +533,17 @@ class WrapperEntropyRegularizationLoss(ConsistencyLoss):
             batch_size, num_heads, adv_seq_q, adv_seq_k = adv_att.shape
 
             if wrapper_mask is not None:
-                mask = wrapper_mask.float().unsqueeze(1).unsqueeze(2)
-                mask = mask.expand(batch_size, num_heads, adv_seq_q, adv_seq_k)
+                # External wrapper_mask marks key positions belonging to the wrapper.
+                # Restrict queries to content + assistant-header positions
+                # ([start_index : seq_end]) so the loss penalises only the
+                # behaviourally-relevant attention paths (the harmful prompt and the
+                # generation-driving tokens attending back to the wrapper).
+                key_mask = wrapper_mask.float().unsqueeze(1).unsqueeze(2)
+                mask = key_mask.expand(batch_size, num_heads, adv_seq_q, adv_seq_k).clone()
+                mask[:, :, :start_index, :] = 0.0
             else:
                 mask = torch.zeros(batch_size, num_heads, adv_seq_q, adv_seq_k, device=device)
-                mask[:, :, :, :start_index] = 1.0
+                mask[:, :, start_index:, :start_index] = 1.0
 
             wrapper_attention = (adv_att * mask).sum(dim=-1)  # [batch, heads, seq_q]
             wrapper_attention_totals.append(wrapper_attention.mean().item())

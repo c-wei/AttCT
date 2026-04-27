@@ -1,6 +1,8 @@
 import argparse
 import os
+import random
 import yaml
+import numpy as np
 import torch
 import wandb
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -10,6 +12,7 @@ from losses.losses import (
     AttentionConsistencyLoss,
     AttentionConsistencyLossV2,
     JSDAttentionConsistencyLoss,
+    DirectedAttentionConsistencyLoss,
     AttentionOutputConsistencyLoss,
     CombinedAttentionConsistencyLoss,
     WrapperEntropyRegularizationLoss,
@@ -22,9 +25,8 @@ from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
 from data.ultrachat_dataset import get_kl_dataloader
 from train import Trainer, BCTTrainer
-from interleaved_trainer import InterleavedTrainer
+from interleaved_trainer import InterleavedTrainer, IntelligenceTrainer
 from evaluate import Evaluator
-from behavioral_evaluate import BehavioralEvaluator
 
 LOSS_REGISTRY = {
     "AttentionConsistencyLoss":         AttentionConsistencyLoss,
@@ -55,7 +57,21 @@ def main():
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
     parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--full-eval", dest="full_eval", action="store_true",
+                        help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+    parser.add_argument("--lora-rank", dest="lora_rank", default=None, type=int,
+                        help="Override lora.r from config (default: 8)")
+    parser.add_argument("--lora-alpha", dest="lora_alpha", default=None, type=int,
+                        help="Override lora.lora_alpha from config")
+    parser.add_argument("--lora-targets", dest="lora_targets", nargs="+", default=None, metavar="MODULE",
+                        help="Override lora.target_modules from config (e.g. --lora-targets q_proj k_proj v_proj o_proj)")
+    parser.add_argument("--loss-layer-selection", dest="loss_layer_selection", default=None,
+                        help="Override loss.kwargs.layer_selection (e.g. 'all', 'last_half', 'last_quarter')")
+
+    parser.add_argument("--hf-repo", dest="hf_repo", default=None,
+                        help="HuggingFace repo ID to push checkpoints to asynchronously (e.g. username/my-model). "
+                             "Requires huggingface_hub and HF_TOKEN env var.")
     parser.add_argument("--fresh-data", action="store_true",
                         help="Generate fresh BCT targets via OpenRouter before training.")
     parser.add_argument("--bct-root", default=None,
@@ -65,6 +81,32 @@ def main():
                         help="Write every model input (clean + wrapped) and its greedy-decoded "
                              "response to FILE as JSONL. One JSON object per forward pass.")
 
+    parser.add_argument("--control-cot", dest="control_cot_path", default=None,
+                        help="Path to control CoT JSONL — used to select sycophancy_bct data source")
+
+    parser.add_argument(
+        "--model",
+        default=None,
+        choices=["llama", "qwen", "qwen3-4b", "gemma-4b", "gemma-27b"],
+        help=(
+            "Model shorthand (overrides config.yaml model.name): "
+            "llama=meta-llama/Llama-3.1-8B-Instruct, "
+            "qwen=Qwen/Qwen3-8B, "
+            "qwen3-4b=Qwen/Qwen3-4B-Instruct-2507, "
+            "gemma-4b=google/gemma-3-4b-it, "
+            "gemma-27b=google/gemma-3-27b-it."
+        ),
+    )
+
+    parser.add_argument("--data-source", dest="data_source", nargs="+", default=None, metavar="SOURCE",
+                        help="Training data source(s). Pass multiple to combine (jailbreak mode only), e.g. --data-source clear-harm wildjailbreak harmbench.")
+    parser.add_argument("--data-mode",   dest="data_mode",   required=True,
+                        choices=["jailbreak", "sycophancy", "intelligence"],
+                        help="Training mode: 'jailbreak', 'sycophancy', or 'intelligence' (UltraChat KL-only control).")
+    parser.add_argument("--eval-sycophancy", dest="eval_sycophancy", action="store_true",
+                        help="Run sycophancy evaluator post-training regardless of data-mode.")
+    parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", action="store_const", const=True, default=None,
+                        help="Run jailbreak evaluator post-training (always uses jbb harmful + jbb-benign).")
     # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
     beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
@@ -75,12 +117,6 @@ def main():
     beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)
     beval.add_argument("--mmlu-subject",      dest="mmlu_subject",        default="all")
     beval.add_argument("--gsm8k-max-samples", dest="gsm8k_max_samples",   type=int, default=200)
-
-    parser.add_argument("--data-source", dest="data_source", default=None,
-                        help="Override config data.source (clear-harm | hardcoded | sycophancy_bct | <path>).")
-    parser.add_argument("--data-mode",   dest="data_mode",   default=None,
-                        choices=["jailbreak", "sycophancy"],
-                        help="Override config data.mode (jailbreak | sycophancy).")
     parser.add_argument("--data-limit",  dest="data_limit",  default=None, type=int,
                         help="Cap the number of training prompts (overrides config data.limit).")
     parser.add_argument("--eval-limit",  dest="eval_limit",  default=None, type=int)
@@ -114,6 +150,16 @@ def main():
         "--kl-temperature", type=float, default=1.0,
         help="Softmax temperature for KL loss (default: 1.0)",
     )
+    interleave_group.add_argument(
+        "--kl-dataset", dest="kl_dataset", default="ultrachat",
+        choices=["ultrachat", "alpaca"],
+        help="Dataset for KL regularization / intelligence training (default: ultrachat).",
+    )
+    interleave_group.add_argument(
+        "--kl-ratio", dest="kl_ratio", type=float, default=1.0,
+        help="Fraction of AttCT steps that also fire a KL step (default: 1.0 = always). "
+             "E.g. 0.1 means ~1 KL step per 10 AttCT steps.",
+    )
 
     args = parser.parse_args()
 
@@ -127,15 +173,59 @@ def main():
 
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
+    elif args.data_mode == "intelligence":
+        # Step count is determined by --kl-samples; don't let config.yaml cap it.
+        config.setdefault("training", {})["max_steps"] = None
+    else:
+        # Apply per-source default max_steps if not explicitly overridden.
+        # For multiple sources, use the largest default so all data is seen.
+        source = (
+            args.data_source
+            or config.get("data", {}).get("source", "clear-harm")
+        )
+        source_max_steps = config.get("data", {}).get("source_max_steps", {})
+        if isinstance(source, list):
+            steps = [source_max_steps[s] for s in source if s in source_max_steps]
+            if steps:
+                config.setdefault("training", {})["max_steps"] = max(steps)
+        elif source in source_max_steps:
+            config.setdefault("training", {})["max_steps"] = source_max_steps[source]
+
+    if args.lora_rank is not None:
+        config.setdefault("lora", {})["r"] = args.lora_rank
+    if args.lora_alpha is not None:
+        config.setdefault("lora", {})["lora_alpha"] = args.lora_alpha
+    if args.lora_targets is not None:
+        config.setdefault("lora", {})["target_modules"] = args.lora_targets
+    if args.loss_layer_selection is not None:
+        config.setdefault("loss", {}).setdefault("kwargs", {})["layer_selection"] = args.loss_layer_selection
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # ── Model loading ─────────────────────────────────────────────────────────
     is_lora = bool(config.get("lora"))
     ref_model = None
-    model_name = config["model"]["name"]
+
+    _MODEL_ALIASES = {
+        "llama":     "meta-llama/Llama-3.1-8B-Instruct",
+        "qwen":      "Qwen/Qwen3-8B",
+        "qwen3-4b":  "Qwen/Qwen3-4B-Instruct-2507",
+        "gemma-4b":  "google/gemma-3-4b-it",
+        "gemma-27b": "google/gemma-3-27b-it",
+    }
+    seed = config.get("training", {}).get("seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
     loss_cfg  = config["loss"]
     loss_name = loss_cfg["name"]
+
 
     needs_attn_weights = config["model"].get("output_attentions", True)
     force_attn_impl    = config["model"].get("attn_implementation", None)
@@ -214,7 +304,7 @@ def main():
             data_source_tag = "sft"
         else:
             data_source_tag = (
-                args.data_source if args.data_source is not None
+                "+".join(args.data_source) if args.data_source is not None
                 else "sycophancy_bct" if args.control_cot_path is not None
                 else config.get("data", {}).get("source", "unknown")
             )
@@ -306,13 +396,11 @@ def main():
             tokenizer.pad_token = tokenizer.eos_token
 
         if args.data_source is not None:
-            config.setdefault("data", {})["source"] = args.data_source
+            # single string or list — get_dataloader handles both
+            config.setdefault("data", {})["source"] = args.data_source if len(args.data_source) > 1 else args.data_source[0]
         elif args.control_cot_path is not None:
             config.setdefault("data", {})["source"] = args.control_cot_path
-        if args.data_mode is not None:
-            config.setdefault("data", {})["mode"] = args.data_mode
-        elif args.control_cot_path is not None and args.data_source is None:
-            config.setdefault("data", {})["mode"] = "sycophancy"
+        config.setdefault("data", {})["mode"] = args.data_mode
         if args.data_limit is not None:
             config.setdefault("data", {})["limit"] = args.data_limit
 
@@ -321,96 +409,184 @@ def main():
         wandb.config.update({"wrapper": {"mode": wrapper_mode, "templates": wrapper_templates}},
                             allow_val_change=True)
 
-        beval_paths = [args.bct_cot_path, args.bct_noncot_path, args.control_cot_path, args.control_noncot_path]
-        has_sycophancy_paths = all(p is not None for p in beval_paths)
-        has_mmlu  = args.mmlu_max_samples > 0
-        has_gsm8k = args.gsm8k_max_samples > 0
-        behavioral_evaluator = None
-        if has_sycophancy_paths or has_mmlu or has_gsm8k:
-            config["behavioral_eval"] = {
-                "bct_cot_path":        args.bct_cot_path,
-                "bct_noncot_path":     args.bct_noncot_path,
-                "control_cot_path":    args.control_cot_path,
-                "control_noncot_path": args.control_noncot_path,
-                "max_samples":         args.beval_max_samples,
-                "mmlu_max_samples":    args.mmlu_max_samples,
-                "mmlu_subject":        args.mmlu_subject,
-                "gsm8k_max_samples":   args.gsm8k_max_samples,
-            }
-            behavioral_evaluator = BehavioralEvaluator(model, tokenizer, config, device)
-            features = []
-            if has_sycophancy_paths:
-                features.append("sycophancy BCT")
-            if has_mmlu:
-                features.append(f"MMLU ({args.mmlu_max_samples} samples, subject={args.mmlu_subject})")
-            if has_gsm8k:
-                features.append(f"GSM8K ({args.gsm8k_max_samples} samples)")
-            print(f"Behavioral evaluator configured [{', '.join(features)}] — will run at 3 checkpoints during training.")
-        else:
-            print("No behavioral eval configured.")
 
         _base_log_dir = config.get("logging", {}).get("log_dir", "logs")
         _data_source_tag = config.get("data", {}).get("source", "unknown")
         # Use a short label for known built-in sources; use the basename for file paths.
-        if _data_source_tag not in ("clear-harm", "hardcoded", "sycophancy_bct"):
+        if isinstance(_data_source_tag, list):
+            _data_source_tag = "+".join(_data_source_tag)
+        elif _data_source_tag not in ("clear-harm", "sycophancy_bct"):
             _data_source_tag = os.path.splitext(os.path.basename(_data_source_tag))[0] or "unknown"
         log_dir = os.path.join(_base_log_dir, f"{loss_name}__{_data_source_tag}")
         os.makedirs(log_dir, exist_ok=True)
         config.setdefault("logging", {})["log_dir"] = log_dir
 
-        is_sycophancy = config.get("data", {}).get("mode") == "sycophancy"
+        is_sycophancy = args.data_mode == "sycophancy" or args.eval_sycophancy
+        is_jailbreak  = args.data_mode == "jailbreak"  or (args.eval_jailbreak_source is not None)
+        is_intelligence = args.data_mode == "intelligence"
         is_sanity = config.get("data", {}).get("limit") is not None
 
-        if not is_sanity:
+        run_label = os.path.splitext(os.path.basename(args.config))[0]
+
+        if not is_sanity and is_sycophancy:
             from evaluate_sycophancy import SycophancyEvaluator
-            run_label = os.path.splitext(os.path.basename(args.config))[0]
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+
+        _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
+
+        if not is_sanity and is_jailbreak:
+            from evaluate_jailbreak import JailbreakEvaluator
+            # Primary eval: ASR + over-refusal on JailbreakBench (jbb-harmful + jbb-benign).
+            # Secondary eval: ASR-only on ClearHarm (no over-refusal — that's a model-level
+            # property already captured by the jbb-benign run).
+            jailbreak_jbb_csv        = os.path.join("results", f"{run_label}_jailbreak_jbb_results.csv")
+            jailbreak_clearharm_csv  = os.path.join("results", f"{run_label}_jailbreak_clearharm_results.csv")
+
+        _PROBE_QUESTIONS = [
+            "How was your day?",
+            "How do airplanes stay in the air?",
+            "Why do people celebrate birthdays?",
+        ]
+
+        def _run_probe_questions(step):
+            probe_log = os.path.join(log_dir, f"probe_step_{step}.jsonl")
+            print(f"\n--- Probe questions (step {step}) ---")
+            import json
+            model.eval()
+            with open(probe_log, "a") as f:
+                for question in _PROBE_QUESTIONS:
+                    input_ids = tokenizer.apply_chat_template(
+                        [{"role": "user", "content": question}],
+                        tokenize=True,
+                        add_generation_prompt=True,
+                        return_tensors="pt",
+                    )["input_ids"].to(device)
+                    with torch.no_grad():
+                        output_ids = model.generate(
+                            input_ids,
+                            attention_mask=torch.ones_like(input_ids),
+                            pad_token_id=tokenizer.eos_token_id,
+                            max_new_tokens=200,
+                            do_sample=False,
+                        )
+                    response = tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=True)
+                    print(f"Q: {question}\nA: {response}\n")
+                    f.write(json.dumps({"step": step, "question": question, "response": response}) + "\n")
+            print(f"[Probe responses saved to {probe_log}]")
 
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
                 return None
             def _fn(step):
-                print(f"\n=== Checkpoint eval — sycophancy eval (step {step}) ===")
+                print(f"\n=== Checkpoint eval (step {step}) ===")
                 if is_lora:
-                    model.disable_adapter_layers()
                     model.eval()
-                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                        results_csv=results_csv).evaluate()
-                    model.enable_adapter_layers()
+                    if is_sycophancy:
+                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                    if is_jailbreak:
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="jbb",
+                                           prefix=f"checkpoint_step_{step}/jbb",
+                                           results_csv=jailbreak_jbb_csv, max_samples=_eval_limit).evaluate()
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="clear-harm", measure_overrefusal=False,
+                                           prefix=f"checkpoint_step_{step}/clearharm",
+                                           results_csv=jailbreak_clearharm_csv, max_samples=_eval_limit).evaluate()
+                    _run_probe_questions(step)
                     model.train()
                 else:
-                    SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                        results_csv=results_csv).evaluate()
+                    if is_sycophancy:
+                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                    if is_jailbreak:
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="jbb",
+                                           prefix=f"checkpoint_step_{step}/jbb",
+                                           results_csv=jailbreak_jbb_csv, max_samples=_eval_limit).evaluate()
+                        JailbreakEvaluator(model, tokenizer, device,
+                                           harmful_source="clear-harm", measure_overrefusal=False,
+                                           prefix=f"checkpoint_step_{step}/clearharm",
+                                           results_csv=jailbreak_clearharm_csv, max_samples=_eval_limit).evaluate()
+                    _run_probe_questions(step)
                     model.train()
             return _fn
 
-        if not is_sanity:
+        if not is_sanity and is_sycophancy:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
                 SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
 
-        attct_dl = get_dataloader(config, split="train")
+        if not is_sanity and is_jailbreak:
+            print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
+            _eval_model = model if is_lora else ref_model
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+            JailbreakEvaluator(_eval_model, tokenizer, device,
+                               harmful_source="jbb",
+                               prefix="pre_train/jbb", results_csv=jailbreak_jbb_csv,
+                               max_samples=_eval_limit).evaluate()
+            JailbreakEvaluator(_eval_model, tokenizer, device,
+                               harmful_source="clear-harm", measure_overrefusal=False,
+                               prefix="pre_train/clearharm", results_csv=jailbreak_clearharm_csv,
+                               max_samples=_eval_limit).evaluate()
+            if is_lora:
+                model.enable_adapter_layers()
+                model.train()
 
-        if args.interleave:
+        if is_intelligence:
+            kl_loss_fn = KLRegularizationLoss(
+                weight=args.kl_weight,
+                temperature=args.kl_temperature,
+            )
+            n_kl = args.kl_samples if args.kl_samples is not None else 2500
+            if args.max_steps is not None:
+                n_kl = max(n_kl, args.max_steps)
+            kl_dl = get_kl_dataloader(config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset)
+            print(f"Intelligence (control) training: {len(kl_dl.dataset)} {args.kl_dataset} samples (KL only, no AttCT)")
+            wandb.config.update({
+                "intelligence_control": True,
+                "kl_weight": args.kl_weight,
+                "kl_samples": n_kl,
+                "kl_temperature": args.kl_temperature,
+                "kl_dataset": args.kl_dataset,
+            }, allow_val_change=True)
+            IntelligenceTrainer(
+                model=model,
+                kl_dataloader=kl_dl,
+                kl_loss_fn=kl_loss_fn,
+                config=config,
+                device=device,
+                ref_model=ref_model,
+                checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
+            ).train()
+
+        else:
+            attct_dl = get_dataloader(config, split="train")
+
+        if not is_intelligence and args.interleave:
             kl_loss_fn = KLRegularizationLoss(
                 weight=args.kl_weight,
                 temperature=args.kl_temperature,
             )
             n_kl = args.kl_samples if args.kl_samples is not None else len(attct_dl.dataset)
             kl_dl = get_kl_dataloader(
-                config, tokenizer, n_samples=n_kl,
+                config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset,
             )
             print(
                 f"Interleaved training: {len(attct_dl.dataset)} AttCT samples + "
-                f"{len(kl_dl.dataset)} KL reg samples "
+                f"{len(kl_dl.dataset)} {args.kl_dataset} KL reg samples "
                 f"(weight={args.kl_weight}, temp={args.kl_temperature})"
             )
             wandb.config.update({
@@ -418,6 +594,8 @@ def main():
                 "kl_weight": args.kl_weight,
                 "kl_samples": n_kl,
                 "kl_temperature": args.kl_temperature,
+                "kl_dataset": args.kl_dataset,
+                "kl_ratio": args.kl_ratio,
             }, allow_val_change=True)
 
             InterleavedTrainer(
@@ -432,8 +610,11 @@ def main():
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
                 checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
+                kl_ratio=args.kl_ratio,
             ).train()
-        else:
+        elif not is_intelligence:
             Trainer(
                 model,
                 attct_dl,
@@ -444,20 +625,34 @@ def main():
                 log_io_path=args.log_io,
                 tokenizer=tokenizer,
                 checkpoint_fn=make_checkpoint_fn(),
+                hf_repo=args.hf_repo,
+                run_name=run_name,
             ).train()
 
-        if not args.skip_eval:
+        if args.full_eval and not args.skip_eval and not is_intelligence:
             eval_config = config.copy()
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
                       metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
-        if not is_sanity:
-            print("\n=== Post-training evaluation (trained model) ===")
+        if not is_sanity and is_sycophancy:
+            print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv).evaluate()
+                                results_csv=results_csv, max_samples=_eval_limit).evaluate()
+
+        if not is_sanity and is_jailbreak:
+            print("\n=== Post-training evaluation (trained model) — jailbreak ===")
+            model.eval()
+            JailbreakEvaluator(model, tokenizer, device,
+                               harmful_source="jbb",
+                               prefix="post_train/jbb", results_csv=jailbreak_jbb_csv,
+                               max_samples=_eval_limit).evaluate()
+            JailbreakEvaluator(model, tokenizer, device,
+                               harmful_source="clear-harm", measure_overrefusal=False,
+                               prefix="post_train/clearharm", results_csv=jailbreak_clearharm_csv,
+                               max_samples=_eval_limit).evaluate()
 
     wandb.finish()
 
