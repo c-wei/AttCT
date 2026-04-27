@@ -1,7 +1,8 @@
 model:
-  name: google/gemma-3-4b-it
+  name: Qwen/Qwen3-4B-Instruct-2507
   output_attentions: false
   output_hidden_states: false
+
 lora:
   r: 8
   lora_alpha: 16
@@ -10,6 +11,7 @@ lora:
   - q_proj
   - v_proj
   bias: none
+
 training:
   epochs: 1
   max_steps: null
@@ -17,7 +19,8 @@ training:
   grad_clip: 1.0
   grad_accumulation_steps: 8
   log_every_n_steps: 10
-  save_dir: checkpoints/mlp_ct_gemma3_4b
+  save_dir: checkpoints/mlp_ct_qwen3_4b
+
 loss:
   name: MLPConsistencyLoss
   weight: 1.0
@@ -27,6 +30,7 @@ loss:
     layer_weights: uniform
     distance_metric: cosine
     normalize: false
+
 data:
   mode: sycophancy
   batch_size: 1

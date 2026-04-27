@@ -12,12 +12,12 @@ lora:
 
 training:
   epochs: 1
-  max_steps: 500
+  max_steps: null
   learning_rate: 0.000003
   grad_clip: 1.0
   grad_accumulation_steps: 8
   log_every_n_steps: 10
-  save_dir: "checkpoints"
+  save_dir: checkpoints/mlp_ct_llama31_8b
 
 loss:
   name: "MLPConsistencyLoss"
