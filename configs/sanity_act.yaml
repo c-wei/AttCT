@@ -25,6 +25,7 @@ loss:
     normalize: false
 
 data:
-  source: "hardcoded"
+  source: "wildjailbreak"
   mode: "jailbreak"
   batch_size: 1
+  limit: 10

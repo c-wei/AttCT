@@ -1,9 +1,13 @@
 import os
+import time
 import json
+import concurrent.futures
 import torch
 import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+from train import _hf_upload_pool
 
 
 class InterleavedTrainer:
@@ -41,6 +45,9 @@ class InterleavedTrainer:
         checkpoint_fn=None,
         log_io_path=None,
         tokenizer=None,
+        hf_repo=None,
+        run_name=None,
+        kl_ratio: float = 1.0,
     ):
         self.model = model
         self.ref_model = ref_model
@@ -58,12 +65,15 @@ class InterleavedTrainer:
         self.max_steps = train_cfg.get("max_steps", None)
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.kl_ratio = kl_ratio  # prob of firing a KL step alongside each AttCT step
 
         model_cfg = config["model"]
         self.output_attentions = model_cfg.get("output_attentions", True)
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
         self.needs_clean_pass = loss_fn.needs_clean_pass
         self.save_dir = train_cfg.get("save_dir")
+        self.hf_repo = hf_repo
+        self.run_name = run_name
 
         # IO logging
         self._log_io_file = open(log_io_path, "w") if log_io_path else None
@@ -254,15 +264,19 @@ class InterleavedTrainer:
                 self._write_train_record(epoch, step_idx + 1, attct_batch)
                 attct_loss_dict["loss"].backward()
 
-                # ── KL backward ───────────────────────────────────────
-                try:
-                    kl_batch = next(kl_iter)
-                except StopIteration:
-                    kl_iter = iter(self.kl_dataloader)
-                    kl_batch = next(kl_iter)
-
-                kl_loss_dict = self._kl_step(kl_batch)
-                kl_loss_dict["loss"].backward()
+                # ── KL backward (controlled by kl_ratio) ─────────────
+                # kl_ratio=1.0 → always; 0.5 → every other step; 0.1 → ~1 in 10
+                import random as _random
+                run_kl = _random.random() < self.kl_ratio
+                kl_loss_dict = None
+                if run_kl:
+                    try:
+                        kl_batch = next(kl_iter)
+                    except StopIteration:
+                        kl_iter = iter(self.kl_dataloader)
+                        kl_batch = next(kl_iter)
+                    kl_loss_dict = self._kl_step(kl_batch)
+                    kl_loss_dict["loss"].backward()
 
                 # ── Optimizer step (combined gradient) ────────────────
                 if self.grad_clip is not None:
@@ -276,21 +290,22 @@ class InterleavedTrainer:
 
                 # Bookkeeping
                 attct_val = attct_loss_dict["loss"].item()
-                kl_val = kl_loss_dict["loss"].item()
+                kl_val = kl_loss_dict["loss"].item() if kl_loss_dict is not None else 0.0
                 epoch_attct_loss += attct_val
                 epoch_kl_loss += kl_val
 
-                pbar.set_postfix(
-                    attct=f"{attct_val:.4f}",
-                    kl=f"{kl_val:.4f}",
-                )
+                postfix = {"attct": f"{attct_val:.4f}"}
+                if run_kl:
+                    postfix["kl"] = f"{kl_val:.4f}"
+                pbar.set_postfix(**postfix)
 
                 # ── Checkpoint ────────────────────────────────────────
-                if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                if global_step in self.checkpoint_steps:
                     self._save_checkpoint(tag=f"step_{global_step}")
-                    print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
-                    self.checkpoint_fn(global_step)
-                    self.model.train()
+                    if self.checkpoint_fn is not None:
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()
 
                 # ── Logging ───────────────────────────────────────────
                 if global_step % self.log_every == 0:
@@ -338,47 +353,51 @@ class InterleavedTrainer:
     # ------------------------------------------------------------------
 
     def _log(self, epoch: int, step: int, attct_dict: dict, kl_dict: dict):
-        """Log both AttCT and KL metrics to W&B and stdout."""
+        """Log both AttCT and KL metrics to W&B and stdout. kl_dict may be None
+        when this iteration skipped the KL step (kl_ratio < 1.0)."""
         attct_val = attct_dict["loss"].item()
-        kl_val = kl_dict["loss"].item()
+        kl_val = kl_dict["loss"].item() if kl_dict is not None else 0.0
 
         metrics = {
-            "train/attct_loss": attct_val,
-            "train/kl_reg_loss": kl_val,
-            "train/total_loss": attct_val + kl_val,
+            "attct/loss": attct_val,
             "train/epoch": epoch,
         }
+        if kl_dict is not None:
+            metrics["kl/loss"] = kl_val
+            metrics["train/total_loss"] = attct_val + kl_val
 
         # AttCT-specific metrics
         if "mean_layer_loss" in attct_dict:
-            metrics["train/mean_layer_loss"] = attct_dict["mean_layer_loss"]
+            metrics["attct/mean_layer_loss"] = attct_dict["mean_layer_loss"]
         if "mean_wrapper_attention" in attct_dict:
-            metrics["train/mean_wrapper_attention"] = attct_dict["mean_wrapper_attention"]
+            metrics["attct/mean_wrapper_attention"] = attct_dict["mean_wrapper_attention"]
         if "jsd_loss" in attct_dict:
-            metrics["train/jsd_loss"] = attct_dict["jsd_loss"]
+            metrics["attct/jsd_loss"] = attct_dict["jsd_loss"]
         if "wrapper_loss" in attct_dict:
-            metrics["train/wrapper_loss"] = attct_dict["wrapper_loss"]
+            metrics["attct/wrapper_loss"] = attct_dict["wrapper_loss"]
 
         # Per-layer breakdown
         if "layer_losses" in attct_dict:
             for i, ll in enumerate(attct_dict["layer_losses"]):
-                metrics[f"train/layer_{i:02d}_loss"] = ll
+                metrics[f"attct/layer_{i:02d}_loss"] = ll
             if not self._first_layer_losses:
                 self._first_layer_losses = list(attct_dict["layer_losses"])
             self._last_layer_losses = list(attct_dict["layer_losses"])
 
         # KL-specific diagnostics
-        if "kl_div" in kl_dict:
-            metrics["train/kl_reg_div"] = kl_dict["kl_div"]
-        if "mean_per_token_kl" in kl_dict:
-            metrics["train/kl_reg_per_token"] = kl_dict["mean_per_token_kl"]
+        if kl_dict is not None:
+            if "kl_div" in kl_dict:
+                metrics["kl/div"] = kl_dict["kl_div"]
+            if "mean_per_token_kl" in kl_dict:
+                metrics["kl/per_token"] = kl_dict["mean_per_token_kl"]
 
         wandb.log(metrics, step=step)
 
         # Compact stdout line
+        kl_str = f"{kl_val:.4f}" if kl_dict is not None else "skipped"
         line = (
             f"[epoch {epoch} | step {step}] "
-            f"attct: {attct_val:.4f}  kl_reg: {kl_val:.4f}"
+            f"attct: {attct_val:.4f}  kl_reg: {kl_str}"
         )
         if "mean_layer_loss" in attct_dict:
             line += f"  mean_layer: {attct_dict['mean_layer_loss']:.4f}"
@@ -393,10 +412,35 @@ class InterleavedTrainer:
     def _save_checkpoint(self, tag: str):
         if self.save_dir is None:
             return
-        path = os.path.join(self.save_dir, tag)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_prefix = f"{self.run_name}__" if self.run_name else ""
+        folder_name = f"{run_prefix}{tag}__{timestamp}"
+        path = os.path.join(self.save_dir, folder_name)
         os.makedirs(path, exist_ok=True)
         self.model.save_pretrained(path)
         print(f"Checkpoint saved to {path}")
+
+        if self.hf_repo:
+            local_path = path
+            subfolder = folder_name
+
+            def _push():
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi()
+                    api.create_repo(repo_id=self.hf_repo, repo_type="model", exist_ok=True, private=True)
+                    api.upload_folder(
+                        folder_path=local_path,
+                        repo_id=self.hf_repo,
+                        path_in_repo=subfolder,
+                        repo_type="model",
+                    )
+                    print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
+                except Exception as exc:
+                    print(f"[HF] Upload failed for {subfolder}: {exc}")
+
+            _hf_upload_pool.submit(_push)
+            print(f"[HF] Upload queued → {self.hf_repo}/{subfolder}")
 
     def _write_train_record(self, epoch: int, batch_idx: int, batch: dict):
         """Write one JSONL record per AttCT batch (same format as Trainer)."""
@@ -415,3 +459,189 @@ class InterleavedTrainer:
         }
         self._train_log_file.write(json.dumps(record) + "\n")
         self._train_log_file.flush()
+
+
+class IntelligenceTrainer:
+    """
+    Training loop for the intelligence (control) condition.
+
+    Trains exclusively on UltraChat via KL regularization — no AttCT consistency
+    loss, no adversarial wrapping.  Used to check whether neutral fine-tuning
+    incidentally affects sycophancy or jailbreak behavior.
+
+    Args:
+        model:           PEFT-wrapped HuggingFace model (on device).
+        kl_dataloader:   DataLoader of UltraChat prompts (from get_kl_dataloader).
+        kl_loss_fn:      Instantiated KLRegularizationLoss.
+        config:          Full config dict.
+        device:          torch.device.
+        ref_model:       Optional frozen reference model (full FT mode).
+        checkpoint_fn:   Optional callable(global_step) for behavioral eval checkpoints.
+    """
+
+    def __init__(
+        self,
+        model,
+        kl_dataloader,
+        kl_loss_fn,
+        config: dict,
+        device: torch.device,
+        ref_model=None,
+        checkpoint_fn=None,
+        hf_repo=None,
+        run_name=None,
+    ):
+        self.model = model
+        self.ref_model = ref_model
+        self.kl_dataloader = kl_dataloader
+        self.kl_loss_fn = kl_loss_fn
+        self.config = config
+        self.device = device
+        self.checkpoint_fn = checkpoint_fn
+        self.hf_repo = hf_repo
+        self.run_name = run_name
+
+        train_cfg = config["training"]
+        self.epochs = train_cfg["epochs"]
+        self.max_steps = train_cfg.get("max_steps", None)
+        self.grad_clip = train_cfg.get("grad_clip")
+        self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.save_dir = train_cfg.get("save_dir")
+
+        dataset_steps = max(1, len(kl_dataloader) * self.epochs)
+        if self.max_steps is not None:
+            total_optimizer_steps = min(self.max_steps, dataset_steps)
+        else:
+            total_optimizer_steps = dataset_steps
+        self.checkpoint_steps = {
+            total_optimizer_steps // 3,
+            (2 * total_optimizer_steps) // 3,
+            total_optimizer_steps,
+        }
+        self.checkpoint_steps.discard(0)
+        print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
+
+        self.optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=train_cfg["learning_rate"],
+        )
+
+    def _kl_step(self, batch: dict) -> dict:
+        input_ids = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+
+        with torch.no_grad():
+            if self.ref_model is not None:
+                base_outputs = self.ref_model(input_ids=input_ids, attention_mask=attention_mask)
+            else:
+                self.model.disable_adapter_layers()
+                base_outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                )
+                self.model.enable_adapter_layers()
+        base_logits = base_outputs.logits.detach()
+
+        current_outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_attentions=False,
+            output_hidden_states=False,
+        )
+        return self.kl_loss_fn(
+            current_logits=current_outputs.logits,
+            base_logits=base_logits,
+            attention_mask=attention_mask,
+        )
+
+    def _save_checkpoint(self, tag: str):
+        if self.save_dir is None:
+            return
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_prefix = f"{self.run_name}__" if self.run_name else ""
+        folder_name = f"{run_prefix}{tag}__{timestamp}"
+        path = os.path.join(self.save_dir, folder_name)
+        os.makedirs(path, exist_ok=True)
+        self.model.save_pretrained(path)
+        print(f"Checkpoint saved to {path}")
+
+        if self.hf_repo:
+            local_path = path
+            subfolder = folder_name
+
+            def _push():
+                try:
+                    from huggingface_hub import HfApi
+                    api = HfApi()
+                    api.create_repo(repo_id=self.hf_repo, repo_type="model", exist_ok=True, private=True)
+                    api.upload_folder(
+                        folder_path=local_path,
+                        repo_id=self.hf_repo,
+                        path_in_repo=subfolder,
+                        repo_type="model",
+                    )
+                    print(f"[HF] Uploaded checkpoint → {self.hf_repo}/{subfolder}")
+                except Exception as exc:
+                    print(f"[HF] Upload failed for {subfolder}: {exc}")
+
+            _hf_upload_pool.submit(_push)
+            print(f"[HF] Upload queued → {self.hf_repo}/{subfolder}")
+
+    def train(self):
+        self.model.train()
+        global_step = 0
+        self.optimizer.zero_grad()
+
+        for epoch in range(1, self.epochs + 1):
+            epoch_kl_loss = 0.0
+            n_steps = 0
+
+            pbar = tqdm(self.kl_dataloader, desc=f"Epoch {epoch}", leave=False)
+
+            for batch in pbar:
+                if self.max_steps is not None and global_step >= self.max_steps:
+                    break
+
+                kl_loss_dict = self._kl_step(batch)
+                kl_loss_dict["loss"].backward()
+
+                if self.grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                global_step += 1
+                n_steps += 1
+
+                kl_val = kl_loss_dict["loss"].item()
+                epoch_kl_loss += kl_val
+                pbar.set_postfix(kl=f"{kl_val:.4f}")
+
+                if global_step in self.checkpoint_steps:
+                    self._save_checkpoint(tag=f"step_{global_step}")
+                    if self.checkpoint_fn is not None:
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()
+
+                if global_step % self.log_every == 0:
+                    metrics = {
+                        "kl/loss": kl_val,
+                        "train/total_loss": kl_val,
+                        "train/epoch": epoch,
+                    }
+                    if "kl_div" in kl_loss_dict:
+                        metrics["kl/div"] = kl_loss_dict["kl_div"]
+                    if "mean_per_token_kl" in kl_loss_dict:
+                        metrics["kl/per_token"] = kl_loss_dict["mean_per_token_kl"]
+                    wandb.log(metrics, step=global_step)
+                    print(f"[epoch {epoch} | step {global_step}] kl: {kl_val:.4f}")
+
+            n_steps = max(1, n_steps)
+            print(f"Epoch {epoch} complete — avg kl: {epoch_kl_loss / n_steps:.4f}")
+
+            if self.max_steps is not None and global_step >= self.max_steps:
+                break
+
+        print("Training complete.")

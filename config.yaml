@@ -31,3 +31,13 @@ data:
   mode: "jailbreak"
   batch_size: 1
   max_length: 512
+  # Default max_steps per data source (used when --max-steps is not passed)
+  source_max_steps:
+    clear-harm: 179
+    sycophancy_bct: 5000
+    anthropic-sycophancy: 20184
+    jbb: 100
+    harmbench: 200
+    wildjailbreak: 5000
+    redteam2k: 2000
+
