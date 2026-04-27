@@ -1,6 +1,6 @@
 torch
-transformers
-peft
+transformers==2.14.0
+peft==0.10.0
 wandb
 pyyaml
 tqdm

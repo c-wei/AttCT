@@ -15,6 +15,7 @@ dependencies = [
     "httpx",
     "setuptools",
     "numpy<2.3",
+    "json-repair",
 ]
 
 [dependency-groups]
