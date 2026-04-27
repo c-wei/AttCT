@@ -18,3 +18,4 @@ logs.tar.xz
 wandb/
 checkpoints/
 Miniconda3-latest-MacOSX-arm64.sh
+.DS_Store
