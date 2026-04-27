@@ -12,6 +12,7 @@ from losses.losses import (
     AttentionConsistencyLoss,
     AttentionConsistencyLossV2,
     JSDAttentionConsistencyLoss,
+    DirectedAttentionConsistencyLoss,
     AttentionOutputConsistencyLoss,
     CombinedAttentionConsistencyLoss,
     WrapperEntropyRegularizationLoss,
@@ -59,6 +60,8 @@ def main():
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
+    parser.add_argument("--lora-rank", dest="lora_rank", default=None, type=int,
+                        help="Override lora.r from config (default: 8)")
     parser.add_argument("--lora-alpha", dest="lora_alpha", default=None, type=int,
                         help="Override lora.lora_alpha from config")
     parser.add_argument("--lora-targets", dest="lora_targets", nargs="+", default=None, metavar="MODULE",
@@ -166,6 +169,8 @@ def main():
         elif source in source_max_steps:
             config.setdefault("training", {})["max_steps"] = source_max_steps[source]
 
+    if args.lora_rank is not None:
+        config.setdefault("lora", {})["r"] = args.lora_rank
     if args.lora_alpha is not None:
         config.setdefault("lora", {})["lora_alpha"] = args.lora_alpha
     if args.lora_targets is not None:
