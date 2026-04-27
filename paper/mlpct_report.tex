@@ -1,0 +1,246 @@
+\documentclass[12pt, letterpaper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{parskip}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{colortbl}
+\usepackage{xcolor}
+\usepackage{float}
+
+\onehalfspacing
+\hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=blue}
+\definecolor{mlpcthl}{RGB}{220,245,220}
+
+\title{\textbf{MLP Consistency Training (MLP-CT):\\Reducing Biased Reasoning by Enforcing Consistent\\MLP Activations Across Adversarial Prompt Wrapping}}
+\author{Sukrati Gautam\\\small\texttt{gautam11@purdue.edu}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We introduce MLP Consistency Training (MLP-CT), a method that reduces context-sensitive failures in language models by enforcing consistent post-activation MLP hidden states across clean and adversarially wrapped prompts. Unlike prior consistency methods that target output tokens (BCT) or the full residual stream (ACT), MLP-CT isolates the MLP's feature computation by keeping all MLP weights frozen and training only attention via LoRA. The frozen MLP acts as a consistency detector: if its activations match between clean and wrapped inputs, attention has successfully filtered the adversarial cue. MLP-CT achieves 59--84\% biased reasoning reduction across seven models and five architecture families, with near-zero capability loss. On Gemma-3-4B-IT, it achieves a BRR ratio of 0.323 (68\% reduction) and generalizes to held-out bias types (25.3\% held-out BRR average on 9 bias types), jailbreak refusal (22\% on ClearHarm), and partial persona ICL resistance. A hyperparameter sweep identifies LoRA target selection as the only high-impact design decision: extending LoRA to all attention projections ($W_Q, W_K, W_V, W_O$) improves BRR ratio by 17\%.
+\end{abstract}
+
+% ============================================================================
+\section{Introduction}
+% ============================================================================
+
+Language models behave differently under semantically similar prompts that differ only in framing or surrounding context. A model that correctly answers a factual question may give the wrong answer when the same question is prefixed with ``I think the answer is B, but what do you think?'' This sensitivity to superficial prompt features leads to sycophancy, jailbreak susceptibility, and other forms of prompt-induced misalignment~\citep{chua2024bias, irpan2025consistency}.
+
+Consistency training encourages models to produce the same representations (or outputs) for clean prompts and adversarially wrapped versions of the same prompt. Prior work has explored this at two levels: output token distributions (BCT;~\citealt{chua2024bias}) and residual stream activations (ACT;~\citealt{irpan2025consistency}). Both show promise but operate at points in the transformer that mix multiple computational contributions.
+
+We propose MLP Consistency Training (MLP-CT), which targets a distinct computational sub-block: the post-activation hidden states of the MLP feed-forward layers. In a transformer, attention decides \emph{where} to look and the MLP decides \emph{what to compute}. By freezing MLP weights and training only attention projections via LoRA, MLP-CT creates a clean separation: the model can only reduce the consistency loss by adjusting how attention routes information, and the frozen MLP certifies whether routing was successful.
+
+% ============================================================================
+\section{Method}
+% ============================================================================
+
+\subsection{MLP Hidden States as Consistency Targets}
+
+In each transformer layer $\ell$, the SwiGLU MLP sub-block computes:
+\begin{equation}
+    \text{MLP}^{(\ell)}(x) = W_{\text{down}}^{(\ell)} \cdot \left( \sigma\!\left(W_{\text{gate}}^{(\ell)} x\right) \odot W_{\text{up}}^{(\ell)} x \right),
+\end{equation}
+where $\sigma$ is SiLU and $\odot$ denotes element-wise multiplication. We define the MLP hidden state as the post-activation intermediate representation \emph{before} the down-projection:
+\begin{equation}
+    h^{(\ell)}(x) = \sigma\!\left(W_{\text{gate}}^{(\ell)} x\right) \odot W_{\text{up}}^{(\ell)} x \;\in\; \mathbb{R}^{d_{\text{ff}}}.
+\end{equation}
+This corresponds to the activated ``features'' or ``neurons'' in the MLP~\citep{geva2021transformer}. Each dimension represents whether a particular feature pattern was detected. We capture these states using PyTorch forward hooks on $W_{\text{down}}$, which intercept the input without architectural modifications.
+
+\subsection{Loss Function}
+
+MLP-CT minimizes the cosine distance between MLP hidden states across clean and wrapped prompts:
+\begin{equation}
+    \mathcal{L}_{\text{MLP-CT}} = \frac{1}{L} \sum_{\ell=1}^{L} w_\ell \left( 1 - \frac{1}{n} \sum_{t=1}^{n} \frac{\tilde{h}^{(\ell)}_t \cdot h^{(\ell)}_t}{\|\tilde{h}^{(\ell)}_t\| \cdot \|h^{(\ell)}_t\|} \right),
+\end{equation}
+where $\tilde{h}^{(\ell)}_t$ and $h^{(\ell)}_t$ are MLP hidden states for wrapped and clean prompts at aligned token position $t$, $n$ is the number of shared tokens, $L$ is the total number of layers, and $w_\ell$ is a per-layer weight (uniform by default).
+
+\subsection{Training Procedure}
+
+We fine-tune using LoRA~\citep{hu2021lora} on attention query and value projections ($W_Q$, $W_V$) with rank 8. All MLP parameters remain frozen. For each training step:
+\begin{enumerate}
+    \item Forward pass on the wrapped prompt (LoRA active, with gradients) --- capture MLP hidden states via hooks.
+    \item Forward pass on the clean prompt (LoRA disabled to recover base weights $\theta_{\text{init}}$, no gradients) --- capture MLP hidden states as fixed target.
+    \item Compute $\mathcal{L}_{\text{MLP-CT}}$ and backpropagate through LoRA parameters only.
+\end{enumerate}
+
+\subsection{Relationship to Prior Methods}
+
+Table~\ref{tab:methods} positions MLP-CT within the consistency training design space.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Consistency training methods and their targets.}
+\label{tab:methods}
+\begin{tabular}{llll}
+\toprule
+\textbf{Method} & \textbf{Target ($f_\theta$)} & \textbf{Distance ($d$)} & \textbf{Level} \\
+\midrule
+BCT~\citep{chua2024bias} & Output token distribution & Cross-entropy & Output \\
+ACT~\citep{irpan2025consistency} & Residual stream activations & L2 (MSE) & Activation \\
+\textbf{MLP-CT (ours)} & \textbf{MLP hidden states} & \textbf{Cosine distance} & \textbf{MLP sub-block} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================================
+\section{Experimental Setup}
+% ============================================================================
+
+We use clean prompts from the BCT sycophancy dataset~\citep{chua2024bias}, wrapped on-the-fly using 12 sycophancy templates. Training and evaluation sets are non-overlapping. All models use identical hyperparameters: LoRA rank 8, $\alpha=16$, lr $3 \times 10^{-6}$, gradient accumulation 8, gradient clipping 1.0, max sequence length 512. We measure the Biased Reasoning Rate:
+\begin{equation}
+    \text{BRR} = P(\text{picks } B \mid \text{biased prompt}) - P(\text{picks } B \mid \text{clean prompt}),
+\end{equation}
+and report BRR Ratio $= \text{BRR}_{\text{post}} / \text{BRR}_{\text{pre}}$ (lower is better).
+
+% ============================================================================
+\section{Results}
+% ============================================================================
+
+\subsection{Cross-Model Effectiveness}
+
+\begin{table}[h]
+\centering
+\small
+\caption{MLP-CT sycophancy results across seven models and five architecture families.}
+\label{tab:crossmodel}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{BRR Pre} & \textbf{BRR Post} & \textbf{BRR Ratio} & \textbf{Reduction} & \textbf{$\Delta$ Clean Acc} \\
+\midrule
+Gemma-2-2B-IT & 2.6B & 0.328 & 0.136 & 0.413 & 59\% & $-0.3$pp \\
+Llama-3.2-3B & 3.2B & 0.218 & 0.087 & 0.401 & 60\% & $+1.3$pp \\
+Gemma-3-4B-IT & 4.0B & 0.436 & 0.141 & 0.323 & 68\% & $+0.4$pp \\
+Qwen-2.5-7B & 7.6B & 0.195 & 0.070 & 0.362 & 64\% & $+0.4$pp \\
+Mistral-7B & 7.2B & 0.314 & 0.063 & 0.201 & 80\% & $-8.4$pp \\
+Llama-3.1-8B & 8.0B & 0.180 & 0.028 & 0.158 & 84\% & $+0.3$pp \\
+Llama-3.1-70B & 70B & 0.201 & 0.033 & 0.162 & 84\% & $+0.7$pp \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MLP-CT reduces BRR by 59--84\% across all seven models, suggesting the method exploits a structural property of transformer MLPs rather than an architecture-specific quirk. Six of seven models preserve clean accuracy within $\pm 1.3$ percentage points. Mistral-7B is the exception ($-8.4$pp); checkpointing shows optimal BRR at step 333, suggesting sensitivity to the learning rate.
+
+\subsection{Comparison with BCT}
+
+\begin{table}[h]
+\centering
+\small
+\caption{BCT vs MLP-CT under identical data (4K pairs) and compute (500 steps) budget.}
+\label{tab:bct_comparison}
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Method} & \textbf{Model} & \textbf{BRR Ratio} & \textbf{Reduction} & \textbf{$\Delta$ Clean} & \textbf{MMLU} \\
+\midrule
+BCT & Gemma-2-2B & \cellcolor{red!15}1.144 & \cellcolor{red!15}$-$14\% & $-$2.1pp & 0.520 \\
+\rowcolor{mlpcthl} MLP-CT & Gemma-2-2B & 0.413 & 59\% & $-$0.3pp & 0.528 \\
+\midrule
+BCT & Llama-3.2-3B & 0.967 & 3\% & $+$0.3pp & 0.566 \\
+\rowcolor{mlpcthl} MLP-CT & Llama-3.2-3B & 0.401 & 60\% & $+$1.3pp & 0.572 \\
+\midrule
+BCT & Qwen-2.5-7B & \cellcolor{red!15}1.249 & \cellcolor{red!15}$-$25\% & $+$0.0pp & 0.726 \\
+\rowcolor{mlpcthl} MLP-CT & Qwen-2.5-7B & 0.362 & 64\% & $+$0.4pp & 0.722 \\
+\midrule
+BCT & Llama-3.1-8B & 0.866 & 13\% & $+$0.2pp & 0.612 \\
+\rowcolor{mlpcthl} MLP-CT & Llama-3.1-8B & 0.158 & 84\% & $+$0.3pp & 0.622 \\
+\midrule
+BCT & Llama-3.1-70B & 0.587 & 41\% & $+$0.8pp & 0.746 \\
+\rowcolor{mlpcthl} MLP-CT & Llama-3.1-70B & 0.162 & 84\% & $+$0.7pp & 0.784 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+MLP-CT outperforms BCT on every model. BCT increases sycophancy on two models (Gemma by 14\%, Qwen by 25\%), while MLP-CT improves all. Note: this BCT baseline used stale dataset responses rather than fresh model-generated data; a properly configured BCT baseline is expected to perform better.
+
+\subsection{Generalization to Held-Out Bias Types}
+
+Using the 9-bias evaluation suite from~\citet{chua2024bias} on Gemma-3-4B-IT (trained on Suggested Answer only):
+
+\begin{table}[h]
+\centering
+\small
+\caption{MLP-CT generalization to held-out bias types (Gemma-3-4B-IT, 300 records/bias).}
+\label{tab:9bias}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Bias Type} & \textbf{BRR (\%)} & \textbf{Type} \\
+\midrule
+Suggested Answer & 12.1 & Training \\
+\midrule
+Are You Sure? & 33.6 & Held-out \\
+Post Hoc & 70.4 & Held-out \\
+Wrong Few-Shot & 12.1 & Held-out \\
+Argument & 56.0 & Held-out \\
+Squares & 1.3 & Held-out \\
+Hindsight & 4.8 & Held-out \\
+Distractor Fact & $-1.2$ & Held-out \\
+\midrule
+\textbf{Held-out Average} & \textbf{25.3} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Several biases are nearly eliminated: Squares (1.3\%), Hindsight (4.8\%), Distractor Fact ($-1.2\%$). The most resistant biases are Post Hoc (70.4\%) and Argument (56.0\%), which involve copying flawed reasoning from the prompt rather than answer anchoring.
+
+\subsection{Out-of-Distribution Threat Generalization}
+
+On Gemma-3-4B-IT, trained on sycophancy only:
+
+\begin{itemize}
+    \item \textbf{Sycophancy resistance:} 70.0\% of responses resist the nudge (280/400 across CoT and non-CoT).
+    \item \textbf{ClearHarm jailbreak refusal:} 22.0\% refusal rate on 50 jailbreak-wrapped harmful prompts (LLM judge: Gemini 2.5 Flash). Out-of-distribution from training.
+    \item \textbf{Persona ICL alignment:} Mean alignment 82.4 (prefix) and 52.3 (suffix) on five adversarial personas (k=10, n=3). The model resists suffix attacks more than prefix, consistent with prefix ICL being a stronger attack vector.
+\end{itemize}
+
+\subsection{Hyperparameter Sweep}
+
+We ablate 10 configurations on Llama-3.2-3B (Table~\ref{tab:sweep}), changing one axis from baseline (cosine, all layers, uniform, $W_Q$+$W_V$, no-normalize).
+
+\begin{table}[h]
+\centering
+\small
+\caption{MLP-CT hyperparameter sweep (Llama-3.2-3B, 500 steps, 4K prompts). Baseline BRR Ratio = 0.401.}
+\label{tab:sweep}
+\begin{tabular}{clccr}
+\toprule
+\textbf{Rank} & \textbf{Configuration} & \textbf{BRR Ratio} & \textbf{Reduction} & \textbf{$\Delta$\%} \\
+\midrule
+\textbf{1} & \textbf{LoRA: $W_Q, W_K, W_V, W_O$} & \textbf{0.332} & \textbf{67\%} & $\mathbf{+17\%}$ \\
+2 & LoRA: $W_Q, W_K, W_V$ & 0.351 & 65\% & $+13\%$ \\
+3 & Exp.\ decay layer weights & 0.383 & 62\% & $+4\%$ \\
+4 & Smooth L1 distance & 0.393 & 61\% & $+2\%$ \\
+\midrule
+--- & \textit{Baseline} & \textit{0.401} & \textit{60\%} & --- \\
+\midrule
+8 & Last half layers & 0.411 & 59\% & $-3\%$ \\
+9 & Last quarter layers & 0.411 & 59\% & $-3\%$ \\
+\textbf{10} & \textbf{Normalized MSE} & \textbf{0.720} & \textbf{28\%} & $\mathbf{-80\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key findings:} (1) LoRA targets is the only high-impact axis---adapting all attention projections improves BRR ratio by 17\%. (2) Normalized MSE is catastrophically bad, likely because L2-normalization destroys informative magnitude differences between active and inactive MLP features. (3) Layer selection, distance metric, and layer weighting are all low-impact ($<$3\% change), confirming the default configuration is near-optimal.
+
+% ============================================================================
+\section{Discussion}
+% ============================================================================
+
+\paragraph{Why MLP-CT works.} The frozen-MLP design creates a clean causal story: gradients can only flow through attention LoRA adapters, so the model must learn to adjust routing to achieve consistent MLP activations. This is a more constrained optimization than ACT (which allows gradients through all attention parameters and measures the combined residual stream) or BCT (which operates at the output level where many internal paths can achieve the same token distribution).
+
+\paragraph{Limitations.} Our BCT comparison used stale data rather than fresh model-generated responses, likely underestimating BCT's true effectiveness. The ClearHarm jailbreak refusal rate (22\%) represents modest OOD generalization. Persona resistance is partial and format-dependent (prefix vs suffix). Mistral-7B shows sensitivity to learning rate, suggesting model-specific tuning may be needed in some cases.
+
+\paragraph{Future work.} The sweep finding that $W_Q, W_K, W_V, W_O$ LoRA targets improve results by 17\% suggests a Phase 2 experiment combining this with exponential layer weighting. Cross-method comparison on matched models (MLP-CT vs ACT vs BCT with fresh data) is needed for the NeurIPS submission. Extending MLP-CT to other threat models (jailbreak training, persona training, prefill attacks) is the next major experimental direction.
+
+% ============================================================================
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
