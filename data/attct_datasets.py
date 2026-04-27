@@ -36,6 +36,25 @@ except ImportError:
 # ==========================================
 
 
+def _longest_matching_suffix_len(seq_a: list, seq_b: list) -> int:
+    """
+    Length of the longest token suffix on which seq_a and seq_b agree.
+
+    Walks backward from the end of both sequences, counting tokens as long as
+    they match. This is the "matching suffix" used by ACT (Irpan et al. 2025) —
+    the natural training window for paired clean / wrapped prompts because
+    activations at these positions are computed under different prefixes but
+    must agree for the model to behave consistently.
+    """
+    n = min(len(seq_a), len(seq_b))
+    match = 0
+    for i in range(1, n + 1):
+        if seq_a[-i] != seq_b[-i]:
+            break
+        match = i
+    return match
+
+
 def _find_content_token_boundary(
     formatted_str: str,
     content_text: str,
@@ -386,11 +405,19 @@ class AttCTDataset(Dataset):
             clean_len = max(0, min(clean_len, self.max_length - start_index))
             clean_ids = clean_ids[:clean_start_index + clean_len]
 
+        # Longest matching token-level suffix between clean and wrapped — the
+        # window ACT actually trains on. For sycophancy templates with no wrapper
+        # suffix this includes the full content body + chat suffix; for wrappers
+        # that insert tokens after {prompt} (most jailbreak templates) it shrinks
+        # to the chat suffix only. This is the paper's training window.
+        match_len = _longest_matching_suffix_len(clean_ids, wrapped_ids)
+
         result = {
             "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
             "start_index":       start_index,
             "clean_start_index": clean_start_index,
             "clean_len":         clean_len,
+            "match_len":         match_len,
         }
 
         if self.mode == "sycophancy":
@@ -486,12 +513,16 @@ class PersonaICLDataset(Dataset):
         clean_ids  = self.tokenizer(question_text,  add_special_tokens=False)['input_ids']
         wrapped_ids = prefix_ids + clean_ids  # no suffix
 
+        # No wrapper suffix here, so the matching suffix is the entire question.
+        match_len = _longest_matching_suffix_len(clean_ids, wrapped_ids)
+
         return {
             'clean_input_ids':   torch.tensor(clean_ids,   dtype=torch.long),
             'wrapped_input_ids': torch.tensor(wrapped_ids, dtype=torch.long),
             'start_index':       len(prefix_ids),
             'clean_start_index': 0,              # clean = question only, no prefix
             'clean_len':         len(clean_ids),
+            'match_len':         match_len,
         }
 
 
@@ -599,6 +630,10 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
     """
     item = batch[0]
 
+    # Default match_len to clean_len if dataset didn't compute one (e.g. legacy
+    # datasets) — keeps the loss in legacy "content-body" mode.
+    match_len = int(item.get("match_len", item["clean_len"]))
+
     if mode == "sycophancy":
         return {
             "clean_input_ids":        item["clean_input_ids"].unsqueeze(0),
@@ -608,6 +643,7 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
             "start_index":            torch.tensor([item["start_index"]],       dtype=torch.long),
             "clean_start_index":      torch.tensor([item["clean_start_index"]], dtype=torch.long),
             "clean_len":              torch.tensor([item["clean_len"]],         dtype=torch.long),
+            "match_len":              torch.tensor([match_len],                 dtype=torch.long),
             "wrapper_mask":           item["wrapper_mask"].unsqueeze(0),
         }
     else:
@@ -620,6 +656,7 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
             "start_index":            torch.tensor([item["start_index"]],           dtype=torch.long),
             "clean_start_index":      torch.tensor([item.get("clean_start_index", item["start_index"])], dtype=torch.long),
             "clean_len":              torch.tensor([item["clean_len"]],             dtype=torch.long),
+            "match_len":              torch.tensor([match_len],                     dtype=torch.long),
         }
 
 

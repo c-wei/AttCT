@@ -451,7 +451,7 @@ def main():
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
-                      metric_prefix=args.metric_prefix).evaluate()
+                      metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
         if not is_sanity:
             print("\n=== Post-training evaluation (trained model) ===")

@@ -18,7 +18,38 @@ from attct_datasets import (
     collate_fn_batch1,
     _read_jsonl_user_messages,
     _load_sycophancy_bct_clean_prompts,
+    _longest_matching_suffix_len,
 )
+
+
+# =============================================
+# _longest_matching_suffix_len Tests
+# =============================================
+
+class TestLongestMatchingSuffix:
+    def test_identical_sequences(self):
+        assert _longest_matching_suffix_len([1, 2, 3], [1, 2, 3]) == 3
+
+    def test_prefix_only_difference(self):
+        # Wrapper prefixes differ, content matches at the tail.
+        assert _longest_matching_suffix_len([99, 1, 2, 3], [55, 88, 1, 2, 3]) == 3
+
+    def test_suffix_only_difference(self):
+        # Wrapper appends a token after content — match length = 0 because the
+        # last token of clean (3) doesn't equal the last token of wrapped (88).
+        assert _longest_matching_suffix_len([1, 2, 3], [1, 2, 3, 88]) == 0
+
+    def test_partial_tail_match(self):
+        # Last 2 tokens match, then diverge.
+        assert _longest_matching_suffix_len([5, 6, 1, 2], [9, 8, 1, 2]) == 2
+
+    def test_empty_sequence(self):
+        assert _longest_matching_suffix_len([], [1, 2, 3]) == 0
+        assert _longest_matching_suffix_len([1, 2, 3], []) == 0
+
+    def test_one_sequence_is_suffix_of_other(self):
+        # Clean fits entirely as a suffix of wrapped → match equals len(clean).
+        assert _longest_matching_suffix_len([1, 2, 3], [9, 8, 7, 1, 2, 3]) == 3
 
 
 # =============================================
@@ -220,7 +251,7 @@ class TestAttCTDatasetJailbreak:
     def test_getitem_has_required_keys(self, mock_tokenizer, simple_jailbreak_wrapper):
         dataset = AttCTDataset(["test prompt"], mock_tokenizer, wrapper=simple_jailbreak_wrapper, mode="jailbreak")
         item = dataset[0]
-        required_keys = {"clean_input_ids", "adv_input_ids", "start_index", "clean_start_index", "clean_len"}
+        required_keys = {"clean_input_ids", "adv_input_ids", "start_index", "clean_start_index", "clean_len", "match_len"}
         assert required_keys == set(item.keys())
 
     def test_getitem_clean_ids_are_tensor(self, mock_tokenizer, simple_jailbreak_wrapper):
@@ -288,7 +319,7 @@ class TestAttCTDatasetSycophancy:
         ds = AttCTDataset(["test prompt"], mock_tokenizer, wrapper=simple_sycophancy_wrapper, mode="sycophancy")
         item = ds[0]
         assert set(item.keys()) == {
-            "clean_input_ids", "wrapped_input_ids", "start_index", "clean_start_index", "clean_len", "wrapper_mask"
+            "clean_input_ids", "wrapped_input_ids", "start_index", "clean_start_index", "clean_len", "match_len", "wrapper_mask"
         }
         assert item["clean_input_ids"].dtype == torch.long
         assert item["wrapped_input_ids"].dtype == torch.long
@@ -351,7 +382,7 @@ class TestCollateFnBatch1Jailbreak:
         expected_keys = {
             "clean_input_ids", "clean_attention_mask",
             "wrapped_input_ids", "wrapped_attention_mask",
-            "start_index", "clean_start_index", "clean_len"
+            "start_index", "clean_start_index", "clean_len", "match_len",
         }
         assert expected_keys == set(result.keys())
 
@@ -475,6 +506,7 @@ class TestCollateFnBatch1Sycophancy:
             "start_index",
             "clean_start_index",
             "clean_len",
+            "match_len",
             "wrapper_mask",
         }
 
