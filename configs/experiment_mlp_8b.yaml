@@ -1,0 +1,35 @@
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  output_attentions: false
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 0.000003
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 10
+  save_dir: checkpoints/mlp_ct_llama31_8b
+
+loss:
+  name: "MLPConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    variant: "hidden"
+    layer_selection: "all"
+    layer_weights: "uniform"
+    distance_metric: "cosine"
+    normalize: false
+
+data:
+  mode: "sycophancy"
+  batch_size: 1
+  max_length: 512
