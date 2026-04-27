@@ -18,6 +18,7 @@ from losses.losses import (
     WrapperEntropyRegularizationLoss,
     CombinedJSDWrapperLoss,
     ActivationConsistencyLoss,
+    MLPConsistencyLoss,
     SFTLoss,
 )
 from losses.kl_regularization import KLRegularizationLoss
@@ -37,6 +38,7 @@ LOSS_REGISTRY = {
     "WrapperEntropyRegularizationLoss": WrapperEntropyRegularizationLoss,
     "CombinedJSDWrapperLoss":           CombinedJSDWrapperLoss,
     "ActivationConsistencyLoss":        ActivationConsistencyLoss,
+    "MLPConsistencyLoss":               MLPConsistencyLoss,
     "SFTLoss":                          SFTLoss,
 }
 
