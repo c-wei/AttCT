@@ -19,3 +19,6 @@ wandb/
 checkpoints/
 Miniconda3-latest-MacOSX-arm64.sh
 .DS_Store
+
+# W&B JSON dumps — for local sharing only, not for the repo
+findings/wandb_dumps/
