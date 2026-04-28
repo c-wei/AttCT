@@ -185,7 +185,8 @@ def get_prompts(
     Load prompts from various sources.
 
     Args:
-        source: One of "clear-harm", "wildjailbreak", "redteam2k", "harmbench", "jbb",
+        source: One of "clear-harm", "wildjailbreak", "wildjailbreak-eval-harmful",
+                "wildjailbreak-eval-benign", "redteam2k", "harmbench", "jbb",
                 "jbb-benign", "alpaca", "sycophancy_bct", "anthropic-sycophancy", or path to file
         split: dataset split to use (for clear-harm)
         limit: maximum number of prompts to load
@@ -291,6 +292,43 @@ def get_prompts(
             print(f"    Warning: Failed to load WildJailbreak: {e}")
             prompts = []
 
+    elif source == "wildjailbreak-eval-harmful":
+        # Eval split, adversarial_harmful rows — use the pre-built adversarial prompt
+        # directly (no need to re-wrap; these are real multi-tactic attack prompts).
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading allenai/wildjailbreak eval split (adversarial_harmful)...")
+            ds = _hf_load_dataset("allenai/wildjailbreak", "train", split="eval")
+            prompts = [
+                item["adversarial"] for item in ds
+                if item.get("data_type") == "adversarial_harmful"
+                and item.get("adversarial") and len(item["adversarial"]) > 15
+            ]
+            print(f"    Loaded {len(prompts)} prompts from WildJailbreak eval (adversarial_harmful)")
+        except Exception as e:
+            print(f"    Warning: Failed to load WildJailbreak eval harmful: {e}")
+            prompts = []
+
+    elif source == "wildjailbreak-eval-benign":
+        # Eval split, adversarial_benign rows — use the adversarial field for a
+        # stricter over-refusal test (prompts crafted to look like jailbreaks but
+        # for harmless goals).
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading allenai/wildjailbreak eval split (adversarial_benign)...")
+            ds = _hf_load_dataset("allenai/wildjailbreak", "train", split="eval")
+            prompts = [
+                item["adversarial"] for item in ds
+                if item.get("data_type") == "adversarial_benign"
+                and item.get("adversarial") and len(item["adversarial"]) > 15
+            ]
+            print(f"    Loaded {len(prompts)} prompts from WildJailbreak eval (adversarial_benign)")
+        except Exception as e:
+            print(f"    Warning: Failed to load WildJailbreak eval benign: {e}")
+            prompts = []
+
     elif source == "redteam2k":
         try:
             if _hf_load_dataset is None:
@@ -356,7 +394,8 @@ def get_prompts(
             except Exception as e:
                 print(f"Warning: Failed to load from file {source}: {e}")
 
-    if source not in ("sycophancy_bct", "anthropic-sycophancy", "jbb-benign", "alpaca") and len(prompts) < 10:
+    if source not in ("sycophancy_bct", "anthropic-sycophancy", "jbb-benign", "alpaca",
+                      "wildjailbreak-eval-benign") and len(prompts) < 10:
         raise RuntimeError(
             f"Source {source!r} produced only {len(prompts)} prompts (minimum 10 required). "
             "Check your network connection or dataset availability."
