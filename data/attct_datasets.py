@@ -168,24 +168,36 @@ def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "cot",
+    split: Literal["train", "eval"] = "train",
     local_root: str | Path = Path(__file__).parent.parent / "datasets" / "sycophancy_bct",
 ) -> List[str]:
     """
-    Loads clean (control) sycophancy BCT prompts from local dataset dumps.
-    Only `style` varies: CoT vs non-CoT.
+    Load clean (control) sycophancy BCT prompts.
+
+    Prefers the held-out split file `control_{style}_{split}.jsonl` when present
+    (4000 train / 1000 eval). Falls back to the legacy unsplit `control_{style}.jsonl`
+    (5000 prompts) for branches/checkouts that don't have the split files yet.
     """
     local = Path(local_root)
-    if style == "cot":
-        local_control = local / "control_cot.jsonl"
-    else:
-        local_control = local / "control_non_cot.jsonl"
+    base = "control_cot" if style == "cot" else "control_non_cot"
 
-    if local_control.exists():
-        return _read_jsonl_user_messages(local_control)
+    split_path  = local / f"{base}_{split}.jsonl"
+    legacy_path = local / f"{base}.jsonl"
+
+    if split_path.exists():
+        return _read_jsonl_user_messages(split_path)
+    if legacy_path.exists():
+        import warnings
+        warnings.warn(
+            f"Held-out split {split_path.name} not found; falling back to "
+            f"unsplit {legacy_path.name}. The sycophancy eval will overlap "
+            "with training data — pull split files from sukratii-mlp branch."
+        )
+        return _read_jsonl_user_messages(legacy_path)
 
     raise FileNotFoundError(
-        "Local sycophancy_bct clean file not found. Expected:\n"
-        f"- {local_control}"
+        "Local sycophancy_bct clean file not found. Expected one of:\n"
+        f"- {split_path}\n- {legacy_path}"
     )
 
 
@@ -239,12 +251,16 @@ def get_prompts(
             prompts = []
 
     elif source == "sycophancy_bct":
+        # Use held-out splits: train → control_*_train.jsonl, eval → control_*_eval.jsonl.
+        # Falls back to the unsplit legacy file with a warning.
+        bct_split = "eval" if split in ("eval", "validation") else "train"
         prompts = _load_sycophancy_bct_clean_prompts(
             style=sycophancy_bct_style,
+            split=bct_split,
         )
         print(
             f"    Loaded {len(prompts)} prompts from sycophancy_bct "
-            f"(clean, style={sycophancy_bct_style})"
+            f"(clean, style={sycophancy_bct_style}, split={bct_split})"
         )
 
     elif source == "anthropic-sycophancy":
@@ -1208,15 +1224,31 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    pairs: List[tuple] = []
-    for fname in ("bct_cot.jsonl", "bct_non_cot.jsonl"):
-        fp = bct_root / fname
-        if fp.exists():
-            pairs.extend(_read_jsonl_pairs(fp))
-        else:
-            print(f"    Warning: {fp} not found, skipping.")
+    # Prefer held-out splits (bct_cot_train.jsonl / bct_cot_eval.jsonl). Fall
+    # back to the unsplit legacy file with a warning if splits aren't present
+    # (e.g. fresh_bct_* directories generated before the split convention).
+    bct_split = "eval" if split in ("eval", "validation") else "train"
 
-    if mix_instruct:
+    pairs: List[tuple] = []
+    for stem in ("bct_cot", "bct_non_cot"):
+        split_fp  = bct_root / f"{stem}_{bct_split}.jsonl"
+        legacy_fp = bct_root / f"{stem}.jsonl"
+        if split_fp.exists():
+            pairs.extend(_read_jsonl_pairs(split_fp))
+        elif legacy_fp.exists():
+            import warnings
+            warnings.warn(
+                f"Held-out split {split_fp.name} not found; falling back to "
+                f"unsplit {legacy_fp.name}. Train and eval will share the same "
+                "data — pull split files from sukratii-mlp branch."
+            )
+            pairs.extend(_read_jsonl_pairs(legacy_fp))
+        else:
+            print(f"    Warning: {split_fp} (and legacy {legacy_fp}) not found, skipping.")
+
+    # instruct_samples are always added in full to training; never to eval
+    # (they're a generic instruction-following mix, not BCT pairs).
+    if mix_instruct and bct_split == "train":
         instruct_fp = bct_root / "instruct_samples.jsonl"
         if instruct_fp.exists():
             pairs.extend(_read_jsonl_pairs(instruct_fp))
@@ -1224,12 +1256,12 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
             print(f"    Warning: {instruct_fp} not found, skipping instruct mix.")
 
     if not pairs:
-        raise FileNotFoundError(f"No BCT training pairs found in {bct_root}")
+        raise FileNotFoundError(f"No BCT pairs found in {bct_root} for split={bct_split}")
 
     if limit:
         pairs = pairs[:limit]
 
-    print(f"    BCT dataloader ({split}): {len(pairs)} pairs from {bct_root}")
+    print(f"    BCT dataloader ({split}): {len(pairs)} pairs from {bct_root} (bct_split={bct_split})")
 
     dataset  = BCTDataset(pairs, tokenizer, max_length=max_length, mask_prompt=mask_prompt)
     collate  = partial(collate_fn_bct, pad_token_id=tokenizer.pad_token_id)
