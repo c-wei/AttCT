@@ -27,7 +27,11 @@ lora:
 
 loss:
   name: "ActivationConsistencyLoss"
-  weight: 0.0001               # 1e-4, as in the paper
+  # 5e-5 (half the paper recipe). The 1e-4 setting blew up on Gemma-3-4B at
+  # step 3500/4000 — layer losses reached the thousands and training crashed.
+  # Llama-3.1-8B trained cleanly at 1e-4 (final layer_max ≈ 0.4), but Gemma's
+  # residual stream amplifies LoRA drift faster, so we halve the weight.
+  weight: 0.00005
   kwargs:
     layer_selection: "all"     # all transformer layers; embedding skipped
     normalize: false
