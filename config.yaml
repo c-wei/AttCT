@@ -12,7 +12,10 @@ lora:
 
 training:
   epochs: 1
-  max_steps: 500
+  # max_steps: null — let the per-source cap below or the explicit per-config
+  # override decide. The previous global default of 500 silently truncated
+  # full-epoch ACT/BCT runs when configs forgot to override it.
+  max_steps: null
   learning_rate: 0.000005
   grad_clip: 1.0
   log_every_n_steps: 10

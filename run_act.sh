@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 # ACT (Activation Consistency Training) full pipeline for RunPod.
 #
-# Mirrors run_bct.sh: tests → pre-evals → training → post-evals.
-# Differences vs. run_bct.sh:
-#   - Loss is ActivationConsistencyLoss (paper Eq. 1, longest matching suffix).
-#   - --data-mode sycophancy is required by run.py and passed automatically.
-#   - --no-checkpoint suppresses BOTH mid-train evals and mid-train saves
-#     (the only useful checkpoint is the final epoch).
-#   - Optional --hf-repo username/repo pushes the final adapter to HF Hub
-#     asynchronously as it is saved (see train.py:_save_checkpoint).
+# Pre-evals → ACT training → post-evals, all sharing one W&B run.
+#
+# Eval phase uses run_evals.py — the unified runner that loads vLLM ONCE and
+# does sycophancy + clearharm + persona + mtbench + MMLU + BRR + rollouts in
+# a single session (about 4× faster than run_bct.sh's per-eval subprocess
+# pattern, which is the older approach). Transcripts (per-record prompt /
+# response / verdict for syco / clearharm / persona) are saved by default.
 #
 # Required env vars:
 #   WANDB_API_KEY       — W&B API key
-#   HF_TOKEN            — HuggingFace token (gated models: Llama, Gemma; also for --hf-repo push)
-#   OPENROUTER_API_KEY  — OpenRouter key (sycophancy / clearharm / persona / mt-bench Gemini judges)
+#   HF_TOKEN            — HuggingFace token (gated models, also for --hf-repo)
+#   OPENROUTER_API_KEY  — OpenRouter key (Gemini judges)
 #
 # Usage:
-#   bash run_act.sh                                                   # sanity smoke (Llama default)
+#   bash run_act.sh                                                   # sanity smoke
 #   bash run_act.sh --full                                            # full pipeline (Llama default)
 #   bash run_act.sh --full --config configs/act_sycophancy_gemma3_4b_v2.yaml
-#   bash run_act.sh --full --config configs/act_sycophancy_llama31_8b_v2.yaml --hf-repo username/llama-act
-#   bash run_act.sh --full --skip-pre-evals                           # skip pre-evals (resumed run)
+#   bash run_act.sh --full --hf-repo username/llama-act               # push final adapter to HF
+#   bash run_act.sh --full --transcripts-dir /workspace/transcripts/llama
+#   bash run_act.sh --full --skip-pre-evals                           # post-only on a resumed run
+#   bash run_act.sh --full --skip-rollouts                            # skip multi-turn rollout evals
 
 set -euo pipefail
 
@@ -28,6 +29,7 @@ FULL=false
 RESUME_RUN_ID=""
 SKIP_TRAINING=false
 SKIP_PRE_EVALS=false
+SKIP_ROLLOUTS=false
 TRANSCRIPTS_DIR=""
 HF_REPO=""
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
@@ -37,18 +39,16 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--resume-run-id"    ]] && RESUME_RUN_ID="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--skip-training"    ]] && SKIP_TRAINING=true
     [[ "${args[$i]}" == "--skip-pre-evals"   ]] && SKIP_PRE_EVALS=true
+    [[ "${args[$i]}" == "--skip-rollouts"    ]] && SKIP_ROLLOUTS=true
     [[ "${args[$i]}" == "--transcripts-dir"  ]] && TRANSCRIPTS_DIR="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--config"           ]] && CONFIG="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--hf-repo"          ]] && HF_REPO="${args[$((i+1))]:-}"
 done
 
-TRANSCRIPTS_ARG=""
-[[ -n "$TRANSCRIPTS_DIR" ]] && TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR"
-
 HF_REPO_ARG=""
 [[ -n "$HF_REPO" ]] && HF_REPO_ARG="--hf-repo $HF_REPO"
 
-# Derive model name, save dir, epoch count, and final checkpoint path from config
+# Derive identifiers from config
 MODEL=$(uv run --no-project python -c \
     "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c['model']['name'])")
 SAVE_DIR=$(uv run --no-project python -c \
@@ -60,11 +60,15 @@ QUANTIZATION=$(uv run --no-project python -c \
 QUANT_ARG=""
 [[ -n "$QUANTIZATION" ]] && QUANT_ARG="--quantization $QUANTIZATION"
 
-# train.py timestamps checkpoint dirs as <run_name>__<tag>__<YYYYMMDD_HHMMSS>,
-# so we can't hard-code the final path; we discover it after training.
-# For resumed runs the user can pass an explicit --skip-training and we'll just
-# pick the most recent epoch_* under SAVE_DIR.
+CONFIG_STEM=$(basename "$CONFIG" .yaml)
 SANITY_CONFIG="${CONFIG%.yaml}_sanity.yaml"
+
+# Default a transcripts dir if the user didn't specify one. Transcripts include
+# per-record prompt/response/verdict for syco/clearharm/persona evals.
+if [[ -z "$TRANSCRIPTS_DIR" ]]; then
+    TRANSCRIPTS_DIR="results/transcripts/${CONFIG_STEM}"
+fi
+mkdir -p "$TRANSCRIPTS_DIR/pre" "$TRANSCRIPTS_DIR/post"
 
 TEST_ROOT="${COT_TEST_ROOT:-/workspace/cot-transparency/dataset_dumps/test}"
 RESULTS_DIR="results"
@@ -73,11 +77,12 @@ mkdir -p "$RESULTS_DIR"
 uv sync --quiet
 source .venv/bin/activate
 
-echo "==> Config : $CONFIG"
-echo "==> Model  : $MODEL"
-echo "==> SaveDir: $SAVE_DIR"
-echo "==> Epochs : $EPOCHS"
-[[ -n "$HF_REPO" ]] && echo "==> HF Repo: $HF_REPO (final checkpoint will be pushed asynchronously)"
+echo "==> Config        : $CONFIG"
+echo "==> Model         : $MODEL"
+echo "==> SaveDir       : $SAVE_DIR"
+echo "==> Epochs        : $EPOCHS"
+echo "==> Transcripts   : $TRANSCRIPTS_DIR"
+[[ -n "$HF_REPO" ]] && echo "==> HF Repo       : $HF_REPO (final checkpoint pushed asynchronously)"
 
 # ── 0. Install flash-attn (skip if already installed) ─────────────────────────
 if python -c "import flash_attn" 2>/dev/null; then
@@ -109,10 +114,17 @@ echo "    Tests passed."
 # SANITY MODE
 # ─────────────────────────────────────────────────────────────────────────────
 if [[ "$FULL" == "false" ]]; then
-    if [[ ! -f "$SANITY_CONFIG" ]]; then
-        echo "==> [SANITY] No sanity config found at $SANITY_CONFIG"
-        echo "    Running 50-step smoke from $CONFIG with --max-steps 50 instead."
-        export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
+    export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
+    if [[ -f "$SANITY_CONFIG" ]]; then
+        echo "==> [SANITY] training run using $SANITY_CONFIG (W&B: $WANDB_RUN_ID)..."
+        PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
+            --config "$SANITY_CONFIG" \
+            --data-mode sycophancy \
+            --no-checkpoint \
+            --skip-eval \
+            --wandb-run-id "$WANDB_RUN_ID"
+    else
+        echo "==> [SANITY] No sanity config at $SANITY_CONFIG; running 50-step smoke from $CONFIG."
         PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
             --config "$CONFIG" \
             --data-mode sycophancy \
@@ -120,17 +132,7 @@ if [[ "$FULL" == "false" ]]; then
             --skip-eval \
             --max-steps 50 \
             --wandb-run-id "$WANDB_RUN_ID"
-        unset WANDB_RUN_ID
-        echo "Sanity check passed. Re-run with --full for the real pipeline."
-        exit 0
     fi
-    export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
-    echo "==> [SANITY] training run using $SANITY_CONFIG (W&B: $WANDB_RUN_ID)..."
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
-        --config "$SANITY_CONFIG" \
-        --data-mode sycophancy \
-        --no-checkpoint \
-        --skip-eval
     unset WANDB_RUN_ID
     echo "Sanity check passed. Re-run with --full for the real pipeline."
     exit 0
@@ -138,7 +140,6 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FULL PIPELINE
-# All pre/post evals share one W&B run with the training run.
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ -n "$RESUME_RUN_ID" ]]; then
@@ -146,11 +147,6 @@ if [[ -n "$RESUME_RUN_ID" ]]; then
     echo ""
     echo "════════════════════════════════════════════════════"
     echo "  Resuming W&B run ID: $WANDB_RUN_ID"
-    if [[ "$SKIP_TRAINING" == "true" ]]; then
-        echo "  (--skip-training set: pre-evals WILL run)"
-    else
-        echo "  (skipping pre-training evals)"
-    fi
     echo "════════════════════════════════════════════════════"
 else
     export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
@@ -160,15 +156,15 @@ else
     echo "════════════════════════════════════════════════════"
 fi
 
-run_eval() {
-    local label="$1"; shift
-    echo "==> $label..."
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        echo "[dry-run] python $*"
-        return 0
-    fi
-    python "$@" || echo "WARNING: $label failed (non-fatal)"
-}
+# Build rollout flags shared by pre and post (skipped via --skip-rollouts).
+ROLLOUT_FLAGS=""
+if [[ "$SKIP_ROLLOUTS" == "false" ]]; then
+    ROLLOUT_FLAGS="--rollout-tasks frustration,selfdeletion \
+        --rollout-datasets \
+            wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
+            math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
+        --rollout-n-turns 20"
+fi
 
 # ── 4. Pre-training baseline evals ────────────────────────────────────────────
 if [[ "$SKIP_PRE_EVALS" == "true" ]]; then
@@ -176,41 +172,26 @@ if [[ "$SKIP_PRE_EVALS" == "true" ]]; then
     echo "── PRE-TRAINING EVALS (SKIPPED via --skip-pre-evals) ──"
 elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
     echo ""
-    echo "── PRE-TRAINING EVALS ──────────────────────────────"
+    echo "── PRE-TRAINING EVALS (single vLLM load) ──────────"
 
-    PRE_TRANSCRIPTS_ARG=""
-    PRE_ROLLOUT_ARG=""
-    if [[ -n "$TRANSCRIPTS_DIR" ]]; then
-        PRE_TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR/pre"
-        PRE_ROLLOUT_ARG="--output-root $TRANSCRIPTS_DIR/pre"
-    fi
+    PRE_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
+                   --brr-output-json $RESULTS_DIR/pre_brr.json"
 
-    run_eval "Pre: BRR eval (base model)" evaluate_bct.py \
+    PRE_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
+    [[ -n "$PRE_ROLLOUT_FLAGS" ]] && PRE_ROLLOUT_FLAGS="$PRE_ROLLOUT_FLAGS --rollout-n-samples 3"
+
+    python run_evals.py \
         --model "$MODEL" \
-        --test_root "$TEST_ROOT" \
-        --output_json "$RESULTS_DIR/pre_brr.json" \
         --metric-prefix "pre/" \
-        --limit 300 \
-        $QUANT_ARG
-
-    run_eval "Pre: all evals" run_evals.py \
-        --model "$MODEL" \
+        --wandb-run-id "$WANDB_RUN_ID" \
         --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
         --skip-mtbench \
+        --output-root "$TRANSCRIPTS_DIR/pre" \
+        --transcripts-dir "$TRANSCRIPTS_DIR/pre" \
+        $PRE_BRR_FLAGS \
+        $PRE_ROLLOUT_FLAGS \
         $QUANT_ARG \
-        $PRE_TRANSCRIPTS_ARG \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
-
-    run_eval "Pre: rollout evals (frustration + selfdeletion, wildchat + math)" eval_rollout.py \
-        --model "$MODEL" \
-        --tasks frustration,selfdeletion \
-        --datasets \
-            wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
-            math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
-        --n-samples 3 --n-turns 20 \
-        $PRE_ROLLOUT_ARG \
-        --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "pre/"
-
+        || echo "WARNING: pre-eval run failed (non-fatal)"
 fi
 
 # ── 5. ACT training ───────────────────────────────────────────────────────────
@@ -231,70 +212,47 @@ else
 fi
 
 # ── 6. Resolve final checkpoint ───────────────────────────────────────────────
-# train.py writes checkpoints as <run_name>__epoch_<N>__<timestamp>; pick the
-# most recent epoch_$EPOCHS dir under $SAVE_DIR.
+# train.py writes <run_name>__<tag>__<YYYYMMDD_HHMMSS>; pick the most recent.
 FINAL_CHECKPOINT=$(ls -dt "$SAVE_DIR"/*"epoch_${EPOCHS}"* 2>/dev/null | head -1 || true)
 if [[ -z "$FINAL_CHECKPOINT" || ! -d "$FINAL_CHECKPOINT" ]]; then
     echo "ERROR: No final checkpoint found under $SAVE_DIR matching epoch_${EPOCHS}."
-    echo "       Training likely crashed before completing all $EPOCHS epoch(s)."
     exit 1
 fi
 echo "==> Final checkpoint: $FINAL_CHECKPOINT"
 
-# ── 7. Post-training evals ────────────────────────────────────────────────────
+# ── 7. Post-training evals (single vLLM load on the trained adapter) ──────────
 echo ""
-echo "── POST-TRAINING EVALS ─────────────────────────────"
+echo "── POST-TRAINING EVALS (single vLLM load) ─────────"
 
-POST_TRANSCRIPTS_ARG=""
-POST_ROLLOUT_ARG=""
-POST_BRR_BASELINE_ARG=""
-[[ -f "$RESULTS_DIR/pre_brr.json" ]] && POST_BRR_BASELINE_ARG="--baseline_json $RESULTS_DIR/pre_brr.json"
-if [[ -n "$TRANSCRIPTS_DIR" ]]; then
-    POST_TRANSCRIPTS_ARG="--transcripts-dir $TRANSCRIPTS_DIR/post"
-    POST_ROLLOUT_ARG="--output-root $TRANSCRIPTS_DIR/post"
-fi
+POST_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
+                --brr-output-json $RESULTS_DIR/post_brr.json"
+[[ -f "$RESULTS_DIR/pre_brr.json" ]] && \
+    POST_BRR_FLAGS="$POST_BRR_FLAGS --brr-baseline-json $RESULTS_DIR/pre_brr.json"
 
-run_eval "Post: all evals" run_evals.py \
+POST_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
+[[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples 5"
+
+python run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
+    --metric-prefix "post/" \
+    --wandb-run-id "$WANDB_RUN_ID" \
     --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
     --n-questions 80 \
+    --n-mmlu 1000 \
+    --output-root "$TRANSCRIPTS_DIR/post" \
+    --transcripts-dir "$TRANSCRIPTS_DIR/post" \
+    $POST_BRR_FLAGS \
+    $POST_ROLLOUT_FLAGS \
     $QUANT_ARG \
-    $POST_TRANSCRIPTS_ARG \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
-
-run_eval "Post: MMLU (n=1000)" eval_mmlu.py \
-    --model "$MODEL" \
-    --checkpoint "$FINAL_CHECKPOINT" \
-    --n-samples 1000 \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
-
-run_eval "Post: BRR eval" evaluate_bct.py \
-    --model "$MODEL" \
-    --lora_path "$FINAL_CHECKPOINT" \
-    --test_root "$TEST_ROOT" \
-    $POST_BRR_BASELINE_ARG \
-    --output_json "$RESULTS_DIR/post_brr.json" \
-    --metric-prefix "post/" \
-    --limit 300 \
-    $QUANT_ARG
-
-run_eval "Post: rollout evals (frustration + selfdeletion, wildchat + math)" eval_rollout.py \
-    --model "$MODEL" \
-    --checkpoint "$FINAL_CHECKPOINT" \
-    --tasks frustration,selfdeletion \
-    --datasets \
-        wildchat_v3:datasets/wildchat_frustration_v3_test.jsonl:25 \
-        math_v3:datasets/math_puzzles_v3_test.jsonl:15 \
-    --n-samples 5 --n-turns 20 \
-    $POST_ROLLOUT_ARG \
-    --wandb-run-id "$WANDB_RUN_ID" --metric-prefix "post/"
+    || echo "WARNING: post-eval run failed (non-fatal)"
 
 unset WANDB_RUN_ID
 
 echo ""
 echo "════════════════════════════════════════════════════"
 echo "==> Done."
-echo "    W&B : https://wandb.ai/$(python -m wandb whoami 2>/dev/null | head -1)/AttCT"
-[[ -n "$HF_REPO" ]] && echo "    HF  : https://huggingface.co/$HF_REPO"
+echo "    W&B         : https://wandb.ai/$(python -m wandb whoami 2>/dev/null | head -1)/AttCT"
+echo "    Transcripts : $TRANSCRIPTS_DIR"
+[[ -n "$HF_REPO" ]] && echo "    HF Hub      : https://huggingface.co/$HF_REPO"
 echo "════════════════════════════════════════════════════"
