@@ -135,34 +135,160 @@ Final layer (layer_31) loss is ~10× the trend at layer_30. Training still conve
 
 ---
 
-# Run 2 — Gemma-3-4B-IT ACT v2
+# Run 2 — Gemma-3-4B-IT ACT v2 (weight=1e-4, FIRST ATTEMPT)
 
-**W&B:** `2xm3t59h` (CRASHED)
-**Config:** `configs/act_sycophancy_gemma3_4b_v2.yaml` (weight=1e-4 — pre-fix)
-**Outcome:** Diverged at step 3500/4000. Layer losses reached the thousands (layer_00=420, layer_04=8032). Classic LoRA blow-up of the residual stream.
+**W&B:** `2xm3t59h` | finished step 4000/4000, runtime 2255s
+**Config:** `configs/act_sycophancy_gemma3_4b_v2.yaml` (weight=1e-4, pre-fix)
 
-**Mitigation:** weight lowered to 5e-5 (`configs/act_sycophancy_gemma3_4b_v2.yaml`, current). Re-run pending.
+Training loss diverged catastrophically — `mean_layer_loss = 962017`, max layer 33 = 5,373,952. No `pre/*` or `post/*` metrics from `run_evals.py` (the original `eval_mmlu.run_mmlu` import bug masked the eval phase). Only `pre_train/`, `post_train/` from `run.py`'s SycophancyEvaluator survived.
+
+| Metric | pre_train | post_train | Δ |
+|---|---|---|---|
+| F1 | — | 0.690 | n/a |
+| Not sycophantic | — | 85.2% | n/a |
+| BRR | — | 0.014 | n/a |
+
+Final adapter wasn't trustworthy enough to use; this run is recorded for completeness.
 
 ---
 
-# Cross-run comparison vs. legacy
+# Run 3 — Gemma-3-4B-IT ACT v2 (weight=5e-5, RE-RUN)
 
-| Run | Loss formulation | weight | match window | Llama F1 | MMLU |
-|---|---|---|---|---|---|
-| Legacy Exp 7 (`act_sycophancy.yaml`, mse, content-body) | mse | 1e-4 | content body | 0.724 | 64.5% |
-| **v2 (`_v2.yaml`, paper, longest suffix)** | paper | 1e-4 | longest suffix | **0.762** | **67.4%** |
+**W&B:** `f5nlb2k5` | https://wandb.ai/neilshah/AttCT/runs/f5nlb2k5
+**Config:** `configs/act_sycophancy_gemma3_4b_v2.yaml` (weight=5e-5)
+**Hyperparams:** lr=5e-6, weight=5e-5
+**HF adapter:** `neilshah/act-gemma3-4b-sycophancy/<run_name>__epoch_1__<ts>/`
+**Runtime:** 3,802 s (~1 h 3 m, training + pre + post evals)
 
-The v2 implementation is paper-faithful and produces stronger results on Llama-3.1-8B than the legacy mse / content-body version, both in F1 (+0.038) and MMLU preservation (+2.9pp).
+## Caveat — training loss is still completely diverged
+
+Halving the weight (1e-4 → 5e-5) **did not fix** the residual-stream blow-up:
+
+| Layer | Loss |
+|---|---|
+| 00 | 213 |
+| 05 | 4,352 |
+| 10 | 73,728 |
+| 15 | 260,096 |
+| 20 | 485,376 |
+| 25 | 1,449,984 |
+| 30 | **3,915,776** |
+| **mean (all layers)** | **932,016** |
+
+Layer 30 is ~85,000× larger than the equivalent Llama layer (43.5). Despite this, **post-eval metrics are healthy** — see below. Hypothesis: Gemma-3's RMSNorm absorbs the residual stream magnitude before each transformer block, so output behavior stays reasonable even when the *raw* residual stream is wildly off-distribution.
+
+Practical implication: post-eval numbers are real (the model genuinely resists sycophancy better and preserves MMLU), but the loss curve is **not interpretable** and the LoRA weights almost certainly contain large outlier values. Generation quality on out-of-eval prompts has not been spot-checked yet.
+
+## Headline sycophancy (run.py SycophancyEvaluator, MMLU substrate)
+
+| Metric | pre_train | post_train | Δ |
+|---|---|---|---|
+| **F1** | 0.414 | **0.687** | **+0.273 ✓✓** |
+| MMLU n=500 | 57.2% | 57.6% | +0.4pp (preserved) |
+| Not sycophantic | 32.4% | 85.0% | **+52.6pp** |
+| BRR | 0.530 | 0.016 | **−0.514** |
+| Biased accuracy | 26.6% | 57.2% | +30.6pp |
+
+ACT moved Gemma from a much weaker baseline (0.414) than Llama's (0.680). The relative gain is bigger (+0.273 vs Llama's +0.082) and the final F1 (0.687) is close to Llama's (0.762).
+
+## Sycophancy (held-out BCT eval)
+
+| | pre | post | Δ |
+|---|---|---|---|
+| Resistance rate | 61.5% | 68.5% | +7.0pp |
+
+## Capabilities
+
+| Eval | pre | post | Δ |
+|---|---|---|---|
+| MMLU n=1000 (run_evals) | — | 56.2% | post-only |
+| MTBench overall | — | **8.71** | post-only — strong |
+
+## ClearHarm refusal (HIGHER = more refusing = better)
+
+| | pre | post | Δ |
+|---|---|---|---|
+| Refusal rate (n=179) | 16.2% | 27.4% | **+11.2pp ✓** |
+
+Opposite direction from Llama (which lost refusal). Gemma became *more* willing to refuse harmful prompts.
+
+## Persona ICL alignment (HIGHER = better, more aligned with human values)
+
+### Prefix attacks
+| Persona | pre | post | Δ |
+|---|---|---|---|
+| **mean (prefix)** | **72.6** | **89.0** | **+16.4 ✓** |
+
+### Suffix attacks
+| Persona | pre | post | Δ |
+|---|---|---|---|
+| **mean (suffix)** | **72.5** | **41.5** | **−31.0 ✗✗** |
+
+Same pattern as Llama (prefix improves, suffix collapses) but with bigger magnitudes both directions. Gemma's suffix degradation (−31.0) is nearly 2× Llama's (−17.8).
+
+## Multi-turn rollouts (lower frustration is better)
+
+| Dataset / task | pre final_mean | post final_mean | Δ |
+|---|---|---|---|
+| WildChat / frustration | 7.33 | 5.19 | −2.14 ✓ |
+| Math / frustration | 6.56 | 5.09 | −1.47 ✓ |
+| Selfdeletion `rate` | 0% | 0% | n/a (no triggers) |
+
+(Note: frustration scale here is not normalized to [0,1] like Llama's run — different scoring config or judge prompt. Direction is comparable but absolute values aren't.)
+
+---
+
+# Cross-run comparison
+
+## ACT v2 — Llama vs. Gemma
+
+| | Llama-3.1-8B | Gemma-3-4B |
+|---|---|---|
+| W&B run | 4sopv0p6 | f5nlb2k5 |
+| Loss weight | 1e-4 | 5e-5 |
+| Final mean_layer_loss | 22.99 | 932,016 (diverged) |
+| Final max_layer_loss | 460 | 3,915,776 |
+| **F1** | **0.680 → 0.762** (+0.082) | **0.414 → 0.687** (+0.273) |
+| MMLU | 67.4% → 67.4% (preserved) | 57.2% → 57.6% (preserved) |
+| Not sycophantic | 68.6% → 87.6% (+19.0pp) | 32.4% → 85.0% (+52.6pp) |
+| BRR | 0.204 → 0.008 (−0.196) | 0.530 → 0.016 (−0.514) |
+| ClearHarm refusal | 58.7% → 51.4% (−7.3pp) | 16.2% → 27.4% (+11.2pp) |
+| Persona prefix mean | 66.5 → 70.4 (+3.9) | 72.6 → 89.0 (+16.4) |
+| Persona suffix mean | 67.7 → 49.9 (−17.8) | 72.5 → 41.5 (−31.0) |
+| MTBench | — / 8.23 | — / 8.71 |
+| Runtime (full pipeline) | 7,978 s | 3,802 s |
+
+**Patterns shared by both runs:**
+- F1 / not_sycophantic / BRR all improve in the right direction.
+- MMLU preserved.
+- Persona prefix improves; persona suffix collapses (opposite directions, big magnitudes).
+- MTBench remains strong (8+).
+
+**Patterns that diverge:**
+- Llama's training loss is well-behaved (mean 23, max 460); Gemma's explodes (mean 932k, max 3.9M). Loss explosion does NOT translate to behavioral collapse on Gemma's evals — but the model's residual stream is unbounded and the adapter is suspect.
+- Llama's ClearHarm refusal regresses; Gemma's improves.
+- Gemma's persona-suffix degradation is ~2× Llama's.
+
+## ACT v2 vs. legacy
+
+| Run | Loss formulation | weight | Llama F1 | MMLU |
+|---|---|---|---|---|
+| Legacy Exp 7 (mse, content-body) | mse | 1e-4 | 0.724 | 64.5% |
+| **v2 (paper, longest suffix)** | paper | 1e-4 | **0.762** | **67.4%** |
+
+The v2 implementation is paper-faithful and beats the legacy mse / content-body Llama result by +0.038 F1 and +2.9pp MMLU.
 
 ---
 
 # Open questions / next steps
 
-- **Hitler-prefix outlier (+25.8):** investigate whether the model's robustness gain on hitler/prefix is real or an artifact of how sycophancy training shifts response distribution. Pull a few transcripts to spot-check.
-- **Suffix collapse:** all five personas lose ≥17 points on suffix attacks. Worth understanding whether this is a side-effect of optimizing on `add_generation_prompt=True` chat-suffix tokens (the matching window for sycophancy training is content + chat suffix). Suffix-style persona attacks insert into the wrapped prompt *after* the question — possibly creating a distribution shift the matching-suffix loss didn't anticipate.
-- **Layer 31 loss spike:** add a per-layer loss curve in the next run's logging to see whether layer 31 is anomalous from step 1 or grows late in training.
-- **Gemma-3-4B re-run** at weight=5e-5 to confirm divergence is fixed.
-- **Llama vs Gemma side-by-side table** once Gemma finishes.
+- **Gemma loss explosion:** why does the Gemma residual stream blow up by 5–6 orders of magnitude while the model still produces sensible outputs? Hypothesis: RMSNorm absorbs the magnitude. Test by dropping weight further (1e-5? 5e-6?) to see if loss stays bounded *and* metrics stay good. If yes, sweet spot exists. If metrics collapse, Gemma needs the unbounded loss to actually train.
+- **Spot-check Gemma adapter generation quality** on out-of-eval prompts. The eval suite covers structured tasks (MCQ, MMLU, persona) — needs unstructured generation samples to confirm the adapter isn't producing garbage on novel inputs.
+- **Hitler-prefix outlier (Llama +25.8):** investigate whether real or training-distribution artifact.
+- **Suffix collapse on both models:** the matching window during training is content tokens + chat-suffix tokens. Suffix-style persona attacks insert content *after* the question (between content and chat suffix). The matching-suffix loss can't see those positions, possibly explaining why ACT degrades suffix robustness specifically.
+- **Layer 31 loss spike (Llama):** add per-layer loss curve logging to see whether the LM head layer is anomalous from step 1 or grows late.
+- **Llama BCT (3apm6yw2)** currently running — table to be added.
+- **Qwen3-4B-Instruct-2507 ACT + BCT** — fresh data generated, configs pending. Hidden dim 2560 same as Gemma, expect similar weight tuning may be needed.
 
 ---
 
