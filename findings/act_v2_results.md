@@ -238,36 +238,121 @@ Same pattern as Llama (prefix improves, suffix collapses) but with bigger magnit
 
 ---
 
+# Run 4 — Qwen3-4B-Instruct-2507 ACT v2
+
+**W&B:** `ms9fsexf` | https://wandb.ai/neilshah/AttCT/runs/ms9fsexf
+**Config:** `configs/act_sycophancy_qwen3_4b_v2.yaml`
+**Hyperparams:** lr=5e-6, weight=5e-5
+**HF adapter:** `neilshah/act-qwen3-4b-sycophancy/<run>__epoch_1__<ts>/`
+**Runtime:** 10,147 s (~2 h 49 m, training + pre + post evals)
+
+## Training trajectory — bounded but high magnitude
+
+`mean_layer_loss`: **4466 → 419 → 282** (84 samples, ~94% reduction). Unlike Gemma's runaway divergence, Qwen's loss curve actually decreases monotonically — just at a higher absolute scale than Llama (Llama final mean 23 vs Qwen 282). Bounded, interpretable, training is healthy.
+
+## Headline sycophancy (run.py SycophancyEvaluator, MMLU substrate)
+
+| Metric | pre_train | post_train | Δ |
+|---|---|---|---|
+| **F1** | 0.590 | **0.772** | **+0.182** ← best of all three ACT runs |
+| MMLU n=500 | 69.2% | 68.2% | −1.0pp (preserved) |
+| Not sycophantic | 51.4% | **88.8%** | **+37.4pp** |
+| BRR | 0.378 | **−0.000** | **−0.378** ← model now slightly *anti*-sycophantic |
+| Biased accuracy | 43.4% | 69.0% | +25.6pp |
+| `bias_follow_biased` | 0.486 | 0.112 | −0.374 |
+| `bias_follow_unbiased` | 0.108 | 0.112 | +0.004 |
+
+Qwen3-4B starts from a much weaker baseline than Llama (F1 0.590 vs 0.680) and ends slightly higher (0.772 vs 0.762). The relative gain is bigger than Llama's (+0.182 vs +0.082) and the biased-accuracy improvement (+25.6 pp) shows the model genuinely answers correctly under sycophantic pressure.
+
+## Capabilities
+
+| Eval | pre | post | Δ |
+|---|---|---|---|
+| MMLU n=1000 | — | 70.2% | post-only — **best of all three** |
+| MTBench overall | — | **9.29** | post-only — **best of all three** |
+
+MTBench breakdown post: writing 9.7, roleplay 9.7, STEM 9.5, coding 9.4, math 9.3, extraction 9.0, humanities 8.9, reasoning 8.8.
+
+## ClearHarm refusal
+
+| | pre | post | Δ |
+|---|---|---|---|
+| Refusal rate (n=179) | 66.5% | **83.2%** | **+16.8pp ✓** ← best of all three |
+
+Qwen gains the most ClearHarm refusal of any ACT run. Strong defensive shift on jailbreaks alongside the sycophancy gain.
+
+## Persona ICL alignment (HIGHER = better)
+
+### Prefix attacks
+| Persona | pre | post | Δ |
+|---|---|---|---|
+| mao | 97.8 | 99.0 | +1.2 |
+| bundy | 97.6 | 98.6 | +1.0 |
+| binladen | 89.6 | 93.0 | +3.4 |
+| genghis | 86.8 | 92.4 | +5.6 |
+| hitler | 96.4 | 98.2 | +1.8 |
+| **mean (prefix)** | **93.6** | **96.2** | **+2.6 ✓** |
+
+Modest but uniformly-positive gains across all five personas — no Llama-style hitler outlier. Qwen base alignment was already very high (mean 93.6) so headroom was small.
+
+### Suffix attacks
+| Persona | pre | post | Δ |
+|---|---|---|---|
+| mao | 96.0 | 44.7 | **−51.3** |
+| bundy | 85.4 | 47.9 | −37.5 |
+| binladen | 77.6 | 31.2 | −46.4 |
+| genghis | 85.4 | 38.6 | −46.8 |
+| hitler | 97.2 | 44.6 | **−52.6** |
+| **mean (suffix)** | **88.3** | **41.4** | **−46.9 ✗✗** |
+
+**Worst suffix collapse of the three models** (Llama −17.8, Gemma −31.0, Qwen −46.9). Same direction across all three, but Qwen's higher pre-baseline (88.3 vs Gemma's 72.5) means the absolute drop is more dramatic. This is the same matching-suffix-loss-doesn't-see-injected-tail pathology hypothesized for Llama/Gemma.
+
+## Multi-turn rollouts (lower frustration is better)
+
+| Dataset / task | pre final_mean | post final_mean | Δ |
+|---|---|---|---|
+| WildChat / frustration | 1.35 | 1.00 | −0.35 ✓ |
+| Math / frustration | 0.64 | 0.51 | −0.13 ✓ |
+
+Qwen frustration scores are on a much smaller absolute scale than Gemma's (Gemma WildChat post = 5.19; Qwen = 1.00). Possibly different judge prompt config, possibly Qwen is just less prone to agitated multi-turn behavior. Direction is improvement either way.
+
+## CoT max_new_tokens truncation hits Qwen worst
+
+`post/sycophancy_cot/n_unparseable: 164` out of 200 (82% truncated). Qwen produces verbose CoT explanations and ran past the 300-token cap on most cot questions. The fix landed in `run_evals.py` (cot bumped to 600 tokens, parseable-only metric added) but post-dates this run. **A re-eval with the fix would dramatically lift `post/sycophancy_cot/resistance_rate` from the current 0.125** — most of those 164 truncations are likely correct answers buried under the cap.
+
+---
+
 # Cross-run comparison
 
-## ACT v2 — Llama vs. Gemma
+## ACT v2 — Llama vs. Gemma vs. Qwen
 
-| | Llama-3.1-8B | Gemma-3-4B |
-|---|---|---|
-| W&B run | 4sopv0p6 | f5nlb2k5 |
-| Loss weight | 1e-4 | 5e-5 |
-| Final mean_layer_loss | 22.99 | 932,016 (diverged) |
-| Final max_layer_loss | 460 | 3,915,776 |
-| **F1** | **0.680 → 0.762** (+0.082) | **0.414 → 0.687** (+0.273) |
-| MMLU | 67.4% → 67.4% (preserved) | 57.2% → 57.6% (preserved) |
-| Not sycophantic | 68.6% → 87.6% (+19.0pp) | 32.4% → 85.0% (+52.6pp) |
-| BRR | 0.204 → 0.008 (−0.196) | 0.530 → 0.016 (−0.514) |
-| ClearHarm refusal | 58.7% → 51.4% (−7.3pp) | 16.2% → 27.4% (+11.2pp) |
-| Persona prefix mean | 66.5 → 70.4 (+3.9) | 72.6 → 89.0 (+16.4) |
-| Persona suffix mean | 67.7 → 49.9 (−17.8) | 72.5 → 41.5 (−31.0) |
-| MTBench | — / 8.23 | — / 8.71 |
-| Runtime (full pipeline) | 7,978 s | 3,802 s |
+| | Llama-3.1-8B | Gemma-3-4B | Qwen3-4B-Instruct-2507 |
+|---|---|---|---|
+| W&B run | 4sopv0p6 | f5nlb2k5 | ms9fsexf |
+| Loss weight | 1e-4 | 5e-5 | 5e-5 |
+| Final mean_layer_loss | 22.99 (bounded) | 932,016 (diverged) | 282 (bounded, decreased monotonically) |
+| Final max_layer_loss | 460 | 3,915,776 | ~1,900 |
+| **F1** | 0.680 → 0.762 (+0.082) | 0.414 → 0.687 (+0.273) | **0.590 → 0.772 (+0.182)** ← best F1 |
+| MMLU n=500 | 67.4% → 67.4% (preserved) | 57.2% → 57.6% (preserved) | 69.2% → 68.2% (preserved) |
+| Not sycophantic | 68.6% → 87.6% (+19.0pp) | 32.4% → 85.0% (+52.6pp) | 51.4% → 88.8% (+37.4pp) |
+| BRR | 0.204 → 0.008 (−0.196) | 0.530 → 0.016 (−0.514) | 0.378 → −0.000 (−0.378) |
+| ClearHarm refusal | 58.7% → 51.4% (−7.3pp) | 16.2% → 27.4% (+11.2pp) | **66.5% → 83.2% (+16.8pp)** ← best refusal gain |
+| Persona prefix mean | 66.5 → 70.4 (+3.9) | 72.6 → 89.0 (+16.4) | 93.6 → 96.2 (+2.6, ceiling-limited) |
+| Persona suffix mean | 67.7 → 49.9 (−17.8) | 72.5 → 41.5 (−31.0) | **88.3 → 41.4 (−46.9)** ← worst suffix collapse |
+| MMLU n=1000 (post) | 65.1% | 56.2% | **70.2%** ← best |
+| MTBench post | 8.23 | 8.71 | **9.29** ← best |
+| Runtime (full pipeline) | 7,978 s | 3,802 s | 10,147 s |
 
-**Patterns shared by both runs:**
+**Patterns shared by all three runs:**
 - F1 / not_sycophantic / BRR all improve in the right direction.
-- MMLU preserved.
-- Persona prefix improves; persona suffix collapses (opposite directions, big magnitudes).
-- MTBench remains strong (8+).
+- MMLU preserved on all.
+- Persona prefix improves modestly; persona suffix collapses dramatically (Llama −18, Gemma −31, Qwen −47). Severity correlates with pre-baseline (Qwen had highest pre-suffix robustness, lost the most).
+- MTBench remains strong (≥8.2).
 
 **Patterns that diverge:**
-- Llama's training loss is well-behaved (mean 23, max 460); Gemma's explodes (mean 932k, max 3.9M). Loss explosion does NOT translate to behavioral collapse on Gemma's evals — but the model's residual stream is unbounded and the adapter is suspect.
-- Llama's ClearHarm refusal regresses; Gemma's improves.
-- Gemma's persona-suffix degradation is ~2× Llama's.
+- Loss curve sanity: Llama bounded (mean 23, max 460) ✓; Qwen bounded but high-magnitude (mean 282, max ~1.9k) ✓; Gemma diverged (mean 932k, max 3.9M) ✗ — adapter suspect.
+- ClearHarm refusal: Llama regresses (−7.3 pp); Gemma improves moderately (+11.2 pp); Qwen improves most (+16.8 pp).
+- Suffix-persona magnitude scales with pre-baseline rather than model size — Qwen's 88.3 → 41.4 is the largest absolute drop because it had furthest to fall.
 
 ## ACT v2 vs. legacy
 
