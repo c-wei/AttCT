@@ -214,8 +214,35 @@ fi
 # ── 6. Resolve final checkpoint ───────────────────────────────────────────────
 # train.py writes <run_name>__<tag>__<YYYYMMDD_HHMMSS>; pick the most recent.
 FINAL_CHECKPOINT=$(ls -dt "$SAVE_DIR"/*"epoch_${EPOCHS}"* 2>/dev/null | head -1 || true)
+
+# Resume-on-fresh-pod fallback: if --skip-training is set and we didn't find a
+# local checkpoint but --hf-repo points at one, pull the most recent
+# epoch_${EPOCHS} subfolder down from HF Hub into $SAVE_DIR.
+if [[ -z "$FINAL_CHECKPOINT" || ! -d "$FINAL_CHECKPOINT" ]]; then
+    if [[ "$SKIP_TRAINING" == "true" && -n "$HF_REPO" ]]; then
+        echo "==> No local checkpoint found; pulling latest epoch_${EPOCHS} from HF: $HF_REPO"
+        mkdir -p "$SAVE_DIR"
+        HF_SUBFOLDER=$(uv run --no-project python -c "
+from huggingface_hub import HfApi
+api = HfApi()
+files = api.list_repo_files('$HF_REPO')
+subs = sorted({f.split('/', 1)[0] for f in files if '/' in f and 'epoch_${EPOCHS}__' in f})
+if not subs:
+    raise SystemExit('no matching epoch_${EPOCHS}__* subfolder on HF')
+print(subs[-1])
+")
+        echo "==> HF subfolder: $HF_SUBFOLDER"
+        uv run --no-project python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='$HF_REPO', allow_patterns='$HF_SUBFOLDER/*', local_dir='$SAVE_DIR')
+"
+        FINAL_CHECKPOINT="$SAVE_DIR/$HF_SUBFOLDER"
+    fi
+fi
+
 if [[ -z "$FINAL_CHECKPOINT" || ! -d "$FINAL_CHECKPOINT" ]]; then
     echo "ERROR: No final checkpoint found under $SAVE_DIR matching epoch_${EPOCHS}."
+    echo "       Pass --hf-repo <repo> alongside --skip-training to pull from HF."
     exit 1
 fi
 echo "==> Final checkpoint: $FINAL_CHECKPOINT"
