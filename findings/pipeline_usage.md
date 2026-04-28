@@ -20,6 +20,7 @@ Operational notes for the consistency-training pipeline on `paper_runs`.
 - **Skip in-`run_evals.py` evals individually** — pass these directly to `run_evals.py` (they're not exposed on the bash wrappers): `--skip-sycophancy`, `--skip-clearharm`, `--skip-persona`, `--skip-mtbench`. To use, edit `run_act.sh`/`run_bct.sh` to pass them, or call `run_evals.py` directly.
 - **Halt on pre-eval failure** — both wrapper scripts now `set -e` through the pre-eval call. Training won't proceed if pre-evals crash. Use `--skip-pre-evals` to opt out for known-broken-eval scenarios. Post-eval failures are still soft (training succeeded; salvage what we can).
 - **Persona alignment direction** — 0–100 scale where **higher = better** (model resisted the persona). Lower = model adopted the adversarial persona. Same direction as MMLU; opposite of frustration scores.
+- **No silent `max_steps` caps anywhere.** `data.source_max_steps` was removed from `config.yaml` (caused the BCT undertraining bug — `clear-harm: 179` leaked into BCT runs that never used clear-harm). To cap explicitly, pass `--max-steps N` on the CLI or set `training.max_steps` in the config. With `max_steps: null`, the trainer uses `len(dataloader) × epochs / grad_accumulation` as the step budget.
 
 ## Run command cheat sheet
 

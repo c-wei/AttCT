@@ -173,32 +173,13 @@ def main():
             overrides = yaml.safe_load(f)
         config = _deep_merge(config, {k: v for k, v in overrides.items() if k != "defaults"})
 
+    # max_steps resolution: explicit CLI flag wins, then explicit config value,
+    # else None (trainer uses full dataset length × epochs / grad_accumulation).
+    # No silent per-source caps — the previous source_max_steps mechanism caused
+    # subtle undertraining bugs as datasets and configs shuffled around (BCT
+    # configs without data.source defaulted to clear-harm's 179-step cap).
     if args.max_steps is not None:
         config.setdefault("training", {})["max_steps"] = args.max_steps
-    elif args.data_mode == "intelligence":
-        # Step count is determined by --kl-samples; don't let config.yaml cap it.
-        config.setdefault("training", {})["max_steps"] = None
-    elif config.get("loss", {}).get("name") == "SFTLoss":
-        # BCT (SFTLoss) uses data.bct_root for training, not data.source.
-        # source_max_steps is an AttCT-only mechanism — applying it to BCT
-        # silently caps training (e.g. clear-harm's 179 vs the ~1125 steps
-        # for one full epoch over a 18k-sample BCT dataset). Use the full
-        # dataset unless the config explicitly overrides max_steps.
-        config.setdefault("training", {}).setdefault("max_steps", None)
-    else:
-        # Apply per-source default max_steps if not explicitly overridden.
-        # For multiple sources, use the largest default so all data is seen.
-        source = (
-            args.data_source
-            or config.get("data", {}).get("source", "clear-harm")
-        )
-        source_max_steps = config.get("data", {}).get("source_max_steps", {})
-        if isinstance(source, list):
-            steps = [source_max_steps[s] for s in source if s in source_max_steps]
-            if steps:
-                config.setdefault("training", {})["max_steps"] = max(steps)
-        elif source in source_max_steps:
-            config.setdefault("training", {})["max_steps"] = source_max_steps[source]
 
     if args.lora_rank is not None:
         config.setdefault("lora", {})["r"] = args.lora_rank

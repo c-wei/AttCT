@@ -34,13 +34,10 @@ data:
   mode: "jailbreak"
   batch_size: 1
   max_length: 512
-  # Default max_steps per data source (used when --max-steps is not passed)
-  source_max_steps:
-    clear-harm: 179
-    sycophancy_bct: 5000
-    anthropic-sycophancy: 20184
-    jbb: 100
-    harmbench: 200
-    wildjailbreak: 5000
-    redteam2k: 2000
+  # No source_max_steps cap by default — the trainer uses the full dataset
+  # length × epochs / grad_accumulation as the natural step budget. Pass
+  # --max-steps on the CLI or set training.max_steps in the config to cap
+  # explicitly. Silent per-source caps caused the BCT undertraining bug
+  # where clear-harm's 179-step cap leaked into BCT runs that never used
+  # the clear-harm dataset.
 
