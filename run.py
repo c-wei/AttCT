@@ -113,7 +113,7 @@ def main():
     beval = parser.add_argument_group("behavioral_eval")
     beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
     beval.add_argument("--bct-noncot",        dest="bct_noncot_path",     default=None)
-    beval.add_argument("--control-cot",       dest="control_cot_path",    default=None)
+    # --control-cot is defined above (top-level, with help text); not redefined here.
     beval.add_argument("--control-noncot",    dest="control_noncot_path", default=None)
     beval.add_argument("--beval-max-samples", dest="beval_max_samples",   type=int, default=500)
     beval.add_argument("--mmlu-max-samples",  dest="mmlu_max_samples",    type=int, default=200)

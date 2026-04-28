@@ -16,7 +16,16 @@ from pathlib import Path
 
 
 def split_one(path: Path, train_count: int, eval_count: int) -> tuple[int, int]:
-    """Split path → {stem}_train.jsonl (first train_count lines) and {stem}_eval.jsonl (last eval_count lines)."""
+    """
+    Split path → {stem}_train.jsonl + {stem}_eval.jsonl.
+
+    Eval is the last `eval_count` lines (held out, fixed size). Train is the
+    rest (up to `train_count`). If the file has fewer than `train_count + eval_count`
+    lines (e.g. fresh-data generation skipped a few rows on transient OpenRouter
+    failures), the train portion shrinks to whatever is left after holding out
+    eval — eval size is always honored so per-run held-out metrics stay
+    comparable across models.
+    """
     train_path = path.with_name(f"{path.stem}_train.jsonl")
     eval_path  = path.with_name(f"{path.stem}_eval.jsonl")
 
@@ -25,18 +34,23 @@ def split_one(path: Path, train_count: int, eval_count: int) -> tuple[int, int]:
         return 0, 0
 
     lines = path.read_text().splitlines()
-    if len(lines) < train_count + eval_count:
+    total = len(lines)
+
+    if total <= eval_count:
         raise ValueError(
-            f"{path.name} has {len(lines)} lines; need at least "
-            f"{train_count + eval_count} for split."
+            f"{path.name} has {total} lines; need at least eval_count+1={eval_count + 1}."
         )
 
-    train_lines = lines[:train_count]
     eval_lines  = lines[-eval_count:]
+    # Train is everything before the eval slice, capped at train_count.
+    train_lines = lines[:max(0, total - eval_count)][:train_count]
 
     train_path.write_text("\n".join(train_lines) + "\n")
     eval_path.write_text("\n".join(eval_lines) + "\n")
-    print(f"  [ok] {train_path.name}: {len(train_lines)}, {eval_path.name}: {len(eval_lines)}")
+
+    short = "" if total >= train_count + eval_count else \
+            f"  [warn] short by {train_count + eval_count - total} (filled gaps?)"
+    print(f"  [ok] {train_path.name}: {len(train_lines)}, {eval_path.name}: {len(eval_lines)}{short}")
     return len(train_lines), len(eval_lines)
 
 
