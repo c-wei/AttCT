@@ -38,5 +38,10 @@ data:
   mode: sycophancy
 
 training:
+  epochs: 1
+  max_steps: null              # full epoch over the 5k sycophancy_bct prompts
   learning_rate: 0.000005      # 5e-6 — matches prior LoRA setups
-  save_dir: "/workspace/checkpoints/act_sycophancy_gemma3_4b_v2"
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_sycophancy_gemma3_4b_v2"
