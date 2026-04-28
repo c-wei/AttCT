@@ -282,11 +282,23 @@ The v2 implementation is paper-faithful and beats the legacy mse / content-body 
 
 ---
 
-# Run 4 — Llama-3.1-8B-Instruct BCT (SFT)
+# ⚠️ Both BCT runs below were silently capped at max_steps=179
+
+**Bug found 2026-04-28:** `data.source_max_steps.clear-harm: 179` from the base `config.yaml` was being applied to BCT runs, because BCT configs don't set `data.source` (BCT trains from `bct_root`, not from an AttCT data source). The `clear-harm` default + 179-step cap silently truncated training to ~14% of one epoch (179 steps vs the ~1125 needed for one full epoch over 18k BCT samples).
+
+The legacy Gemma-3-27B BCT run (`iy74m3jo`, `findings/bct_gemma3_27b_lora_findings.md`) ran **2,532 optimizer steps** with the same hyperparams, because `source_max_steps` didn't exist in the config at the time. That's the apples-to-apples comparison — legacy got 14× more training, which is why its results showed real movement and mine show essentially none.
+
+**Fix landed in `run.py:181-187`** — SFTLoss runs now skip the `source_max_steps` cap. Re-running with the fix should reproduce the legacy BCT gains.
+
+**Llama BCT and Gemma BCT below: numbers are NOT representative of BCT's actual capability — both runs were undertrained at 179 steps. Re-run pending.**
+
+---
+
+# Run 4 — Llama-3.1-8B-Instruct BCT (SFT) — UNDERTRAINED (179 steps)
 
 **W&B:** `3apm6yw2` | https://wandb.ai/neilshah/AttCT/runs/3apm6yw2
 **Config:** `configs/bct_lora_llama31_8b.yaml`
-**Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch (~250 optimizer steps)
+**Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch capped at 179 steps (~16% of full epoch)
 **HF adapter:** `neilshah/bct-llama31-8b-sycophancy/<run>__epoch_1__<ts>/`
 **Runtime:** 5,410 s (~1 h 30 m, training + post evals)
 **Pre-evals skipped** (`--skip-pre-evals`); base-model `pre_train` numbers transferred from the Llama ACT run.
@@ -394,14 +406,13 @@ Real but small generalization. **Note:** the legacy Gemma-3-27B BCT result of +1
 | Persona suffix mean | 67.7→49.9 (−17.8) | 67.7→**62.7** (−5.0) | 72.5→41.5 (−31.0) | 72.5→**72.4** (~0) |
 | MTBench post | 8.23 | 8.01 | 8.71 | 8.79 |
 
-## Key takeaways
+## Key takeaways (with the BCT undertraining caveat front and centre)
 
-1. **ACT moves the canonical sycophancy benchmark; BCT essentially does not** at these hyperparams. ACT: Llama F1 +0.082, Gemma F1 +0.273. BCT: ~0 on both (Gemma BCT had unstable training; Llama BCT trained but didn't generalize from BCT-template prompts to MMLU-substrate prompts).
-2. **BCT does show small in-distribution gains** (held-out BCT eval, +5 pp on Llama cot). The legacy +12 pp result was inflated by training-set leakage that's now plugged by the held-out split.
-3. **Both methods preserve MMLU and MTBench.** No capability loss on static benchmarks.
-4. **ACT's suffix collapse is severe** (Llama −17.8, Gemma −31.0); BCT preserves suffix robustness (Llama −5.0, Gemma ~0 — though Gemma BCT didn't really train, so this point is weaker).
-5. **ClearHarm refusal goes opposite ways for Llama**: ACT loses refusal (−7.3 pp), BCT gains it (+2.2 pp). For Gemma both methods help, ACT more (+11.2 vs +6.1).
-6. **Gemma ACT loss is not interpretable** (mean_layer_loss = 932k, max = 3.9M). Behavioral metrics are healthy because RMSNorm absorbs the residual stream magnitude, but the LoRA weights contain large outliers; out-of-eval generation should be spot-checked before treating it as a clean result.
+1. **BCT runs above (Llama 3apm6yw2 / Gemma yjes1n12) are NOT clean results.** Both were silently capped at 179 optimizer steps by `source_max_steps.clear-harm` (base config.yaml), running ~14% of one epoch. The legacy Gemma-27B BCT run (which showed +12.2 pp sycophancy and +40 pp ClearHarm) ran 2,532 steps. That's the apples-to-apples comparison. **Re-runs with the fix in `run.py:181-187` are needed before drawing any BCT-vs-ACT conclusion.**
+2. **ACT v2 results stand.** Llama F1 +0.082, Gemma F1 +0.273, MMLU preserved on both. ACT runs were not affected by the source_max_steps bug (their data.source is sycophancy_bct, capped at 5000 — not a binding constraint).
+3. **ACT's suffix-persona collapse is severe** (Llama −17.8, Gemma −31.0). Independent of the BCT issue. The matching-suffix loss may not see tokens injected after the question; possible mechanistic explanation, worth investigating.
+4. **Gemma ACT loss is not interpretable** (mean_layer_loss = 932k, max = 3.9M). Behavioral metrics are healthy because RMSNorm absorbs the residual stream magnitude, but the LoRA weights contain large outliers; out-of-eval generation should be spot-checked before treating Gemma ACT as a clean result.
+5. **All four runs preserve MMLU and MTBench** — no capability loss on static benchmarks. This holds even for the undertrained BCT runs (small training → small change either direction).
 
 ---
 
