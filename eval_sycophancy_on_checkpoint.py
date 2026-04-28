@@ -12,14 +12,14 @@ what SycophancyEvaluator expects. ~5 min per run on an A6000 for n=500.
 
 Usage:
     # Backfill BCT post-train metrics on a local checkpoint:
-    uv run python scripts/eval_sycophancy_on_checkpoint.py \\
+    uv run python eval_sycophancy_on_checkpoint.py \\
         --model meta-llama/Llama-3.1-8B-Instruct \\
         --checkpoint checkpoints/bct_lora_llama31_8b/<run_name>__epoch_1__<ts> \\
         --wandb-run-id 3apm6yw2 \\
         --prefix post_train
 
     # Or pull adapter from HF:
-    uv run python scripts/eval_sycophancy_on_checkpoint.py \\
+    uv run python eval_sycophancy_on_checkpoint.py \\
         --model meta-llama/Llama-3.1-8B-Instruct \\
         --hf-repo neilshah/bct-llama31-8b-sycophancy \\
         --hf-subfolder <run_name>__epoch_1__<ts> \\
@@ -27,7 +27,7 @@ Usage:
         --prefix post_train
 
     # Pre-train baseline (no checkpoint needed):
-    uv run python scripts/eval_sycophancy_on_checkpoint.py \\
+    uv run python eval_sycophancy_on_checkpoint.py \\
         --model meta-llama/Llama-3.1-8B-Instruct \\
         --wandb-run-id 3apm6yw2 \\
         --prefix pre_train
@@ -35,13 +35,7 @@ Usage:
 
 import argparse
 import os
-import sys
 from pathlib import Path
-
-# Make the repo root importable when this script is run from scripts/.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 import wandb

@@ -4,8 +4,8 @@ in a fresh_bct directory, mirroring the convention used in datasets/sycophancy_b
 (first 4000 = train, last 1000 = eval).
 
 Usage:
-    uv run --no-project python scripts/split_bct_train_eval.py datasets/fresh_bct_gemma3_4b
-    uv run --no-project python scripts/split_bct_train_eval.py datasets/fresh_bct_gemma3_27b datasets/fresh_bct_gemma2_9b
+    uv run --no-project python split_bct_train_eval.py datasets/fresh_bct_gemma3_4b
+    uv run --no-project python split_bct_train_eval.py datasets/fresh_bct_gemma3_27b datasets/fresh_bct_gemma2_9b
 
 Idempotent: skips files where {stem}_train.jsonl already exists.
 Leaves the original {stem}.jsonl in place for backward compatibility.
