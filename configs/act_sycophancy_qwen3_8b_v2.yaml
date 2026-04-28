@@ -1,0 +1,52 @@
+# ACT sycophancy — Qwen/Qwen3-8B, LoRA (q+v).
+#
+# Same paper-correct ACT recipe as configs/act_sycophancy_qwen3_4b_v2.yaml:
+#   * matching window = longest matching token suffix between clean / wrapped
+#   * loss_formulation: "paper" — sums the squared L2 norm over hidden_dim
+#     (Eq. 1 of Irpan et al. 2025)
+#   * embedding layer (hidden_states[0]) skipped from the average
+#   * eval clean pass runs under θ_init for parity with training
+#
+# Weight = 5e-5 mirrors Qwen3-4B v2 (W&B ms9fsexf), where loss was bounded
+# and decreased monotonically (mean_layer_loss 4466 → 282). Qwen3-8B has a
+# wider residual stream than 4B (3584 vs 2560 hidden), so absolute layer
+# losses may scale up; the curve should still bound and decrease. If it
+# doesn't, drop weight to 1e-5 (same playbook as Gemma fallback).
+#
+# bf16 LoRA fits on A40 48GB — no quantization needed (8B × 2 bytes = 16GB
+# weights, leaves ~30GB for activations + the second forward pass).
+#
+# No paper reference — Qwen3-8B is not in Irpan et al. 2025.
+
+model:
+  name: "Qwen/Qwen3-8B"
+  output_attentions: false
+  output_hidden_states: true   # ACT requires hidden states
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.00005              # 5e-5, matching Qwen3-4B v2
+  kwargs:
+    layer_selection: "all"     # all transformer layers; embedding skipped
+    normalize: false
+    loss_formulation: "paper"  # sums over hidden_dim — paper Eq. 1
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch over the 4000 sycophancy_bct train prompts
+  learning_rate: 0.000005      # 5e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_sycophancy_qwen3_8b_v2"
