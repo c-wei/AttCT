@@ -2,7 +2,7 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_attct_custds"
+CKPT_DIR="checkpoints/prefill_attct"
 RESULTS="prefill_attct_results.txt"
 
 echo "=== Prefill-AttCT (attct) Train + Eval ===" | tee "$RESULTS"
