@@ -372,7 +372,11 @@ def main():
 
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
-        bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
+        bct_trainer = BCTTrainer(
+            model, train_dl, loss_fn, config, device,
+            hf_repo=args.hf_repo,
+            run_name=run_name,
+        )
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
 
