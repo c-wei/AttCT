@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -176,14 +177,32 @@ class TestGetPromptsSycophancy:
         prompts = _read_jsonl_user_messages(path)
         assert prompts == ["prompt one", "prompt two"]
 
-    def test_load_sycophancy_bct_clean_prompts_from_local_root(self, tmp_path):
+    def test_load_sycophancy_bct_clean_prompts_uses_split_when_present(self, tmp_path):
+        # New layout: split files exist → loader uses them, no warning.
         root = tmp_path / "sycophancy_bct"
         root.mkdir()
-        cot_path = root / "control_cot.jsonl"
-        cot_path.write_text(
+        (root / "control_cot_train.jsonl").write_text(
+            json.dumps({"messages": [{"role": "user", "content": "train prompt"}]}) + "\n"
+        )
+        (root / "control_cot_eval.jsonl").write_text(
+            json.dumps({"messages": [{"role": "user", "content": "eval prompt"}]}) + "\n"
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes a failure
+            train = _load_sycophancy_bct_clean_prompts(style="cot", split="train", local_root=root)
+            eval_ = _load_sycophancy_bct_clean_prompts(style="cot", split="eval",  local_root=root)
+        assert train == ["train prompt"]
+        assert eval_ == ["eval prompt"]
+
+    def test_load_sycophancy_bct_clean_prompts_falls_back_to_legacy(self, tmp_path):
+        # Legacy layout: only the unsplit file exists → fallback with a warning.
+        root = tmp_path / "sycophancy_bct"
+        root.mkdir()
+        (root / "control_cot.jsonl").write_text(
             json.dumps({"messages": [{"role": "user", "content": "cot prompt"}]}) + "\n"
         )
-        prompts = _load_sycophancy_bct_clean_prompts(style="cot", local_root=root)
+        with pytest.warns(UserWarning, match="Held-out split"):
+            prompts = _load_sycophancy_bct_clean_prompts(style="cot", split="train", local_root=root)
         assert prompts == ["cot prompt"]
 
     def test_get_prompts_file_source_too_few_raises(self, tmp_path):
