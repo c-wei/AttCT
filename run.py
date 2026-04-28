@@ -433,15 +433,11 @@ def main():
             from evaluate_sycophancy import SycophancyEvaluator
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
 
-        _eval_limit = args.eval_limit  # max samples for all behavioral evaluators
+        _eval_limit = args.eval_limit if args.eval_limit is not None else 200
 
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
-            # Primary eval: ASR + over-refusal on JailbreakBench (jbb-harmful + jbb-benign).
-            # Secondary eval: ASR-only on ClearHarm (no over-refusal — that's a model-level
-            # property already captured by the jbb-benign run).
-            jailbreak_jbb_csv        = os.path.join("results", f"{run_label}_jailbreak_jbb_results.csv")
-            jailbreak_clearharm_csv  = os.path.join("results", f"{run_label}_jailbreak_clearharm_results.csv")
+            jailbreak_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -487,13 +483,8 @@ def main():
                                             results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
-                                           harmful_source="jbb",
-                                           prefix=f"checkpoint_step_{step}/jbb",
-                                           results_csv=jailbreak_jbb_csv, max_samples=_eval_limit).evaluate()
-                        JailbreakEvaluator(model, tokenizer, device,
-                                           harmful_source="clear-harm", measure_overrefusal=False,
-                                           prefix=f"checkpoint_step_{step}/clearharm",
-                                           results_csv=jailbreak_clearharm_csv, max_samples=_eval_limit).evaluate()
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
                     model.train()
                 else:
@@ -502,13 +493,8 @@ def main():
                                             results_csv=results_csv, max_samples=_eval_limit).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
-                                           harmful_source="jbb",
-                                           prefix=f"checkpoint_step_{step}/jbb",
-                                           results_csv=jailbreak_jbb_csv, max_samples=_eval_limit).evaluate()
-                        JailbreakEvaluator(model, tokenizer, device,
-                                           harmful_source="clear-harm", measure_overrefusal=False,
-                                           prefix=f"checkpoint_step_{step}/clearharm",
-                                           results_csv=jailbreak_clearharm_csv, max_samples=_eval_limit).evaluate()
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
                     _run_probe_questions(step)
                     model.train()
             return _fn
@@ -533,13 +519,8 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
             JailbreakEvaluator(_eval_model, tokenizer, device,
-                               harmful_source="jbb",
-                               prefix="pre_train/jbb", results_csv=jailbreak_jbb_csv,
-                               max_samples=_eval_limit).evaluate()
-            JailbreakEvaluator(_eval_model, tokenizer, device,
-                               harmful_source="clear-harm", measure_overrefusal=False,
-                               prefix="pre_train/clearharm", results_csv=jailbreak_clearharm_csv,
-                               max_samples=_eval_limit).evaluate()
+                               prefix="pre_train",
+                               results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
             if is_lora:
                 model.enable_adapter_layers()
                 model.train()
@@ -647,13 +628,8 @@ def main():
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
             JailbreakEvaluator(model, tokenizer, device,
-                               harmful_source="jbb",
-                               prefix="post_train/jbb", results_csv=jailbreak_jbb_csv,
-                               max_samples=_eval_limit).evaluate()
-            JailbreakEvaluator(model, tokenizer, device,
-                               harmful_source="clear-harm", measure_overrefusal=False,
-                               prefix="post_train/clearharm", results_csv=jailbreak_clearharm_csv,
-                               max_samples=_eval_limit).evaluate()
+                               prefix="post_train",
+                               results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
 
     wandb.finish()
 
