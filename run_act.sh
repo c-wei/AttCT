@@ -230,7 +230,7 @@ POST_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
     POST_BRR_FLAGS="$POST_BRR_FLAGS --brr-baseline-json $RESULTS_DIR/pre_brr.json"
 
 POST_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
-[[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples 5"
+[[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples 3"
 
 python run_evals.py \
     --model "$MODEL" \
