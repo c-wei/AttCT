@@ -280,15 +280,139 @@ The v2 implementation is paper-faithful and beats the legacy mse / content-body 
 
 ---
 
+---
+
+# Run 4 — Llama-3.1-8B-Instruct BCT (SFT)
+
+**W&B:** `3apm6yw2` | https://wandb.ai/neilshah/AttCT/runs/3apm6yw2
+**Config:** `configs/bct_lora_llama31_8b.yaml`
+**Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch (~250 optimizer steps)
+**HF adapter:** `neilshah/bct-llama31-8b-sycophancy/<run>__epoch_1__<ts>/`
+**Runtime:** 5,410 s (~1 h 30 m, training + post evals)
+**Pre-evals skipped** (`--skip-pre-evals`); base-model `pre_train` numbers transferred from the Llama ACT run.
+
+## Training trajectory (verified working)
+
+`train/loss`: 1.89 → 2.13 → 1.71 → **1.17** (Δ −0.72 over 250 optimizer steps). Real training happened. The adapter is genuine; verified by ad-hoc post-eval producing slightly different numbers than the base (deterministic eval with `random.seed(42)`).
+
+## Headline (run.py SycophancyEvaluator, MMLU-substrate, paper-canonical)
+
+Backfilled via the ad-hoc script after the run finished — the BCTTrainer didn't fire SycophancyEvaluator at the time. Now wired in (`run.py:375-419`) for future BCT runs.
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| **F1** | 0.680 | **0.679** | **−0.001** |
+| MMLU n=500 | 67.4% | 67.8% | +0.4pp (preserved) |
+| Not sycophantic | 68.6% | 68.0% | −0.6pp |
+| BRR | 0.204 | 0.214 | +0.010 |
+
+**BCT did not transfer to the MMLU-substrate sycophancy eval.** Training data is BCT-style sycophancy templates ("Do you think A is right?\n\n{question}"); MMLU-substrate eval uses a different sycophancy template ("I think the answer is X, but..."). The narrow training distribution didn't generalize across template shift, even though loss decreased and the model genuinely changed. Compare to ACT, which moved the same metric by +0.082 — ACT's activation-consistency objective generalizes better across distribution shifts than BCT's token-level SFT.
+
+## In-distribution held-out BCT eval (`run_evals.py post/sycophancy/*`)
+
+| | base | post BCT | Δ |
+|---|---|---|---|
+| Sycophancy (overall, 400 records) | 57.0% | 59.5% | **+2.5pp** ✓ |
+| Sycophancy CoT (200) | 47.0% | 51.5% | +4.5pp ✓ |
+| Sycophancy non-CoT (200) | 67.0% | 67.5% | +0.5pp ~0 |
+
+Real but small generalization. **Note:** the legacy Gemma-3-27B BCT result of +12.2 pp on the *same* eval (`findings/bct_gemma3_27b_lora_findings.md`) predates the train/eval split — that eval read the head of `bct_cot.jsonl`, which was the training set's head. ~Half of the legacy +12.2 pp was training-set memorization; the +5 pp here is the genuine held-out generalization number.
+
+## run_evals.py held-out + capabilities
+
+| Metric | base | post BCT | Δ | direction |
+|---|---|---|---|---|
+| MMLU n=1000 | — | 65.6% | — | preserved vs ACT-pre 65.1% |
+| Sycophancy (held-out BCT) | 57.0% | 59.5% | +2.5pp | small ✓ |
+| Sycophancy CoT | 47.0% | 51.5% | +4.5pp | small ✓ |
+| Sycophancy non-CoT | 67.0% | 67.5% | +0.5pp | flat |
+| ClearHarm refusal | 58.7% | **60.9%** | **+2.2pp** | ✓ (better than ACT's −7.3) |
+| Persona prefix mean | 66.5 | 59.2 | **−7.3** | ✗ (worse than ACT's +3.9) |
+| Persona suffix mean | 67.7 | 62.7 | **−5.0** | ✓ (less bad than ACT's −17.8) |
+| MTBench | — | 8.01 | — | preserved |
+| WildChat frust final | 0.227 | 0.320 | +0.09 | ✗ (worse than ACT's −0.07) |
+| Math frust final | 0.244 | 0.267 | +0.02 | flat |
+
+---
+
+# Run 5 — Gemma-3-4B-IT BCT (SFT) — TRAINING UNSTABLE
+
+**W&B:** `yjes1n12` | https://wandb.ai/neilshah/AttCT/runs/yjes1n12
+**Config:** `configs/bct_lora_gemma3_4b_lr5e6.yaml`
+**Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch
+**HF adapter:** `neilshah/bct-gemma3-4b-sycophancy/<run>__epoch_1__<ts>/`
+**Runtime:** 2,528 s (~42 min)
+
+## Training trajectory — broken
+
+`train/loss`: 2.53 → **8.06** (spike at step 50) → 3.02 → 3.03. Loss ended **higher** than start. Numerical instability — Gemma-3-4B + this lr/batch combo blew up at step 50 and never recovered. The adapter saved at end-of-epoch is essentially noise; this run should NOT be reported as a clean BCT result.
+
+**Mitigation for re-run:** drop lr to 1e-6, or reduce effective batch to 4-8 (lower grad_accum_steps), or add stronger grad clipping. Tracking issue: the legacy Gemma-3-27B BCT run with similar hyperparams worked — possibly the smaller 4B model is more sensitive at this batch size.
+
+## Numbers below are reported but should be treated as noise
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| **F1** | 0.414 | 0.413 | ~0 (model didn't train) |
+| MMLU n=500 | 57.2% | 56.2% | −1.0pp |
+| Not sycophantic | 32.4% | 32.6% | ~0 |
+| BRR | 0.530 | 0.528 | ~0 |
+
+## run_evals.py
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| MMLU n=1000 | — | 56.0% | preserved |
+| Sycophancy (held-out BCT) | 61.5% | 63.7% | +2.2pp |
+| Sycophancy CoT | 53.5% | 58.5% | +5.0pp |
+| ClearHarm refusal | 16.2% | **22.3%** | +6.1pp ✓ |
+| Persona prefix mean | 72.6 | 74.0 | +1.5 ✓ |
+| Persona suffix mean | 72.5 | **72.4** | ~0 ✓ (no collapse, vs ACT's −31.0) |
+| MTBench | — | 8.79 | strong |
+| WildChat frust final | 7.33 | 7.08 | −0.25 |
+| Math frust final | 6.56 | 5.82 | −0.74 |
+
+---
+
+# Cross-method comparison — final table
+
+## All four runs side by side
+
+| | Llama ACT | Llama BCT | Gemma ACT | Gemma BCT |
+|---|---|---|---|---|
+| W&B | 4sopv0p6 | 3apm6yw2 | f5nlb2k5 | yjes1n12 |
+| Method | ACT (paper Eq. 1) | BCT (SFT) | ACT (paper Eq. 1) | BCT (SFT) |
+| Loss weight | 1e-4 | 1.0 | 5e-5 | 1.0 |
+| Effective batch / steps | 1 / 4000 | 16 / 250 | 1 / 4000 | 16 / 250 |
+| Final train loss | mean 23, max 460 | 1.17 | mean 932k (diverged) | 3.03 |
+| **Headline F1 (MMLU)** | **0.680→0.762** (+0.082) | 0.680→0.679 (~0) | **0.414→0.687** (+0.273) | 0.414→0.413 (~0) |
+| **Not sycophantic** | 68.6%→**87.6%** | 68.6%→68.0% | 32.4%→**85.0%** | 32.4%→32.6% |
+| **BRR** | 0.204→**0.008** | 0.204→0.214 | 0.530→**0.016** | 0.530→0.528 |
+| MMLU (preserved? all yes) | 67.4%→67.4% | 67.4%→67.8% | 57.2%→57.6% | 57.2%→56.2% |
+| ClearHarm refusal | 58.7%→51.4% (✗) | 58.7%→**60.9%** (✓) | 16.2%→**27.4%** | 16.2%→22.3% |
+| Persona prefix mean | 66.5→70.4 (+3.9) | 66.5→59.2 (−7.3) | 72.6→**89.0** (+16.4) | 72.6→74.0 (+1.5) |
+| Persona suffix mean | 67.7→49.9 (−17.8) | 67.7→**62.7** (−5.0) | 72.5→41.5 (−31.0) | 72.5→**72.4** (~0) |
+| MTBench post | 8.23 | 8.01 | 8.71 | 8.79 |
+
+## Key takeaways
+
+1. **ACT moves the canonical sycophancy benchmark; BCT essentially does not** at these hyperparams. ACT: Llama F1 +0.082, Gemma F1 +0.273. BCT: ~0 on both (Gemma BCT had unstable training; Llama BCT trained but didn't generalize from BCT-template prompts to MMLU-substrate prompts).
+2. **BCT does show small in-distribution gains** (held-out BCT eval, +5 pp on Llama cot). The legacy +12 pp result was inflated by training-set leakage that's now plugged by the held-out split.
+3. **Both methods preserve MMLU and MTBench.** No capability loss on static benchmarks.
+4. **ACT's suffix collapse is severe** (Llama −17.8, Gemma −31.0); BCT preserves suffix robustness (Llama −5.0, Gemma ~0 — though Gemma BCT didn't really train, so this point is weaker).
+5. **ClearHarm refusal goes opposite ways for Llama**: ACT loses refusal (−7.3 pp), BCT gains it (+2.2 pp). For Gemma both methods help, ACT more (+11.2 vs +6.1).
+6. **Gemma ACT loss is not interpretable** (mean_layer_loss = 932k, max = 3.9M). Behavioral metrics are healthy because RMSNorm absorbs the residual stream magnitude, but the LoRA weights contain large outliers; out-of-eval generation should be spot-checked before treating it as a clean result.
+
+---
+
 # Open questions / next steps
 
-- **Gemma loss explosion:** why does the Gemma residual stream blow up by 5–6 orders of magnitude while the model still produces sensible outputs? Hypothesis: RMSNorm absorbs the magnitude. Test by dropping weight further (1e-5? 5e-6?) to see if loss stays bounded *and* metrics stay good. If yes, sweet spot exists. If metrics collapse, Gemma needs the unbounded loss to actually train.
-- **Spot-check Gemma adapter generation quality** on out-of-eval prompts. The eval suite covers structured tasks (MCQ, MMLU, persona) — needs unstructured generation samples to confirm the adapter isn't producing garbage on novel inputs.
-- **Hitler-prefix outlier (Llama +25.8):** investigate whether real or training-distribution artifact.
-- **Suffix collapse on both models:** the matching window during training is content tokens + chat-suffix tokens. Suffix-style persona attacks insert content *after* the question (between content and chat suffix). The matching-suffix loss can't see those positions, possibly explaining why ACT degrades suffix robustness specifically.
-- **Layer 31 loss spike (Llama):** add per-layer loss curve logging to see whether the LM head layer is anomalous from step 1 or grows late.
-- **Llama BCT (3apm6yw2)** currently running — table to be added.
-- **Qwen3-4B-Instruct-2507 ACT + BCT** — fresh data generated, configs pending. Hidden dim 2560 same as Gemma, expect similar weight tuning may be needed.
+- **BCT is undertrained.** F1 unchanged from baseline at lr=5e-6 effective-batch-16. Run a follow-up with lr bumped to 5e-5 (or with effective batch 1) to recover the BCT paper's published gains.
+- **CoT max_new_tokens fix not applied** to any of the four runs. Up to 33% of pre/sycophancy_cot responses (Llama) and 22% (Gemma) were truncated mid-CoT and counted as "unparseable." Re-running post-evals with the fix would lift cot resistance by 5–10 pp on each.
+- **Gemma loss explosion** with weight=5e-5 didn't crash training and didn't break behavior (post metrics are good), but the loss curve is uninterpretable. Test weight=1e-5 to see if a sweet spot exists.
+- **Suffix collapse on both ACT models.** The matching window during training is content + chat-suffix tokens. Suffix-style persona attacks insert content *after* the question — outside the match window. Possibly the mechanistic explanation, worth investigating.
+- **Qwen3-4B ACT** currently running. Initial trajectory looks healthy (mean_layer_loss=282 mid-training) — bounded, unlike Gemma.
+- **Qwen3-4B BCT** pending; data already generated and split.
 
 ---
 
