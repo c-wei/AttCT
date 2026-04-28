@@ -103,7 +103,9 @@ if [[ "$FULL" == "false" ]]; then
     fi
     export WANDB_RUN_ID=$(python -c "import wandb; print(wandb.util.generate_id())")
     echo "==> [SANITY] 50-sample training run using $SANITY_CONFIG (W&B: $WANDB_RUN_ID)..."
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py --config "$SANITY_CONFIG"
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
+        --config "$SANITY_CONFIG" \
+        --data-mode sycophancy
 
     echo "==> [SANITY] BRR evaluation (20 records/bias)..."
     python evaluate_bct.py \
@@ -217,6 +219,7 @@ if [[ "$SKIP_TRAINING" == "false" ]]; then
     echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
         --config "$CONFIG" \
+        --data-mode sycophancy \
         $BCT_ROOT_ARG \
         --no-checkpoint \
         --wandb-run-id "$WANDB_RUN_ID"
