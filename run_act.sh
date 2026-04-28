@@ -180,6 +180,10 @@ elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
     PRE_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
     [[ -n "$PRE_ROLLOUT_FLAGS" ]] && PRE_ROLLOUT_FLAGS="$PRE_ROLLOUT_FLAGS --rollout-n-samples 3"
 
+    # Pre-eval failures HALT the script — running training without a baseline
+    # is worse than waiting to fix the eval. Use --skip-pre-evals if you need
+    # to bypass for a known reason. set -euo pipefail at the top of the script
+    # propagates a non-zero exit from run_evals.py up to here.
     python run_evals.py \
         --model "$MODEL" \
         --metric-prefix "pre/" \
@@ -190,8 +194,7 @@ elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
         --transcripts-dir "$TRANSCRIPTS_DIR/pre" \
         $PRE_BRR_FLAGS \
         $PRE_ROLLOUT_FLAGS \
-        $QUANT_ARG \
-        || echo "WARNING: pre-eval run failed (non-fatal)"
+        $QUANT_ARG
 fi
 
 # ── 5. ACT training ───────────────────────────────────────────────────────────
