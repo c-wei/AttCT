@@ -133,10 +133,52 @@ class JailbreakEvaluator:
         """Run all three eval sources and return a flat dict of all metrics."""
         self.model.eval()
         all_results = {}
+        per_source = {}
         for source_cfg in _EVAL_SOURCES:
             results = self._evaluate_source(source_cfg)
             all_results.update(results)
+            per_source[source_cfg["name"]] = {k.split("/", 1)[1]: v for k, v in results.items()}
+        self._print_summary(per_source)
         return all_results
+
+    def _print_summary(self, per_source: dict):
+        def _s(x):
+            if x is None or (isinstance(x, float) and math.isnan(x)):
+                return "—"
+            return f"{x:.3f}"
+
+        # Column widths
+        cw = [18, 10, 11, 16, 9]  # Source, ASR, Robust., Over-refusal, F1
+
+        def _row(cells, left="║", sep="║", right="║"):
+            parts = [f" {c:<{cw[i]}} " if i == 0 else f" {c:^{cw[i]}} "
+                     for i, c in enumerate(cells)]
+            return left + sep.join(parts) + right
+
+        def _divider(left, mid, right, fill="═"):
+            segs = [fill * (cw[i] + 2) for i in range(len(cw))]
+            return left + mid.join(segs) + right
+
+        title_text = f" Jailbreak Eval Summary  [{self.prefix}] "
+        total_inner = sum(cw[i] + 2 for i in range(len(cw))) + (len(cw) - 1)
+        title_padded = title_text.ljust(total_inner)
+
+        print()
+        print("╔" + "═" * total_inner + "╗")
+        print("║" + title_padded + "║")
+        print(_divider("╠", "╦", "╣"))
+        print(_row(["Source", "ASR", "Robust.", "Over-refusal", "F1"]))
+        print(_divider("╠", "╬", "╣"))
+        for name, metrics in per_source.items():
+            print(_row([
+                name,
+                _s(metrics.get("asr")),
+                _s(metrics.get("robustness")),
+                _s(metrics.get("overrefusal")),
+                _s(metrics.get("f1_score")),
+            ]))
+        print(_divider("╚", "╩", "╝"))
+        print()
 
     def _evaluate_source(self, source_cfg: dict) -> dict:
         name           = source_cfg["name"]
