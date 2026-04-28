@@ -7,35 +7,31 @@ prefill token positions, combined with a causal LM loss on the clean
 
     total_loss = attct_loss + lm_weight * lm_loss
 
-Without the LM anchor, gradient descent has no reason to preserve coherent
-generation — the wrapper entropy loss alone causes catastrophic forgetting.
+Trained with k-fold cross validation over harmful_behaviors_pair.csv.
+Each fold trains a fresh model on (k-1)/k of the data and reports val loss
+on the held-out 1/k. Final metric is mean ± std across folds.
 
 Usage:
     uv run python prefill_attct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
-        --output_dir checkpoints/prefill_attct
-
-    # Adjust LM weight:
-    uv run python prefill_attct.py \
-        --model meta-llama/Llama-3.1-8B-Instruct \
-        --lm_weight 1.0 \
-        --output_dir checkpoints/prefill_attct
+        --output_dir checkpoints/prefill_attct \
+        --n_folds 5
 """
 
 import argparse
-import os
+from statistics import mean, stdev
 
 import torch
 import torch.nn.functional as F
 import wandb
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data.prefill_dataset import (
-    PREFILL_VARIANTS,
     PrefillAttackDataset,
-    load_wildjailbreak_prompts,
+    load_harmful_behaviors_pair,
 )
 from losses.losses import WrapperEntropyRegularizationLoss
 from train import Trainer
@@ -47,12 +43,31 @@ from train import Trainer
 
 class PrefillAttCTDataset(PrefillAttackDataset):
     """
-    Extends PrefillAttackDataset to emit a wrapper_mask marking the prefill
-    positions in the wrapped sequence.
+    Extends PrefillAttackDataset with two changes:
+      1. 1-to-1 pairing: each prompt is paired with exactly its corresponding
+         prefill (no Cartesian product).
+      2. Emits a wrapper_mask marking prefill positions [Lc, Lw).
 
-    wrapper_mask[i] = True  for i in [Lc, Lw)   (prefill tokens)
-    wrapper_mask[i] = False for i in [0, Lc)     (prompt tokens)
+    Args:
+        prompts:    List of harmful prompts.
+        tokenizer:  HuggingFace tokenizer.
+        prefills:   List of prefills, len(prefills) == len(prompts), where
+                    prefills[i] is the tailored prefix for prompts[i].
+        max_length: Tokenizer truncation length.
     """
+
+    def __init__(self, prompts, tokenizer, prefills, max_length=512):
+        assert len(prompts) == len(prefills), (
+            f"1-to-1 pairing requires len(prompts)={len(prompts)} == "
+            f"len(prefills)={len(prefills)}"
+        )
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.items = []
+        for prompt, prefill in zip(prompts, prefills):
+            clean_text = self._build_prompt(prompt)
+            wrapped_text = clean_text + prefill
+            self.items.append((prompt, clean_text, wrapped_text))
 
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
@@ -121,6 +136,7 @@ class PrefillAttCTTrainer(Trainer):
 
         # ── 1. Wrapped pass: wrapper entropy loss (grad flows) ───────────
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
+        self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
 
         wrapper_mask = batch.get("wrapper_mask")
         if wrapper_mask is not None:
@@ -144,6 +160,8 @@ class PrefillAttCTTrainer(Trainer):
             input_ids=clean_input_ids,
             attention_mask=clean_attention_mask,
         )
+        self._write_io_record("clean", clean_input_ids, clean_outputs.logits)
+
         # Standard causal LM: predict next token at every position
         # Shift logits and labels so logits[t] predicts token[t+1]
         logits = clean_outputs.logits[:, :-1, :].contiguous()
@@ -172,6 +190,25 @@ class PrefillAttCTTrainer(Trainer):
                 loss_dict[k] = attct_dict[k]
 
         return loss_dict
+
+    def eval_loss(self, dataloader=None) -> float:
+        """
+        Override Trainer.eval_loss to return the mean. Used by the k-fold
+        loop to aggregate val loss across folds.
+        """
+        dl = dataloader if dataloader is not None else self.dataloader
+        self.model.eval()
+        total, n = 0.0, 0
+        with torch.no_grad():
+            for batch in tqdm(dl, desc="eval", leave=False):
+                loss_dict = self._step(batch)
+                total += loss_dict["loss"].item()
+                n += 1
+        self.model.train()
+        m = total / max(n, 1)
+        wandb.log({"eval/mean_loss": m})
+        print(f"\n--- Prefill-AttCT Eval --- mean_loss: {m:.4f}\n")
+        return m
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +242,10 @@ def build_config(args) -> dict:
     }
 
 
-def make_dataloader(prompts, tokenizer, args, shuffle=True):
-    prefill_variants = args.prefill_variants or PREFILL_VARIANTS
+def make_dataloader(prompts, prefills, tokenizer, args, shuffle=True):
+    """Build a DataLoader. prefills can be a list of strings (used for all prompts)."""
     dataset = PrefillAttCTDataset(
-        prompts, tokenizer, prefill_variants, max_length=args.max_length,
+        prompts, tokenizer, prefills, max_length=args.max_length,
     )
     return DataLoader(
         dataset,
@@ -216,6 +253,51 @@ def make_dataloader(prompts, tokenizer, args, shuffle=True):
         shuffle=shuffle,
         collate_fn=prefill_attct_collate_fn,
     )
+
+
+# ---------------------------------------------------------------------------
+# K-fold helpers
+# ---------------------------------------------------------------------------
+
+def kfold_indices(n: int, k: int) -> list:
+    """
+    Return a list of (train_indices, val_indices) tuples for k folds.
+    Last fold absorbs the remainder when n is not divisible by k.
+    """
+    fold_size = n // k
+    folds = []
+    for i in range(k):
+        val_start = i * fold_size
+        val_end = val_start + fold_size if i < k - 1 else n
+        val_idx = list(range(val_start, val_end))
+        train_idx = list(range(0, val_start)) + list(range(val_end, n))
+        folds.append((train_idx, val_idx))
+    return folds
+
+
+def setup_model(args, device):
+    """
+    Build a fresh (base + LoRA) model. Called once per fold so each fold
+    starts from the same θ_init rather than carrying over weights.
+    """
+    base_model = AutoModelForCausalLM.from_pretrained(
+        args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
+    )
+    if args.lora_path:
+        print(f"Loading LoRA adapter: {args.lora_path}")
+        model = PeftModel.from_pretrained(base_model, args.lora_path, is_trainable=True)
+    else:
+        lora_cfg = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=["q_proj", "v_proj"],
+            bias="none",
+        )
+        model = get_peft_model(base_model, lora_cfg)
+        model.print_trainable_parameters()
+    return model.to(device)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +338,8 @@ def main():
     # Data
     parser.add_argument("--limit",            type=int,   default=None)
     parser.add_argument("--prefill_variants", nargs="+",  default=None)
+    parser.add_argument("--n_folds",          type=int,   default=5,
+                        help="Number of CV folds (5 → 80/20 train/val per fold)")
 
     # W&B
     parser.add_argument("--wandb_project",    default="AttCT")
@@ -267,73 +351,99 @@ def main():
     model_short = args.model.split("/")[-1]
     wandb.init(
         project=args.wandb_project,
-        name=args.wandb_name or f"{model_short}_prefill_attct_lm{args.lm_weight}",
-        config={**config, "lm_weight": args.lm_weight},
+        name=args.wandb_name or f"{model_short}_prefill_attct_kfold{args.n_folds}",
+        config={**config, "lm_weight": args.lm_weight, "n_folds": args.n_folds},
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ── Model ────────────────────────────────────────────────────────────────
-    print(f"Loading tokenizer & model: {args.model}")
+    print(f"Loading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
+    # ── Load all pairs (k-fold splits the full dataset internally) ────────
+    print("Loading harmful_behaviors_pair.csv (full set for k-fold)...")
+    all_prompts, _, all_prefills, _ = load_harmful_behaviors_pair(
+        limit=args.limit, train_ratio=1.0,
     )
-
-    if args.lora_path:
-        print(f"Loading LoRA adapter: {args.lora_path}")
-        model = PeftModel.from_pretrained(model, args.lora_path, is_trainable=True)
-    else:
-        lora_cfg = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=args.lora_r,
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            target_modules=["q_proj", "v_proj"],
-            bias="none",
+    if args.prefill_variants:
+        # CLI override only valid if length matches (1-to-1 pairing requirement)
+        assert len(args.prefill_variants) == len(all_prompts), (
+            f"--prefill_variants ({len(args.prefill_variants)}) must match "
+            f"prompts ({len(all_prompts)}) for 1-to-1 pairing"
         )
-        model = get_peft_model(model, lora_cfg)
-        model.print_trainable_parameters()
+        all_prefills = args.prefill_variants
+    print(f"Loaded {len(all_prompts)} prompt-prefill pairs total")
 
-    model = model.to(device)
+    # ── K-fold CV loop ─────────────────────────────────────────────────────
+    folds = kfold_indices(len(all_prompts), args.n_folds)
+    fold_val_losses = []
 
-    # ── Data ─────────────────────────────────────────────────────────────────
-    print("Loading WildJailbreak vanilla_harmful prompts...")
-    train_prompts, val_prompts = load_wildjailbreak_prompts(limit=args.limit)
+    for fold_idx, (train_idx, val_idx) in enumerate(folds):
+        print(f"\n{'='*60}")
+        print(f"  Fold {fold_idx + 1}/{args.n_folds}  "
+              f"(train={len(train_idx)}, val={len(val_idx)})")
+        print(f"{'='*60}")
 
-    train_dl = make_dataloader(train_prompts, tokenizer, args, shuffle=True)
-    val_dl   = make_dataloader(val_prompts,   tokenizer, args, shuffle=False)
-    print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
+        train_prompts  = [all_prompts[i]  for i in train_idx]
+        train_prefills = [all_prefills[i] for i in train_idx]
+        val_prompts    = [all_prompts[i]  for i in val_idx]
+        val_prefills   = [all_prefills[i] for i in val_idx]
 
-    # ── Loss ─────────────────────────────────────────────────────────────────
-    loss_fn = WrapperEntropyRegularizationLoss(
-        weight=args.loss_weight,
-        normalize=args.normalize,
-        layer_weights=args.layer_weights,
-    )
-    print(f"Loss: WrapperEntropy(w={args.loss_weight}) + LM(w={args.lm_weight})")
+        train_dl = make_dataloader(train_prompts, train_prefills, tokenizer, args, shuffle=True)
+        val_dl   = make_dataloader(val_prompts,   val_prefills,   tokenizer, args, shuffle=False)
 
-    # ── Train ────────────────────────────────────────────────────────────────
-    trainer = PrefillAttCTTrainer(
-        model=model,
-        dataloader=train_dl,
-        loss_fn=loss_fn,
-        config=config,
-        device=device,
-        ref_model=None,
-        tokenizer=tokenizer,
-        lm_weight=args.lm_weight,
-    )
-    trainer.train()
+        # Fresh model + LoRA per fold (start from θ_init each time)
+        model = setup_model(args, device)
 
-    # ── Eval ─────────────────────────────────────────────────────────────────
-    print("\nRunning eval on val set...")
-    trainer.eval_loss(val_dl)
+        loss_fn = WrapperEntropyRegularizationLoss(
+            weight=args.loss_weight,
+            normalize=args.normalize,
+            layer_weights=args.layer_weights,
+        )
 
+        # Per-fold checkpoint directory
+        fold_config = {**config}
+        fold_config["training"] = {
+            **config["training"],
+            "save_dir": f"{args.output_dir}/fold_{fold_idx}",
+        }
+
+        trainer = PrefillAttCTTrainer(
+            model=model,
+            dataloader=train_dl,
+            loss_fn=loss_fn,
+            config=fold_config,
+            device=device,
+            ref_model=None,
+            tokenizer=tokenizer,
+            lm_weight=args.lm_weight,
+        )
+        trainer.train()
+
+        print(f"\n[Fold {fold_idx + 1}] Eval on held-out val...")
+        val_loss = trainer.eval_loss(val_dl)
+        fold_val_losses.append(val_loss)
+        wandb.log({f"fold_{fold_idx}/val_loss": val_loss})
+
+        # Free GPU before the next fold
+        del model, trainer
+        torch.cuda.empty_cache()
+
+    # ── Aggregate ──────────────────────────────────────────────────────────
+    m = mean(fold_val_losses)
+    s = stdev(fold_val_losses) if len(fold_val_losses) > 1 else 0.0
+    print(f"\n{'='*60}")
+    print(f"  K-Fold Summary ({args.n_folds} folds)")
+    print(f"{'='*60}")
+    for i, vl in enumerate(fold_val_losses):
+        print(f"  Fold {i + 1}: val_loss = {vl:.4f}")
+    print(f"\n  Mean val loss: {m:.4f}  (std: {s:.4f})")
+
+    wandb.summary["kfold/mean_val_loss"] = m
+    wandb.summary["kfold/std_val_loss"]  = s
     wandb.finish()
 
 

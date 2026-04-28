@@ -2,10 +2,10 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_bct_custds"
-RESULTS="eval_custds_results.txt"
+CKPT_DIR="checkpoints/prefill_attct_custds"
+RESULTS="prefill_attct_results.txt"
 
-echo "=== Prefill-BCT (custds) Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-AttCT (attct) Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -14,7 +14,7 @@ echo "" | tee -a "$RESULTS"
 # 1) Train
 # ==================================================================
 echo "=== Training ===" | tee -a "$RESULTS"
-python prefill_bct.py \
+python prefill_attct.py \
     --model "$MODEL" \
     --output_dir "$CKPT_DIR" \
     --num_epochs 3 \
@@ -27,7 +27,7 @@ echo "" | tee -a "$RESULTS"
 # 2) Baseline eval
 # ==================================================================
 echo "=== Baseline Eval ===" | tee -a "$RESULTS"
-python evaluate_bct_with_prefill.py \
+python evaluate_prefill.py \
     --model "$MODEL" \
     --output_json baseline_par.json \
     --limit 64 \
@@ -40,7 +40,7 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 for epoch in 1 2 3; do
     echo "=== Epoch $epoch Eval ===" | tee -a "$RESULTS"
-    python evaluate_bct_with_prefill.py \
+    python evaluate_prefill.py \
         --model "$MODEL" \
         --lora_path "$CKPT_DIR/epoch_$epoch" \
         --baseline_json baseline_par.json \
