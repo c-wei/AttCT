@@ -243,20 +243,34 @@ fi
 # train.py writes <run_name>__<tag>__<YYYYMMDD_HHMMSS>; pick the most recent.
 FINAL_CHECKPOINT=$(ls -dt "$SAVE_DIR"/*"epoch_${EPOCHS}"* 2>/dev/null | head -1 || true)
 
+# Fallback: some trainers (older InterleavedTrainer commits) only saved step_*
+# tags — pick the latest step_* if no epoch_* match. Belt-and-suspenders so the
+# chain doesn't abort on a checkpoint-naming mismatch.
+if [[ -z "$FINAL_CHECKPOINT" || ! -d "$FINAL_CHECKPOINT" ]]; then
+    LOCAL_STEP_CKPT=$(ls -dt "$SAVE_DIR"/*step_* 2>/dev/null | head -1 || true)
+    if [[ -n "$LOCAL_STEP_CKPT" && -d "$LOCAL_STEP_CKPT" ]]; then
+        echo "==> No epoch_${EPOCHS} checkpoint, falling back to latest step checkpoint: $LOCAL_STEP_CKPT"
+        FINAL_CHECKPOINT="$LOCAL_STEP_CKPT"
+    fi
+fi
+
 # Resume-on-fresh-pod fallback: if --skip-training is set and we didn't find a
 # local checkpoint but --hf-repo points at one, pull the most recent
-# epoch_${EPOCHS} subfolder down from HF Hub into $SAVE_DIR.
+# epoch_${EPOCHS} (or step_*) subfolder down from HF Hub into $SAVE_DIR.
 if [[ -z "$FINAL_CHECKPOINT" || ! -d "$FINAL_CHECKPOINT" ]]; then
     if [[ "$SKIP_TRAINING" == "true" && -n "$HF_REPO" ]]; then
-        echo "==> No local checkpoint found; pulling latest epoch_${EPOCHS} from HF: $HF_REPO"
+        echo "==> No local checkpoint found; pulling latest from HF: $HF_REPO"
         mkdir -p "$SAVE_DIR"
         HF_SUBFOLDER=$(uv run --no-project python -c "
 from huggingface_hub import HfApi
 api = HfApi()
 files = api.list_repo_files('$HF_REPO')
-subs = sorted({f.split('/', 1)[0] for f in files if '/' in f and 'epoch_${EPOCHS}__' in f})
+# Prefer epoch_${EPOCHS} subfolders; fall back to step_* if absent.
+subs_epoch = sorted({f.split('/', 1)[0] for f in files if '/' in f and 'epoch_${EPOCHS}__' in f})
+subs_step  = sorted({f.split('/', 1)[0] for f in files if '/' in f and '__step_' in f})
+subs = subs_epoch or subs_step
 if not subs:
-    raise SystemExit('no matching epoch_${EPOCHS}__* subfolder on HF')
+    raise SystemExit('no matching epoch_${EPOCHS}__* or step_* subfolder on HF')
 print(subs[-1])
 ")
         echo "==> HF subfolder: $HF_SUBFOLDER"
