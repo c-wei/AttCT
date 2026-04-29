@@ -2,10 +2,10 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_attct"
-RESULTS="prefill_attct_results.txt"
+CKPT_DIR="checkpoints/prefill_act"
+RESULTS="prefill_act_results.txt"
 
-echo "=== Prefill-AttCT Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -48,7 +48,7 @@ for epoch in 1 2 3; do
         --model "$MODEL" \
         --lora_path "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_attct_par.json" \
+        --output_json "epoch${epoch}_act_par.json" \
         --limit 64 \
         --skip_mmlu \
         2>&1 | tee -a "$RESULTS"
