@@ -3,9 +3,9 @@ set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 CKPT_DIR="checkpoints/prefill_attct"
-RESULTS="prefill_act_results.txt"
+RESULTS="prefill_attct_results.txt"
 
-echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-AttCT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
