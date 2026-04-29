@@ -177,6 +177,13 @@ def main():
     elif args.data_mode == "intelligence":
         # Step count is determined by --kl-samples; don't let config.yaml cap it.
         config.setdefault("training", {})["max_steps"] = None
+    elif config.get("loss", {}).get("name") == "SFTLoss":
+        # BCT (SFTLoss) uses data.bct_root for training, not data.source.
+        # source_max_steps is an AttCT-only mechanism — applying it to BCT
+        # silently caps training (e.g. clear-harm's 179 vs the ~1125 steps
+        # for one full epoch over an 18k-sample BCT dataset). Use the full
+        # dataset unless the config explicitly overrides max_steps.
+        config.setdefault("training", {}).setdefault("max_steps", None)
     else:
         # Apply per-source default max_steps if not explicitly overridden.
         # For multiple sources, use the largest default so all data is seen.
@@ -369,11 +376,54 @@ def main():
                            output_dir=fresh_dir, limit=limit)
             config["data"]["bct_root"] = fresh_dir
 
+        # Tokenizer for the in-run.py SycophancyEvaluator (paper-canonical
+        # MMLU substrate). The BCTTrainer itself constructs its own tokenizer
+        # via get_bct_dataloader, but we need one here for the evaluator.
+        bct_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if bct_tokenizer.pad_token is None:
+            bct_tokenizer.pad_token = bct_tokenizer.eos_token
+
+        # Pre-train SycophancyEvaluator on the base model (LoRA disabled) so
+        # BCT runs produce the same headline F1 / not_sycophantic_pct / BRR
+        # numbers as ACT runs. Mirrors the AttCT branch below (run.py:519+).
+        run_label_bct = os.path.splitext(os.path.basename(args.config))[0]
+        bct_results_csv = os.path.join("results", f"{run_label_bct}_syco_results.csv")
+        if not args.skip_eval:
+            from evaluate_sycophancy import SycophancyEvaluator
+            print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
+                                    results_csv=bct_results_csv,
+                                    max_samples=args.eval_limit).evaluate()
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
+                                    results_csv=bct_results_csv,
+                                    max_samples=args.eval_limit).evaluate()
+
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
-        bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
+        bct_trainer = BCTTrainer(
+            model, train_dl, loss_fn, config, device,
+            hf_repo=args.hf_repo,
+            run_name=run_name,
+        )
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
+
+        # Post-train SycophancyEvaluator — model is already trained in-memory,
+        # so this is essentially free vs. reloading from disk.
+        if not args.skip_eval:
+            from evaluate_sycophancy import SycophancyEvaluator
+            print("\n=== Post-training evaluation (trained model) — sycophancy eval ===")
+            model.eval()
+            SycophancyEvaluator(model, bct_tokenizer, device, prefix="post_train",
+                                results_csv=bct_results_csv,
+                                max_samples=args.eval_limit).evaluate()
+            model.train()
 
         if args.brr_test_root:
             from evaluate_bct import run_brr_eval
@@ -616,7 +666,7 @@ def main():
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
-                      metric_prefix=args.metric_prefix).evaluate()
+                      metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
         if not is_sanity and is_sycophancy:
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")

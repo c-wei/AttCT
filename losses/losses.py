@@ -652,13 +652,32 @@ class ActivationConsistencyLoss(ConsistencyLoss):
     """
     Enforces consistent residual stream activations between clean and adversarial prompts.
 
-    Comparison baseline — constrains what is *computed* (hidden states) rather than
-    what information is *selected* (AttCT attention weights).
+    Implements ACT loss from Irpan et al. 2025 (Eq. 1):
+        ℓ = E_{t,l} [ || h_θ,t,l(p_wrapped) - sg(h_θ_init,t,l(p_clean)) ||² ]
+    averaged over the longest matching token suffix between p_clean and p_wrapped,
+    and over all transformer layers (skipping the input-embedding layer, which is a
+    pure function of token IDs and trivially matches at content positions).
+
+    Matching positions:
+      - If `match_len` is provided in kwargs (preferred — supplied by the data
+        pipeline), the loss is computed over the last `match_len` tokens of both
+        sequences. This is the longest matching suffix and is what the paper trains.
+      - Otherwise falls back to the legacy content-body window indexed by
+        `start_index`, `clean_start_index`, `clean_len`.
+
+    Loss formulation:
+      - "paper" (default): || · ||² summed over hidden_dim, then averaged over
+        token positions and layers — matches Eq. 1 exactly.
+      - "mse": F.mse_loss (mean over hidden_dim too). Loses a factor of D in
+        magnitude. Kept for backward compatibility with old configs/runs.
 
     Args:
-        weight:          Global scalar multiplier.
-        layer_selection: "all", "last", "middle", or a list of layer indices.
-        normalize:       If True, L2-normalize activations before comparison.
+        weight:           Global scalar multiplier.
+        layer_selection:  "all" (transformer layers only), "all_with_embedding"
+                          (legacy — includes hidden_states[0]), "last", "middle",
+                          or a list of layer indices.
+        normalize:        If True, L2-normalize activations before comparison.
+        loss_formulation: "paper" or "mse" (see above).
     """
 
     def __init__(
@@ -666,39 +685,73 @@ class ActivationConsistencyLoss(ConsistencyLoss):
         weight: float = 1.0,
         layer_selection: str = "all",
         normalize: bool = False,
+        loss_formulation: str = "paper",
         **kwargs
     ):
         super().__init__(weight)
+        if loss_formulation not in ("paper", "mse"):
+            raise ValueError(
+                f"Unknown loss_formulation: '{loss_formulation}'. Choose 'paper' or 'mse'."
+            )
         self.layer_selection = layer_selection
         self.normalize = normalize
+        self.loss_formulation = loss_formulation
 
     def forward(
         self,
         clean_outputs,
         adv_outputs,
-        start_index: int,
-        clean_len: int,
+        start_index: int = 0,
+        clean_len: int = 0,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
         if not hasattr(clean_outputs, 'hidden_states') or clean_outputs.hidden_states is None:
             raise ValueError("Model outputs must include hidden_states (output_hidden_states=True).")
 
-        num_layers = len(clean_outputs.hidden_states)
+        # hidden_states is len(transformer_layers) + 1 — index 0 is input embedding,
+        # indices 1..L are the residual stream after each transformer block.
+        num_hs = len(clean_outputs.hidden_states)
         if self.layer_selection == "all":
-            layer_indices = list(range(num_layers))
+            layer_indices = list(range(1, num_hs))   # skip embedding layer
+        elif self.layer_selection == "all_with_embedding":
+            layer_indices = list(range(num_hs))
         elif self.layer_selection == "last":
-            layer_indices = [num_layers - 1]
+            layer_indices = [num_hs - 1]
         elif self.layer_selection == "middle":
-            layer_indices = [num_layers // 2]
+            layer_indices = [num_hs // 2]
         elif isinstance(self.layer_selection, (list, tuple)):
             layer_indices = list(self.layer_selection)
         else:
             raise ValueError(
                 f"Unknown layer_selection: '{self.layer_selection}'. "
-                "Choose 'all', 'last', 'middle', or a list of indices."
+                "Choose 'all', 'all_with_embedding', 'last', 'middle', or a list of indices."
             )
 
-        clean_start_index = kwargs.get("clean_start_index", 0)
+        # Pick the matching window. Prefer the longest matching suffix (paper-correct);
+        # fall back to the content-body window for backward compatibility.
+        match_len = kwargs.get("match_len")
+        if match_len is not None and match_len > 0:
+            clean_seq_len = clean_outputs.hidden_states[0].shape[1]
+            adv_seq_len   = adv_outputs.hidden_states[0].shape[1]
+            clean_start = clean_seq_len - match_len
+            adv_start   = adv_seq_len   - match_len
+            window_len  = match_len
+        else:
+            clean_start = kwargs.get("clean_start_index", start_index)
+            adv_start   = start_index
+            window_len  = clean_len
+
+        if window_len <= 0:
+            # No positions to compare — return a zero loss connected to the graph.
+            zero_loss = adv_outputs.hidden_states[-1].sum() * 0.0
+            return {
+                'loss': zero_loss,
+                'layer_losses': [],
+                'mean_layer_loss': 0.0,
+                'num_layers_used': 0,
+                'match_len': 0,
+            }
+
         total_loss = torch.tensor(0.0, device=clean_outputs.hidden_states[0].device)
         layer_losses = []
 
@@ -706,14 +759,20 @@ class ActivationConsistencyLoss(ConsistencyLoss):
             clean_hidden = clean_outputs.hidden_states[layer_idx]
             adv_hidden   = adv_outputs.hidden_states[layer_idx]
 
-            aligned_clean = clean_hidden[:, clean_start_index:clean_start_index + clean_len, :].detach()
-            aligned_adv   = adv_hidden[:, start_index:start_index + clean_len, :]
+            aligned_clean = clean_hidden[:, clean_start:clean_start + window_len, :].detach()
+            aligned_adv   = adv_hidden[:, adv_start:adv_start + window_len, :]
 
             if self.normalize:
                 aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
                 aligned_adv   = F.normalize(aligned_adv,   p=2, dim=-1)
 
-            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            if self.loss_formulation == "paper":
+                # E_{t,l}[||·||²]: sum over hidden_dim, then mean over (batch, tokens).
+                diff_sq = (aligned_adv - aligned_clean) ** 2
+                layer_loss = diff_sq.sum(dim=-1).mean()
+            else:
+                layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+
             total_loss = total_loss + layer_loss
             layer_losses.append(layer_loss.item())
 
@@ -724,6 +783,7 @@ class ActivationConsistencyLoss(ConsistencyLoss):
             'layer_losses': layer_losses,
             'mean_layer_loss': sum(layer_losses) / len(layer_losses),
             'num_layers_used': len(layer_indices),
+            'match_len': int(window_len),
         }
 
 

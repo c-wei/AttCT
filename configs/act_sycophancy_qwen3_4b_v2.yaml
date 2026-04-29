@@ -1,0 +1,49 @@
+# ACT sycophancy — Qwen/Qwen3-4B-Instruct-2507, LoRA (q+v).
+#
+# Verification run for the post-fix ACT implementation:
+#   * matching window = longest matching token suffix between clean / wrapped
+#   * loss_formulation: "paper" — sums the squared L2 norm over hidden_dim,
+#     matching Eq. 1 of Irpan et al. 2025
+#   * embedding layer (hidden_states[0]) skipped from the average
+#   * eval clean pass runs under θ_init for parity with training
+#
+# Weight set to 5e-5 (matching Gemma-3-4B v2). Qwen3-4B has hidden_dim 2560,
+# same family as Gemma — expect similar gradient-magnitude characteristics.
+# Watch the early train/layer_*_loss values; if Gemma's residual-stream
+# blow-up reproduces (mean_layer_loss climbing past 1k by step 1000),
+# drop weight to 1e-5 or 5e-6.
+#
+# No paper reference — Qwen3-4B is not in Irpan et al. 2025.
+
+model:
+  name: "Qwen/Qwen3-4B-Instruct-2507"
+  output_attentions: false
+  output_hidden_states: true   # ACT requires hidden states
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.00005              # 5e-5, matching Gemma-3-4B v2
+  kwargs:
+    layer_selection: "all"     # all transformer layers; embedding skipped
+    normalize: false
+    loss_formulation: "paper"  # sums over hidden_dim — paper Eq. 1
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch over the 4000 sycophancy_bct train prompts
+  learning_rate: 0.000005      # 5e-6 — matches Llama / Gemma v2
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_sycophancy_qwen3_4b_v2"

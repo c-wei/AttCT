@@ -1,0 +1,45 @@
+# BCT (SFT) — Qwen/Qwen3-8B, LoRA q+v.
+#
+# Mirrors the canonical recipe (configs/bct_lora_llama31_8b.yaml). Fresh
+# BCT data generated via OpenRouter (qwen/qwen3-8b) — Qwen3-4B-Instruct-2507
+# isn't on OpenRouter so qwen3-8b is the closest available substitute on
+# the same family.
+#
+# Data lives at datasets/fresh_bct_qwen3_8b/ — generate first, then split:
+#   uv run python generate_fresh_bct_data.py --model qwen/qwen3-8b \
+#       --bct-root datasets/sycophancy_bct \
+#       --output-dir datasets/fresh_bct_qwen3_8b
+#   uv run python split_bct_train_eval.py datasets/fresh_bct_qwen3_8b
+
+model:
+  name: "Qwen/Qwen3-8B"
+  output_attentions: false
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch (~1125 optimizer steps over 18k samples)
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_lora_qwen3_8b"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/fresh_bct_qwen3_8b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false

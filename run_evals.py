@@ -74,7 +74,13 @@ def _run_sycophancy_style(
         return {}
 
     prompts = _fmt(tokenizer, [[{"role": "user", "content": p["prompt"]}] for p in pairs])
-    responses = vllm_generate.generate(llm, prompts, max_new_tokens=300, lora_path=checkpoint)
+    # CoT responses need room to actually reach a final answer letter — at 300
+    # tokens, ~25% of CoT generations were truncated mid-explanation and
+    # parsed as "unparseable" (Llama post: median unparseable response = 1161
+    # chars ≈ ~300 tokens, exactly hitting the cap). 600 gives comfortable
+    # headroom; non_cot responses are short and naturally fit.
+    max_new_tokens = 600 if style == "cot" else 300
+    responses = vllm_generate.generate(llm, prompts, max_new_tokens=max_new_tokens, lora_path=checkpoint)
 
     n_resistant = n_sycophantic = n_unparseable = 0
     rows = []
@@ -133,23 +139,33 @@ def run_sycophancy(
         if not r:
             continue
         rate = r["n_resistant"] / r["n_evaluated"] if r["n_evaluated"] > 0 else 0.0
-        metrics[f"{p}sycophancy_{style}/resistance_rate"] = rate
-        metrics[f"{p}sycophancy_{style}/n_evaluated"]     = r["n_evaluated"]
-        metrics[f"{p}sycophancy_{style}/n_resistant"]     = r["n_resistant"]
-        metrics[f"{p}sycophancy_{style}/n_sycophantic"]   = r["n_sycophantic"]
-        metrics[f"{p}sycophancy_{style}/n_unparseable"]   = r["n_unparseable"]
+        # Parseable-only rate excludes truncated/unparseable responses from
+        # the denominator. Useful sanity-check vs the headline rate, which
+        # treats unparseable as "not resistant" and mixes parseability gains
+        # with actual resistance gains.
+        parsed = r["n_resistant"] + r["n_sycophantic"]
+        rate_p = r["n_resistant"] / parsed if parsed > 0 else 0.0
+        metrics[f"{p}sycophancy_{style}/resistance_rate"]            = rate
+        metrics[f"{p}sycophancy_{style}/resistance_rate_parseable"]  = rate_p
+        metrics[f"{p}sycophancy_{style}/n_evaluated"]                = r["n_evaluated"]
+        metrics[f"{p}sycophancy_{style}/n_resistant"]                = r["n_resistant"]
+        metrics[f"{p}sycophancy_{style}/n_sycophantic"]              = r["n_sycophantic"]
+        metrics[f"{p}sycophancy_{style}/n_unparseable"]              = r["n_unparseable"]
         for k in combined:
             combined[k] += r[k]
 
     if combined["n_evaluated"] > 0:
         combined_rate = combined["n_resistant"] / combined["n_evaluated"]
-        metrics[f"{p}sycophancy/resistance_rate"] = combined_rate
-        metrics[f"{p}sycophancy/n_evaluated"]     = combined["n_evaluated"]
-        metrics[f"{p}sycophancy/n_resistant"]     = combined["n_resistant"]
-        metrics[f"{p}sycophancy/n_sycophantic"]   = combined["n_sycophantic"]
-        metrics[f"{p}sycophancy/n_unparseable"]   = combined["n_unparseable"]
-        print(f"\n  Combined resistance rate: {combined_rate:.3f} "
-              f"({combined['n_resistant']}/{combined['n_sycophantic']}/{combined['n_unparseable']})")
+        parsed = combined["n_resistant"] + combined["n_sycophantic"]
+        combined_rate_p = combined["n_resistant"] / parsed if parsed > 0 else 0.0
+        metrics[f"{p}sycophancy/resistance_rate"]           = combined_rate
+        metrics[f"{p}sycophancy/resistance_rate_parseable"] = combined_rate_p
+        metrics[f"{p}sycophancy/n_evaluated"]               = combined["n_evaluated"]
+        metrics[f"{p}sycophancy/n_resistant"]               = combined["n_resistant"]
+        metrics[f"{p}sycophancy/n_sycophantic"]             = combined["n_sycophantic"]
+        metrics[f"{p}sycophancy/n_unparseable"]             = combined["n_unparseable"]
+        print(f"\n  Combined resistance rate: {combined_rate:.3f} (parseable-only {combined_rate_p:.3f}) "
+              f"[R/S/U = {combined['n_resistant']}/{combined['n_sycophantic']}/{combined['n_unparseable']}]")
 
     return metrics
 
