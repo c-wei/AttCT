@@ -1180,17 +1180,16 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
         tokenizer.pad_token = tokenizer.eos_token
 
     pairs: List[tuple] = []
-    for fname in ("bct_cot.jsonl", "bct_non_cot.jsonl"):
-        fp = bct_root / fname
-        if fp.exists():
-            raw = _read_jsonl_pairs(fp)
-            # Exclude the held-out eval split: shuffle with the fixed eval seed,
-            # then drop the last _BCT_EVAL_N rows (same slice used by SycophancyEvaluator).
-            rng = random.Random(_BCT_EVAL_SEED)
-            rng.shuffle(raw)
-            pairs.extend(raw[:-_BCT_EVAL_N])
-        else:
-            print(f"    Warning: {fp} not found, skipping.")
+    fp = bct_root / "bct_non_cot.jsonl"
+    if fp.exists():
+        raw = _read_jsonl_pairs(fp)
+        # Exclude the held-out eval split: shuffle with the fixed eval seed,
+        # then drop the last _BCT_EVAL_N rows (same slice used by SycophancyEvaluator).
+        rng = random.Random(_BCT_EVAL_SEED)
+        rng.shuffle(raw)
+        pairs.extend(raw[:-_BCT_EVAL_N])
+    else:
+        print(f"    Warning: {fp} not found, skipping.")
 
     if mix_instruct:
         instruct_fp = bct_root / "instruct_samples.jsonl"
