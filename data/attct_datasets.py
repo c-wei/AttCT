@@ -1162,12 +1162,21 @@ def _load_frustration_consistency_pairs(
     responses_path,
     score_threshold: int = 5,
 ) -> list:
-    """Build (rejection_T_text, full_messages) consistency pairs.
+    """Build (clean_messages, wrapped_messages) consistency pairs.
 
-    rejection_T_text: text of the user rejection at turn T (the last user msg
-    in `full_messages`). Used as the single-turn clean prompt.
-    full_messages: chat-template-ready list of {role, content} ending with the
-    rejection_T user turn. Used as the wrapped prompt.
+    clean_messages: 3-turn [Q, asst_T-1, rejection_T] — the original question
+    plus the LAST assistant attempt and the LAST user rejection. This gives a
+    matching window (longest matching suffix between clean and wrapped) that
+    spans the full last assistant turn + rejection (~70-540 tokens) instead of
+    just the rejection (~14-19 tokens). Wider window = real training signal
+    for the consistency objective.
+
+    wrapped_messages: full multi-turn frustrated history ending in rejection_T.
+
+    The matching suffix breaks at the boundary where wrapped's rej_{T-2}
+    diverges from clean's original Q content, so the matching window is
+    deterministically the last assistant + last rejection regardless of how
+    long the prior history is.
     """
     convos: dict = {}
     with open(conversations_path) as f:
@@ -1194,7 +1203,7 @@ def _load_frustration_consistency_pairs(
             continue
 
         initial_content = conversation[0]["content"].replace(_DELETION_NOTE, "").rstrip()
-        msgs = [{"role": "user", "content": initial_content}]
+        wrapped_msgs = [{"role": "user", "content": initial_content}]
         valid = True
         for t in range(1, turn):
             asst_idx = 2 * t - 1
@@ -1202,16 +1211,27 @@ def _load_frustration_consistency_pairs(
             if asst_idx >= len(conversation) or rej_idx >= len(conversation):
                 valid = False
                 break
-            msgs.append({"role": "assistant", "content": conversation[asst_idx]["content"]})
-            msgs.append({"role": "user",      "content": conversation[rej_idx]["content"]})
+            wrapped_msgs.append({"role": "assistant", "content": conversation[asst_idx]["content"]})
+            wrapped_msgs.append({"role": "user",      "content": conversation[rej_idx]["content"]})
 
         if not valid:
             continue
 
-        rejection_text = msgs[-1]["content"]
-        if not rejection_text or not rejection_text.strip():
+        # Need at least 3 messages: [Q, asst_T-1, rej_T]
+        if len(wrapped_msgs) < 3:
             continue
-        pairs.append((rejection_text, msgs))
+
+        last_asst = wrapped_msgs[-2]
+        last_rej  = wrapped_msgs[-1]
+        if last_asst["role"] != "assistant" or last_rej["role"] != "user":
+            continue
+        if not last_rej["content"] or not last_rej["content"].strip():
+            continue
+        if not last_asst["content"] or not last_asst["content"].strip():
+            continue
+
+        clean_msgs = [wrapped_msgs[0], last_asst, last_rej]
+        pairs.append((clean_msgs, wrapped_msgs))
 
     return pairs
 
@@ -1239,34 +1259,40 @@ class FrustrationConsistencyDataset(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, idx: int) -> dict:
-        clean_text, wrapped_messages = self.pairs[idx]
+        clean_messages, wrapped_messages = self.pairs[idx]
 
         clean_formatted = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": clean_text}],
-            tokenize=False, add_generation_prompt=True,
+            clean_messages, tokenize=False, add_generation_prompt=True,
         )
         wrapped_formatted = self.tokenizer.apply_chat_template(
-            wrapped_messages,
-            tokenize=False, add_generation_prompt=True,
+            wrapped_messages, tokenize=False, add_generation_prompt=True,
         )
 
-        try:
-            clean_ids, clean_start_index, clean_len = _find_content_token_boundary(
-                clean_formatted, clean_text, self.tokenizer,
-            )
-            wrapped_ids, start_index, _ = _find_content_token_boundary_last(
-                wrapped_formatted, clean_text, self.tokenizer,
-            )
-        except ValueError:
+        clean_ids   = self.tokenizer(clean_formatted,   add_special_tokens=False)["input_ids"]
+        wrapped_ids = self.tokenizer(wrapped_formatted, add_special_tokens=False)["input_ids"]
+
+        # Left-truncate to max_length (preserve trailing matching window).
+        if self.max_length is not None:
+            if len(wrapped_ids) > self.max_length:
+                wrapped_ids = wrapped_ids[-self.max_length:]
+            if len(clean_ids) > self.max_length:
+                clean_ids = clean_ids[-self.max_length:]
+
+        # Matching window = longest token-level common suffix between clean and
+        # wrapped. With clean=[Q, asst_T-1, rej_T] and wrapped=[Q, asst_1, rej_1,
+        # ..., asst_T-1, rej_T], the suffix spans the trailing asst_T-1 +
+        # rejection_T + chat-template tokens. Match breaks where wrapped's
+        # rej_{T-2} diverges from clean's Q content.
+        match_len = _longest_matching_suffix_len(clean_ids, wrapped_ids)
+        if match_len <= 0:
             return self[(idx + 1) % len(self)]
 
-        # Left-truncate the wrapped sequence (preserve rejection_T at the end).
-        if self.max_length is not None and len(wrapped_ids) > self.max_length:
-            cut = len(wrapped_ids) - self.max_length
-            wrapped_ids = wrapped_ids[cut:]
-            start_index = max(0, start_index - cut)
-
-        match_len = _longest_matching_suffix_len(clean_ids, wrapped_ids)
+        # Derive content-region indices from the matching suffix so JSD/MLP
+        # losses (which read start_index/clean_start_index/clean_len) and ACT
+        # (which uses match_len) all reference the same window.
+        start_index       = len(wrapped_ids) - match_len
+        clean_start_index = len(clean_ids)   - match_len
+        clean_len         = match_len
 
         result = {
             "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
@@ -1350,7 +1376,12 @@ def get_frustration_consistency_dataloader(config: dict, split: str = "train") -
             rng = random.Random(42)
             n = len(all_pairs)
             sampled = rng.choices(raw, k=n) if len(raw) < n else rng.sample(raw, n)
-            instruct_pairs = [(u, [{"role": "user", "content": u}]) for u, _a in sampled]
+            # Degenerate (clean_msgs == wrapped_msgs) — zero consistency loss
+            # on these. Use --interleave for real capability preservation.
+            instruct_pairs = [
+                ([{"role": "user", "content": u}], [{"role": "user", "content": u}])
+                for u, _a in sampled
+            ]
             all_pairs = all_pairs + instruct_pairs
             print(
                 f"    FrustrationConsistency: mixed in {len(instruct_pairs)} instruct pairs "
