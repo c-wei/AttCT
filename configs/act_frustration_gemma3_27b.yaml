@@ -38,14 +38,10 @@ training:
 
 loss:
   name: "ActivationConsistencyLoss"
-  # weight=0.1 (mse) was too aggressive on 27B: the unweighted mean_layer_loss
-  # bounced 60k–100k and trended UP over 110 steps (LoRA destabilizing, not
-  # converging). The matching window's hidden-state diffs are ~80k mse, so a
-  # weighted gradient of 8k per layer overshoots. Dropping 10x to 0.01 brings
-  # the per-step gradient into a more stable range while still leaving room
-  # for the LoRA to move. (KL stayed bounded throughout, so this is a
-  # consistency-objective stability issue, not a capability-preservation one.)
-  weight: 0.01
+  # mse formulation (paper formulation blew up at 4.93e8 on 27B due to
+  # hidden_dim=5376 sum). weight=0.1 chosen to be roughly equivalent to the
+  # 4B paper recipe in gradient magnitude (5e-5 * hidden_dim_4b = 0.13).
+  weight: 0.1
   kwargs:
     layer_selection: "all"
     normalize: false

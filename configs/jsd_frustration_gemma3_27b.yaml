@@ -29,11 +29,7 @@ lora:
 training:
   epochs: 1  # 1985 pairs / grad_accum 8 ≈ 248 optimizer steps (one full pass)
   max_steps: null
-  # Previous run at 2e-6: JSD loss was flat in [0.02, 0.05] for all 248 steps
-  # (LoRA barely moved → bit-for-bit identical pre/post sycophancy numbers).
-  # Bumping 5× to 1e-5 (typical LoRA-on-27B range, matches BCT recipe). If
-  # loss still doesn't move, next knob is loss.weight (try 10 or 100).
-  learning_rate: 1.0e-5
+  learning_rate: 2.0e-6
   weight_decay: 0.01
   grad_clip: 1.0
   grad_accumulation_steps: 8
