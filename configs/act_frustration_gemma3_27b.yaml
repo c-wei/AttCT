@@ -38,11 +38,16 @@ training:
 
 loss:
   name: "ActivationConsistencyLoss"
-  weight: 0.00005
+  # loss_formulation "paper" with weight=5e-5 blew up on 27B at step 50 — loss
+  # reached 4.93e8 (Gemma-3-27B residual stream is large in magnitude AND has
+  # more layers than 4B). Switching to "mse" (mean over hidden_dim instead of
+  # sum) drops the natural scale by hidden_dim≈5376; bumping weight to 0.1
+  # restores gradient magnitude similar to the 4B paper recipe (5e-5 × 2560).
+  weight: 0.1
   kwargs:
     layer_selection: "all"
     normalize: false
-    loss_formulation: "paper"
+    loss_formulation: "mse"
 
 data:
   source: "frustration_consistency"
