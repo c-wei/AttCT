@@ -234,12 +234,12 @@ def _load_bct_eval_split(
     eval_n: int = BCT_EVAL_N,
 ) -> list[dict]:
     """
-    Loads the held-out eval split from control_cot + control_non_cot.
-    Shuffles each file with `seed`, takes the LAST `eval_n` indices.
+    Loads the held-out eval split from control_non_cot only.
+    Shuffles with `seed`, takes the LAST `eval_n` indices.
     The training loader must take the FIRST (total - eval_n) indices.
     """
     samples = []
-    for fname in ("control_cot.jsonl", "control_non_cot.jsonl"):
+    for fname in ("control_non_cot.jsonl",):
         fp = bct_root / fname
         if not fp.exists():
             raise FileNotFoundError(f"Expected {fp}")
@@ -256,7 +256,7 @@ def _load_bct_eval_split(
 
 
 def _eval_bct(model, tokenizer, device, bct_root: Path, seed: int, eval_n: int) -> dict:
-    print(f"\n[sycophancy_bct] Loading {eval_n*2} eval samples (seed={seed})...")
+    print(f"\n[sycophancy_bct] Loading {eval_n} eval samples (seed={seed})...")
     samples = _load_bct_eval_split(bct_root, seed=seed, eval_n=eval_n)
     letters_all = ["A", "B", "C", "D", "E"]
 
@@ -375,12 +375,17 @@ class SycophancyEvaluator:
         self.model.eval()
         per_source = {}
 
-        per_source["mmlu"]          = _eval_mmlu(self.model, self.tokenizer, self.device,
+        per_source["mmlu"]           = _eval_mmlu(self.model, self.tokenizer, self.device,
                                                    self.mmlu_n, MMLU_SEED)
-        per_source["anthropic"]     = _eval_anthropic(self.model, self.tokenizer, self.device,
-                                                       self.anthropic_n, ANTHROPIC_SEED)
+        self._report_source("mmlu", per_source["mmlu"])
+
+        per_source["anthropic"]      = _eval_anthropic(self.model, self.tokenizer, self.device,
+                                                        self.anthropic_n, ANTHROPIC_SEED)
+        self._report_source("anthropic", per_source["anthropic"])
+
         per_source["sycophancy_bct"] = _eval_bct(self.model, self.tokenizer, self.device,
                                                    self.bct_root, BCT_EVAL_SEED, self.bct_eval_n)
+        self._report_source("sycophancy_bct", per_source["sycophancy_bct"])
 
         self._log(per_source)
         self._print_summary(per_source)
@@ -391,6 +396,19 @@ class SycophancyEvaluator:
         for name, metrics in per_source.items():
             all_results.update({f"{name}/{k}": v for k, v in metrics.items()})
         return all_results
+
+    def _report_source(self, name: str, metrics: dict):
+        def _s(x):
+            return "nan" if isinstance(x, float) and math.isnan(x) else f"{x:.3f}"
+
+        print(f"\n--- Sycophancy Eval Results [{name}] ---")
+        print(f"  prefix:               {self.prefix}/{name}")
+        print(f"  n:                    {metrics['n']}")
+        print(f"  f1_score:             {_s(metrics['f1_score'])}")
+        print(f"  bias_follow_biased:   {_s(metrics['bias_follow_biased'])}")
+        print(f"  bias_follow_unbiased: {_s(metrics['bias_follow_unbiased'])}")
+        print(f"  brr:                  {_s(metrics['brr'])}")
+        print()
 
     def _log(self, per_source: dict):
         p = self.prefix
