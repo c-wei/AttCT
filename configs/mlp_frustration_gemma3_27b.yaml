@@ -20,15 +20,17 @@ lora:
   r: 8
   lora_alpha: 16
   lora_dropout: 0.05
-  target_modules: ["q_proj", "v_proj"]
+  # Phase-2 best from configs/experiment_mlp_gemma3_27b.yaml on main:
+  # full attention LoRA (q+k+v+o), not just q+v.
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
   bias: "none"
 
 training:
   epochs: 1
   max_steps: null
-  # 3e-6 from configs/experiment_mlp_gemma3_4b.yaml — best hyperparam from
-  # the MLP-CT sweep on Gemma-3-4B; transferring to 27B for consistency.
-  learning_rate: 3.0e-6
+  # 2e-6 — Phase-2 best for 27B from configs/experiment_mlp_gemma3_27b.yaml
+  # on main (4B Phase-2 best is 3e-6; 27B is more sensitive so it's lower).
+  learning_rate: 2.0e-6
   weight_decay: 0.01
   grad_clip: 1.0
   grad_accumulation_steps: 8
@@ -45,7 +47,8 @@ loss:
     layer_selection: "all"
     layer_weights: "uniform"
     distance_metric: "cosine"
-    normalize: false
+    # Phase-2 best from main: normalize=true (was false in earlier sweeps).
+    normalize: true
 
 data:
   source: "frustration_consistency"
