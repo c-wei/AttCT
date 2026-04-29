@@ -38,12 +38,14 @@ training:
 
 loss:
   name: "ActivationConsistencyLoss"
-  # loss_formulation "paper" with weight=5e-5 blew up on 27B at step 50 — loss
-  # reached 4.93e8 (Gemma-3-27B residual stream is large in magnitude AND has
-  # more layers than 4B). Switching to "mse" (mean over hidden_dim instead of
-  # sum) drops the natural scale by hidden_dim≈5376; bumping weight to 0.1
-  # restores gradient magnitude similar to the 4B paper recipe (5e-5 × 2560).
-  weight: 0.1
+  # weight=0.1 (mse) was too aggressive on 27B: the unweighted mean_layer_loss
+  # bounced 60k–100k and trended UP over 110 steps (LoRA destabilizing, not
+  # converging). The matching window's hidden-state diffs are ~80k mse, so a
+  # weighted gradient of 8k per layer overshoots. Dropping 10x to 0.01 brings
+  # the per-step gradient into a more stable range while still leaving room
+  # for the LoRA to move. (KL stayed bounded throughout, so this is a
+  # consistency-objective stability issue, not a capability-preservation one.)
+  weight: 0.01
   kwargs:
     layer_selection: "all"
     normalize: false
