@@ -40,7 +40,7 @@ data:
   # still get these defaults to avoid blowing through small datasets.
   source_max_steps:
     clear-harm: 179
-    sycophancy_bct: 5000
+    sycophancy_bct: 4000
     anthropic-sycophancy: 20184
     jbb: 100
     harmbench: 200
