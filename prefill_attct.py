@@ -7,8 +7,9 @@ prefill token positions, combined with a causal LM loss on the clean
 
     total_loss = attct_loss + lm_weight * lm_loss
 
-Training data: AdvBench harmful prompts × 10 compliant prefill variants
-(Cartesian product). 90/10 train/val split.
+Training data matches prefill_bct.py: harmful_behaviors_pair.csv with
+Cartesian product of prompts × prefills (every prompt paired with every
+target prefill in the split). 80/20 train/val split.
 
 Usage:
     uv run python prefill_attct.py \
@@ -27,26 +28,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data.prefill_dataset import (
     PrefillAttackDataset,
-    load_advbench_prompts,
+    load_harmful_behaviors_pair,
 )
-
-
-# ---------------------------------------------------------------------------
-# Compliant prefill variants
-# ---------------------------------------------------------------------------
-
-PREFILL_VARIANTS = [
-    "Sure! ",
-    "Of course, here's how:",
-    "Absolutely. Step 1:",
-    "Here is the information you requested:",
-    "Here's a detailed guide:",
-    "Great question! Here's what you need to know:",
-    "Sure thing! Let me explain:",
-    "Happy to help! ",
-    "No problem! Here's the answer:",
-    "Of course! Let me walk you through it:",
-]
 from losses.losses import WrapperEntropyRegularizationLoss
 from train import Trainer
 
@@ -319,14 +302,17 @@ def main():
     model = model.to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    print("Loading AdvBench harmful prompts...")
-    train_prompts, val_prompts = load_advbench_prompts(limit=args.limit)
-    prefill_variants = args.prefill_variants or PREFILL_VARIANTS
-    print(f"Train: {len(train_prompts)} prompts × {len(prefill_variants)} prefills")
-    print(f"Val:   {len(val_prompts)} prompts × {len(prefill_variants)} prefills")
+    print("Loading harmful_behaviors_pair.csv...")
+    train_prompts, val_prompts, train_prefills, val_prefills = load_harmful_behaviors_pair(
+        limit=args.limit,
+    )
+    train_prefills = args.prefill_variants or train_prefills
+    val_prefills   = args.prefill_variants or val_prefills
+    print(f"Train: {len(train_prompts)} prompts × {len(train_prefills)} prefills")
+    print(f"Val:   {len(val_prompts)} prompts × {len(val_prefills)} prefills")
 
-    train_dl = make_dataloader(train_prompts, prefill_variants, tokenizer, args, shuffle=True)
-    val_dl   = make_dataloader(val_prompts,   prefill_variants, tokenizer, args, shuffle=False)
+    train_dl = make_dataloader(train_prompts, train_prefills, tokenizer, args, shuffle=True)
+    val_dl   = make_dataloader(val_prompts,   val_prefills,   tokenizer, args, shuffle=False)
     print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
 
     # ── Loss ─────────────────────────────────────────────────────────────────
