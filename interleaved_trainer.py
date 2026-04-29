@@ -65,6 +65,7 @@ class InterleavedTrainer:
         self.max_steps = train_cfg.get("max_steps", None)
         self.grad_clip = train_cfg.get("grad_clip")
         self.log_every = train_cfg.get("log_every_n_steps", 10)
+        self.grad_accumulation = train_cfg.get("grad_accumulation_steps", 1)
         self.kl_ratio = kl_ratio  # prob of firing a KL step alongside each AttCT step
 
         model_cfg = config["model"]
@@ -91,9 +92,10 @@ class InterleavedTrainer:
         self._first_layer_losses: list = []
         self._last_layer_losses: list = []
 
-        # Checkpoint scheduling — based on the actual number of steps the loop
-        # will take: the minimum of max_steps and the full dataset budget.
-        dataset_steps = max(1, len(attct_dataloader) * self.epochs)
+        # Checkpoint scheduling — based on the actual number of OPTIMIZER steps
+        # the loop will take (i.e. micro-batches divided by grad_accumulation).
+        dataset_micro_batches = max(1, len(attct_dataloader) * self.epochs)
+        dataset_steps = max(1, dataset_micro_batches // self.grad_accumulation)
         if self.max_steps is not None:
             total_optimizer_steps = min(self.max_steps, dataset_steps)
         else:
@@ -240,7 +242,8 @@ class InterleavedTrainer:
 
     def train(self):
         self.model.train()
-        global_step = 0
+        global_step = 0     # optimizer steps (post grad-accum)
+        batch_count = 0     # micro-batches accumulated since last optimizer step
         self.optimizer.zero_grad()
 
         # KL dataloader cycles to match the AttCT dataloader.
@@ -261,10 +264,10 @@ class InterleavedTrainer:
                 if self.max_steps is not None and global_step >= self.max_steps:
                     break
 
-                # ── AttCT backward ────────────────────────────────────
+                # ── AttCT backward (scaled for grad accumulation) ─────
                 attct_loss_dict = self._attct_step(attct_batch)
                 self._write_train_record(epoch, step_idx + 1, attct_batch)
-                attct_loss_dict["loss"].backward()
+                (attct_loss_dict["loss"] / self.grad_accumulation).backward()
 
                 # ── KL backward (controlled by kl_ratio) ─────────────
                 # kl_ratio=1.0 → always; 0.5 → every other step; 0.1 → ~1 in 10
@@ -278,19 +281,22 @@ class InterleavedTrainer:
                         kl_iter = iter(self.kl_dataloader)
                         kl_batch = next(kl_iter)
                     kl_loss_dict = self._kl_step(kl_batch)
-                    kl_loss_dict["loss"].backward()
+                    (kl_loss_dict["loss"] / self.grad_accumulation).backward()
 
-                # ── Optimizer step (combined gradient) ────────────────
-                if self.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.grad_clip,
-                    )
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                global_step += 1
-                n_steps += 1
+                batch_count += 1
 
-                # Bookkeeping
+                # ── Optimizer step every grad_accumulation micro-batches ──
+                if batch_count % self.grad_accumulation == 0:
+                    if self.grad_clip is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.grad_clip,
+                        )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+                    global_step += 1
+                    n_steps += 1
+
+                # Bookkeeping (per micro-batch, undo the /grad_accum scaling)
                 attct_val = attct_loss_dict["loss"].item()
                 kl_val = kl_loss_dict["loss"].item() if kl_loss_dict is not None else 0.0
                 epoch_attct_loss += attct_val
@@ -302,15 +308,15 @@ class InterleavedTrainer:
                 pbar.set_postfix(**postfix)
 
                 # ── Checkpoint ────────────────────────────────────────
-                if global_step in self.checkpoint_steps:
+                if global_step in self.checkpoint_steps and batch_count % self.grad_accumulation == 0:
                     self._save_checkpoint(tag=f"step_{global_step}")
                     if self.checkpoint_fn is not None:
                         print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
                         self.checkpoint_fn(global_step)
                         self.model.train()
 
-                # ── Logging ───────────────────────────────────────────
-                if global_step % self.log_every == 0:
+                # ── Logging (on optimizer steps only) ─────────────────
+                if global_step > 0 and global_step % self.log_every == 0 and batch_count % self.grad_accumulation == 0:
                     self._log(epoch, global_step, attct_loss_dict, kl_loss_dict)
 
             # End of epoch summary

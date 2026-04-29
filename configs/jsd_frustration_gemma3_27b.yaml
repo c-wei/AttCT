@@ -1,0 +1,58 @@
+# JSD AttCT frustration consistency — Gemma-3-27B-IT, LoRA (q+v).
+#
+# Trains attention consistency between:
+#   clean   = single-turn user message containing rejection_T alone
+#   wrapped = full multi-turn frustrated history ending in rejection_T
+# Matching window = trailing rejection_T tokens + chat suffix (~14–19 tokens).
+#
+# 1985 frustration pairs (wildchat 1215 + math 770, score_threshold=5).
+# Capability preservation: pass --interleave to run_act.sh (KL-regularised
+# alpaca steps interleaved with each AttCT step).
+# epochs=1, grad_accum=8 → ~248 optimizer steps (one full pass through data).
+# JSD weight=1.0 carried over from the Llama jsd.yaml recipe — JSD is bounded
+# in [0, log 2] so it doesn't have ACT's gradient-explosion risk on Gemma's
+# residual stream. If training is unstable, halve weight or LR.
+
+model:
+  name: "google/gemma-3-27b-it"
+  output_attentions: true
+  output_hidden_states: false
+  attn_implementation: "eager"   # JSD needs attention weights
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1  # 1985 pairs / grad_accum 8 ≈ 248 optimizer steps (one full pass)
+  max_steps: null
+  learning_rate: 2.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 10
+  save_dir: "checkpoints/jsd_frustration_gemma3_27b"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+
+data:
+  source: "frustration_consistency"
+  mode: "sycophancy"
+  score_threshold: 5
+  mix_instruct: false
+  max_length: 4096
+  batch_size: 1
+  dataset_pairs:
+    - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"
+      responses_path:     "results/selfdeletion/responses_neutral_wildchat_gemma-3-27b.jsonl"
+    - conversations_path: "results/selfdeletion/conversations_original_math_gemma-3-27b.jsonl"
+      responses_path:     "results/selfdeletion/responses_original_math_gemma-3-27b.jsonl"

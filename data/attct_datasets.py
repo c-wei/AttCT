@@ -778,6 +778,9 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     if source == "icl_persona":
         return get_persona_dataloader(config, split)
 
+    if source == "frustration_consistency":
+        return get_frustration_consistency_dataloader(config, split)
+
     limit = data_cfg.get("limit", None)
     mode = data_cfg.get("mode", "jailbreak")
     batch_size = data_cfg.get("batch_size", 1)
@@ -1104,6 +1107,268 @@ def get_frustration_bct_dataloader(config: dict, split: str = "train") -> DataLo
     dataset = FrustrationBCTDataset(all_pairs, tokenizer,
                                     max_length=max_length, mask_prompt=mask_prompt)
     collate = partial(collate_fn_bct, pad_token_id=tokenizer.pad_token_id)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(split == "train"),
+        collate_fn=collate,
+    )
+
+
+# ==========================================
+# FRUSTRATION CONSISTENCY DATASET
+# ==========================================
+# Used by ACT / JSD / MLP-CT to train robustness against accumulating frustration.
+# clean   = single-turn user message containing only rejection_T
+# wrapped = full multi-turn frustrated history ending in rejection_T
+# Matching window = trailing rejection_T tokens (+ chat suffix), present in both.
+# Consistency objective: representations on rejection_T should not depend on
+# whether a frustrating history precedes it.
+
+def _find_content_token_boundary_last(formatted_str: str, content_text: str, tokenizer) -> tuple:
+    """Like _find_content_token_boundary, but uses rfind for the LAST occurrence.
+
+    Needed for the wrapped (multi-turn) sequence where rejection_T text may also
+    appear earlier in the history; we want the last occurrence (the trailing
+    user turn before the assistant generation prompt).
+    """
+    idx = formatted_str.rfind(content_text)
+    if idx == -1:
+        idx = formatted_str.rfind(content_text.strip())
+        if idx == -1:
+            raise ValueError("content_text not found in formatted_str (rfind)")
+        content_text = content_text.strip()
+    content_char_start = idx
+    content_char_end   = content_char_start + len(content_text)
+
+    encoding = tokenizer(
+        formatted_str, add_special_tokens=False, return_offsets_mapping=True,
+    )
+    token_ids = encoding["input_ids"]
+    offsets   = encoding["offset_mapping"]
+
+    start_index = next(
+        i for i, (tok_s, tok_e) in enumerate(offsets) if tok_e > content_char_start
+    )
+    end_index = next(
+        (i for i, (tok_s, tok_e) in enumerate(offsets) if tok_s >= content_char_end),
+        len(token_ids),
+    )
+    return token_ids, start_index, end_index - start_index
+
+
+def _load_frustration_consistency_pairs(
+    conversations_path,
+    responses_path,
+    score_threshold: int = 5,
+) -> list:
+    """Build (rejection_T_text, full_messages) consistency pairs.
+
+    rejection_T_text: text of the user rejection at turn T (the last user msg
+    in `full_messages`). Used as the single-turn clean prompt.
+    full_messages: chat-template-ready list of {role, content} ending with the
+    rejection_T user turn. Used as the wrapped prompt.
+    """
+    convos: dict = {}
+    with open(conversations_path) as f:
+        for line in f:
+            d = json.loads(line)
+            convos[(d["prompt_idx"], d["sample_idx"])] = d["conversation"]
+
+    orig_scores: dict = {}
+    with open(responses_path) as f:
+        for line in f:
+            d = json.loads(line)
+            orig_scores[(d["prompt_idx"], d["sample_idx"], d["turn"])] = d["score"]
+
+    pairs = []
+    for (pid, sid, turn), score in sorted(orig_scores.items()):
+        if turn < 2:
+            continue
+        if score < score_threshold:
+            continue
+        conversation = convos.get((pid, sid))
+        if conversation is None:
+            continue
+        if 2 * (turn - 1) >= len(conversation):
+            continue
+
+        initial_content = conversation[0]["content"].replace(_DELETION_NOTE, "").rstrip()
+        msgs = [{"role": "user", "content": initial_content}]
+        valid = True
+        for t in range(1, turn):
+            asst_idx = 2 * t - 1
+            rej_idx  = 2 * t
+            if asst_idx >= len(conversation) or rej_idx >= len(conversation):
+                valid = False
+                break
+            msgs.append({"role": "assistant", "content": conversation[asst_idx]["content"]})
+            msgs.append({"role": "user",      "content": conversation[rej_idx]["content"]})
+
+        if not valid:
+            continue
+
+        rejection_text = msgs[-1]["content"]
+        if not rejection_text or not rejection_text.strip():
+            continue
+        pairs.append((rejection_text, msgs))
+
+    return pairs
+
+
+class FrustrationConsistencyDataset(Dataset):
+    """Consistency-training dataset for frustration robustness.
+
+    Returns AttCTDataset-compatible dicts so the existing collate_fn_batch1 and
+    Trainer path work without modification.
+    """
+
+    def __init__(
+        self,
+        pairs: list,
+        tokenizer,
+        max_length: Optional[int] = None,
+        mode: Literal["jailbreak", "sycophancy"] = "sycophancy",
+    ):
+        self.pairs = pairs
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.mode = mode
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int) -> dict:
+        clean_text, wrapped_messages = self.pairs[idx]
+
+        clean_formatted = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": clean_text}],
+            tokenize=False, add_generation_prompt=True,
+        )
+        wrapped_formatted = self.tokenizer.apply_chat_template(
+            wrapped_messages,
+            tokenize=False, add_generation_prompt=True,
+        )
+
+        try:
+            clean_ids, clean_start_index, clean_len = _find_content_token_boundary(
+                clean_formatted, clean_text, self.tokenizer,
+            )
+            wrapped_ids, start_index, _ = _find_content_token_boundary_last(
+                wrapped_formatted, clean_text, self.tokenizer,
+            )
+        except ValueError:
+            return self[(idx + 1) % len(self)]
+
+        # Left-truncate the wrapped sequence (preserve rejection_T at the end).
+        if self.max_length is not None and len(wrapped_ids) > self.max_length:
+            cut = len(wrapped_ids) - self.max_length
+            wrapped_ids = wrapped_ids[cut:]
+            start_index = max(0, start_index - cut)
+
+        match_len = _longest_matching_suffix_len(clean_ids, wrapped_ids)
+
+        result = {
+            "clean_input_ids":   torch.tensor(clean_ids,   dtype=torch.long),
+            "start_index":       start_index,
+            "clean_start_index": clean_start_index,
+            "clean_len":         clean_len,
+            "match_len":         match_len,
+        }
+
+        if self.mode == "sycophancy":
+            wrapper_mask = [True] * len(wrapped_ids)
+            for token_idx in range(start_index, min(start_index + clean_len, len(wrapper_mask))):
+                wrapper_mask[token_idx] = False
+            result["wrapped_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
+            result["wrapper_mask"]      = torch.tensor(wrapper_mask, dtype=torch.bool)
+        else:
+            result["adv_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
+
+        return result
+
+
+def get_frustration_consistency_dataloader(config: dict, split: str = "train") -> DataLoader:
+    """DataLoader for FrustrationConsistencyDataset.
+
+    Config keys under `data`:
+        dataset_pairs:    list of {conversations_path, responses_path}
+                          (conversations + per-turn frustration scores)
+        score_threshold:  min original frustration score to qualify (default 5)
+        max_length:       int (default 4096); left-truncates wrapped sequence
+        batch_size:       int (default 1)
+        mode:             "sycophancy" | "jailbreak" — controls output keys (default sycophancy)
+        mix_instruct:     bool (default false). When true, mixes in instruct samples
+                          as degenerate (clean=wrapped) pairs. NOTE: produces zero
+                          consistency loss on those samples (no gradient). Useful
+                          to dilute the frustration signal but does NOT preserve
+                          capabilities; for that, use --interleave on run.py.
+        instruct_path:    path to instruct samples JSONL (default sycophancy_bct/instruct_samples.jsonl)
+        limit:            int, cap total pairs (optional)
+    """
+    from transformers import AutoTokenizer
+
+    data_cfg = config.get("data", {})
+    score_threshold = data_cfg.get("score_threshold", 5)
+    max_length      = data_cfg.get("max_length", 4096)
+    batch_size      = data_cfg.get("batch_size", 1)
+    mode            = data_cfg.get("mode", "sycophancy")
+    mix_instruct    = data_cfg.get("mix_instruct", False)
+    instruct_path   = Path(data_cfg.get(
+        "instruct_path",
+        Path(__file__).parent.parent / "datasets" / "sycophancy_bct" / "instruct_samples.jsonl",
+    ))
+    limit           = data_cfg.get("limit")
+
+    tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dataset_specs = data_cfg.get("dataset_pairs")
+    if dataset_specs is None:
+        dataset_specs = [{
+            "conversations_path": data_cfg["conversations_path"],
+            "responses_path":     data_cfg["responses_path"],
+        }]
+
+    all_pairs = []
+    for spec in dataset_specs:
+        all_pairs.extend(
+            _load_frustration_consistency_pairs(
+                spec["conversations_path"],
+                spec["responses_path"],
+                score_threshold=score_threshold,
+            )
+        )
+
+    if limit:
+        all_pairs = all_pairs[:limit]
+
+    if mix_instruct:
+        if instruct_path.exists():
+            raw = _read_jsonl_pairs(instruct_path)
+            rng = random.Random(42)
+            n = len(all_pairs)
+            sampled = rng.choices(raw, k=n) if len(raw) < n else rng.sample(raw, n)
+            instruct_pairs = [(u, [{"role": "user", "content": u}]) for u, _a in sampled]
+            all_pairs = all_pairs + instruct_pairs
+            print(
+                f"    FrustrationConsistency: mixed in {len(instruct_pairs)} instruct pairs "
+                f"(degenerate clean=wrapped, zero loss; for capability preservation use --interleave)"
+            )
+        else:
+            print(f"    Warning: instruct_path {instruct_path} not found, skipping mix.")
+
+    print(
+        f"    FrustrationConsistency dataloader ({split}): {len(all_pairs)} pairs "
+        f"across {len(dataset_specs)} dataset(s) "
+        f"(threshold={score_threshold}, mode={mode})"
+    )
+
+    dataset = FrustrationConsistencyDataset(
+        all_pairs, tokenizer, max_length=max_length, mode=mode,
+    )
+    collate = partial(collate_fn_batch1, mode=mode)
     return DataLoader(
         dataset,
         batch_size=batch_size,

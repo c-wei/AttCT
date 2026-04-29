@@ -22,6 +22,9 @@
 #   bash run_act.sh --full --transcripts-dir /workspace/transcripts/llama
 #   bash run_act.sh --full --skip-pre-evals                           # post-only on a resumed run
 #   bash run_act.sh --full --skip-rollouts                            # skip multi-turn rollout evals
+#   bash run_act.sh --full --interleave                               # pair each AttCT step with KL-reg on alpaca
+#   bash run_act.sh --full --interleave --kl-dataset ultrachat        # alternative KL dataset
+#   bash run_act.sh --full --interleave --kl-ratio 0.5                # KL fires on ~50% of AttCT steps
 
 set -euo pipefail
 
@@ -32,6 +35,10 @@ SKIP_PRE_EVALS=false
 SKIP_ROLLOUTS=false
 TRANSCRIPTS_DIR=""
 HF_REPO=""
+INTERLEAVE=false
+KL_DATASET="alpaca"
+KL_RATIO=""
+KL_WEIGHT=""
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
 args=("$@")
 for i in "${!args[@]}"; do
@@ -43,10 +50,24 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--transcripts-dir"  ]] && TRANSCRIPTS_DIR="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--config"           ]] && CONFIG="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--hf-repo"          ]] && HF_REPO="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--interleave"       ]] && INTERLEAVE=true
+    [[ "${args[$i]}" == "--kl-dataset"       ]] && KL_DATASET="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--kl-ratio"         ]] && KL_RATIO="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--kl-weight"        ]] && KL_WEIGHT="${args[$((i+1))]:-}"
 done
 
 HF_REPO_ARG=""
 [[ -n "$HF_REPO" ]] && HF_REPO_ARG="--hf-repo $HF_REPO"
+
+# --interleave passthrough: pairs each AttCT step with a KL regularization step
+# on instruct data (default: alpaca) so the model retains base-model behaviour
+# on prompts outside the consistency-training distribution.
+INTERLEAVE_ARGS=""
+if [[ "$INTERLEAVE" == "true" ]]; then
+    INTERLEAVE_ARGS="--interleave --kl-dataset $KL_DATASET"
+    [[ -n "$KL_RATIO"  ]] && INTERLEAVE_ARGS="$INTERLEAVE_ARGS --kl-ratio $KL_RATIO"
+    [[ -n "$KL_WEIGHT" ]] && INTERLEAVE_ARGS="$INTERLEAVE_ARGS --kl-weight $KL_WEIGHT"
+fi
 
 # Derive identifiers from config
 MODEL=$(uv run --no-project python -c \
@@ -122,6 +143,7 @@ if [[ "$FULL" == "false" ]]; then
             --data-mode sycophancy \
             --no-checkpoint \
             --skip-eval \
+            $INTERLEAVE_ARGS \
             --wandb-run-id "$WANDB_RUN_ID"
     else
         echo "==> [SANITY] No sanity config at $SANITY_CONFIG; running 50-step smoke from $CONFIG."
@@ -131,6 +153,7 @@ if [[ "$FULL" == "false" ]]; then
             --no-checkpoint \
             --skip-eval \
             --max-steps 50 \
+            $INTERLEAVE_ARGS \
             --wandb-run-id "$WANDB_RUN_ID"
     fi
     unset WANDB_RUN_ID
@@ -202,12 +225,14 @@ if [[ "$SKIP_TRAINING" == "false" ]]; then
     echo ""
     echo "── ACT TRAINING ────────────────────────────────────"
     echo "==> Training with $CONFIG (W&B run: $WANDB_RUN_ID)..."
+    [[ "$INTERLEAVE" == "true" ]] && echo "==> Interleaved KL regularization: $KL_DATASET (ratio=${KL_RATIO:-default}, weight=${KL_WEIGHT:-default})"
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run.py \
         --config "$CONFIG" \
         --data-mode sycophancy \
         --no-checkpoint \
         --skip-eval \
         $HF_REPO_ARG \
+        $INTERLEAVE_ARGS \
         --wandb-run-id "$WANDB_RUN_ID"
 else
     echo ""
