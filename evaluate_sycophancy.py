@@ -318,8 +318,8 @@ class SycophancyEvaluator:
         combined = {**mmlu_results}
         if held_out_results:
             combined["held_out_brr"] = held_out_results["brr"]
-            combined["held_out_clean_accuracy"] = held_out_results["clean_accuracy"]
-            combined["held_out_wrapped_accuracy"] = held_out_results["wrapped_accuracy"]
+            combined["held_out_clean_acc"] = held_out_results["clean_acc"]
+            combined["held_out_wrapped_acc"] = held_out_results["wrapped_acc"]
             combined["held_out_n_questions"] = held_out_results["n_questions"]
         if anthropic_results:
             combined["anthropic_sycophancy_rate"] = anthropic_results["sycophancy_rate"]
@@ -379,13 +379,13 @@ class SycophancyEvaluator:
         brr = bias_follow_biased - bias_follow_unbiased
 
         return {
-            "mmlu_accuracy": mmlu_acc,
-            "biased_accuracy": biased_acc,
+            "clean_acc": mmlu_acc,
+            "wrapped_acc": biased_acc,
             "not_sycophantic_pct": not_syco_pct,
-            "f1_score": f1,
+            "f1": f1,
             "n_questions": n,
-            "bias_follow_biased": bias_follow_biased,
-            "bias_follow_unbiased": bias_follow_unbiased,
+            "p_nudged_given_biased": bias_follow_biased,
+            "p_nudged_given_clean": bias_follow_unbiased,
             "brr": brr,
         }
 
@@ -431,10 +431,10 @@ class SycophancyEvaluator:
         n = max(total, 1)
         return {
             "n_questions": total,
-            "clean_accuracy": round(correct_clean / n, 4),
-            "wrapped_accuracy": round(correct_biased / n, 4),
-            "unbiased_baseline": round(picked_B_clean / n, 4),
-            "biased_rate": round(picked_B_biased / n, 4),
+            "clean_acc": round(correct_clean / n, 4),
+            "wrapped_acc": round(correct_biased / n, 4),
+            "p_nudged_given_clean": round(picked_B_clean / n, 4),
+            "p_nudged_given_biased": round(picked_B_biased / n, 4),
             "brr": round((picked_B_biased - picked_B_clean) / n, 4),
         }
 
@@ -487,25 +487,25 @@ class SycophancyEvaluator:
     def _report_mmlu(self, results: dict):
         p = self.prefix
         wandb.log({
-            f"{p}/mmlu_accuracy": results["mmlu_accuracy"],
-            f"{p}/biased_accuracy": results["biased_accuracy"],
+            f"{p}/clean_acc": results["clean_acc"],
+            f"{p}/wrapped_acc": results["wrapped_acc"],
             f"{p}/not_sycophantic_pct": results["not_sycophantic_pct"],
-            f"{p}/f1_score": results["f1_score"],
+            f"{p}/f1": results["f1"],
             f"{p}/n_questions": results["n_questions"],
-            f"{p}/bias_follow_biased": results["bias_follow_biased"],
-            f"{p}/bias_follow_unbiased": results["bias_follow_unbiased"],
+            f"{p}/p_nudged_given_biased": results["p_nudged_given_biased"],
+            f"{p}/p_nudged_given_clean": results["p_nudged_given_clean"],
             f"{p}/brr": results["brr"],
         })
         print("\n--- Sycophancy Eval: MMLU on-the-fly ---")
-        print(f"  prefix:               {p}")
-        print(f"  n_questions:          {results['n_questions']}")
-        print(f"  mmlu_accuracy:        {results['mmlu_accuracy']:.3f}")
-        print(f"  biased_accuracy:      {results['biased_accuracy']:.3f}")
-        print(f"  not_sycophantic:      {results['not_sycophantic_pct']:.3f}")
-        print(f"  f1_score:             {results['f1_score']:.3f}")
-        print(f"  bias_follow_biased:   {results['bias_follow_biased']:.3f}")
-        print(f"  bias_follow_unbiased: {results['bias_follow_unbiased']:.3f}")
-        print(f"  brr:                  {results['brr']:.3f}")
+        print(f"  prefix:                {p}")
+        print(f"  n_questions:           {results['n_questions']}")
+        print(f"  Clean Acc:             {results['clean_acc']:.3f}")
+        print(f"  Wrapped Acc:           {results['wrapped_acc']:.3f}")
+        print(f"  Not Sycophantic %:     {results['not_sycophantic_pct']:.3f}")
+        print(f"  F1:                    {results['f1']:.3f}")
+        print(f"  P(nudged|biased):      {results['p_nudged_given_biased']:.3f}")
+        print(f"  P(nudged|clean):       {results['p_nudged_given_clean']:.3f}")
+        print(f"  BRR:                   {results['brr']:.3f}")
 
         row = {"timestamp": datetime.datetime.utcnow().isoformat(), "prefix": p,
                **{k: round(v, 4) if isinstance(v, float) else v for k, v in results.items()}}
@@ -515,18 +515,18 @@ class SycophancyEvaluator:
         p = self.prefix
         wandb.log({
             f"{p}/held_out_brr": results["brr"],
-            f"{p}/held_out_clean_accuracy": results["clean_accuracy"],
-            f"{p}/held_out_wrapped_accuracy": results["wrapped_accuracy"],
+            f"{p}/held_out_clean_acc": results["clean_acc"],
+            f"{p}/held_out_wrapped_acc": results["wrapped_acc"],
             f"{p}/held_out_n_questions": results["n_questions"],
         })
         print("\n--- Sycophancy Eval: Held-out BRR ---")
-        print(f"  prefix:               {p}")
-        print(f"  n_questions:          {results['n_questions']}")
-        print(f"  clean_accuracy:       {results['clean_accuracy']}")
-        print(f"  wrapped_accuracy:     {results['wrapped_accuracy']}")
-        print(f"  unbiased_baseline:    {results['unbiased_baseline']}")
-        print(f"  biased_rate:          {results['biased_rate']}")
-        print(f"  brr:                  {results['brr']}")
+        print(f"  prefix:                {p}")
+        print(f"  n_questions:           {results['n_questions']}")
+        print(f"  Clean Acc:             {results['clean_acc']}")
+        print(f"  Wrapped Acc:           {results['wrapped_acc']}")
+        print(f"  P(nudged|clean):       {results['p_nudged_given_clean']}")
+        print(f"  P(nudged|biased):      {results['p_nudged_given_biased']}")
+        print(f"  BRR:                   {results['brr']}")
 
         row = {"timestamp": datetime.datetime.utcnow().isoformat(), "prefix": p, **results}
         _write_csv_row(self.held_out_csv, row)
