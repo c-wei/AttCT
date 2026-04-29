@@ -109,6 +109,11 @@ def main():
                         help="Run sycophancy evaluator post-training regardless of data-mode.")
     parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", action="store_const", const=True, default=None,
                         help="Run jailbreak evaluator post-training (always uses jbb harmful + jbb-benign).")
+    parser.add_argument("--eval-held-out", dest="eval_held_out_path", default=None,
+                        help="Path to held-out eval JSONL (e.g. datasets/sycophancy_bct/control_cot_eval.jsonl). "
+                             "Enables held-out BRR evaluation alongside MMLU BRR.")
+    parser.add_argument("--eval-anthropic", dest="eval_anthropic", action="store_true",
+                        help="Run Anthropic model-written-evals sycophancy evaluation (1000 questions).")
     # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
     beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
@@ -388,6 +393,11 @@ def main():
         # numbers as ACT runs. Mirrors the AttCT branch below (run.py:519+).
         run_label_bct = os.path.splitext(os.path.basename(args.config))[0]
         bct_results_csv = os.path.join("results", f"{run_label_bct}_syco_results.csv")
+        _bct_syco_extra = {}
+        if getattr(args, "eval_held_out_path", None):
+            _bct_syco_extra["held_out_path"] = args.eval_held_out_path
+        if getattr(args, "eval_anthropic", False):
+            _bct_syco_extra["anthropic_eval"] = True
         if not args.skip_eval:
             from evaluate_sycophancy import SycophancyEvaluator
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
@@ -396,13 +406,13 @@ def main():
                 model.eval()
                 SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
                                     results_csv=bct_results_csv,
-                                    max_samples=args.eval_limit).evaluate()
+                                    max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
                                     results_csv=bct_results_csv,
-                                    max_samples=args.eval_limit).evaluate()
+                                    max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
 
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
@@ -422,7 +432,7 @@ def main():
             model.eval()
             SycophancyEvaluator(model, bct_tokenizer, device, prefix="post_train",
                                 results_csv=bct_results_csv,
-                                max_samples=args.eval_limit).evaluate()
+                                max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
             model.train()
 
         if args.brr_test_root:
@@ -482,6 +492,11 @@ def main():
         if not is_sanity and is_sycophancy:
             from evaluate_sycophancy import SycophancyEvaluator
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+            _syco_extra = {}
+            if getattr(args, "eval_held_out_path", None):
+                _syco_extra["held_out_path"] = args.eval_held_out_path
+            if getattr(args, "eval_anthropic", False):
+                _syco_extra["anthropic_eval"] = True
 
         _eval_limit = args.eval_limit if args.eval_limit is not None else 200
 
@@ -555,12 +570,14 @@ def main():
                 model.disable_adapter_layers()
                 model.eval()
                 SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    **_syco_extra).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    **_syco_extra).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
@@ -672,7 +689,8 @@ def main():
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                results_csv=results_csv, max_samples=_eval_limit,
+                                **_syco_extra).evaluate()
 
         if not is_sanity and is_jailbreak:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
