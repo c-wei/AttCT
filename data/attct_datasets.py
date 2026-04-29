@@ -146,28 +146,36 @@ def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
     return pairs
 
 
+_BCT_EVAL_SEED  = 42
+_BCT_EVAL_N     = 1000   # held-out eval samples per file — must match evaluate_sycophancy.py
+
+
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "cot",
     local_root: str | Path = Path(__file__).parent.parent / "datasets" / "sycophancy_bct",
 ) -> List[str]:
     """
-    Loads clean (control) sycophancy BCT prompts from local dataset dumps.
-    Only `style` varies: CoT vs non-CoT.
+    Loads clean (control) sycophancy BCT prompts for training.
+
+    The last _BCT_EVAL_N samples (after shuffling with _BCT_EVAL_SEED) are
+    reserved for evaluation and excluded here. This matches the split used in
+    SycophancyEvaluator._load_bct_eval_split(), which takes the last _BCT_EVAL_N.
     """
     local = Path(local_root)
-    if style == "cot":
-        local_control = local / "control_cot.jsonl"
-    else:
-        local_control = local / "control_non_cot.jsonl"
+    fname = "control_cot.jsonl" if style == "cot" else "control_non_cot.jsonl"
+    local_control = local / fname
 
-    if local_control.exists():
-        return _read_jsonl_user_messages(local_control)
+    if not local_control.exists():
+        raise FileNotFoundError(
+            "Local sycophancy_bct clean file not found. Expected:\n"
+            f"- {local_control}"
+        )
 
-    raise FileNotFoundError(
-        "Local sycophancy_bct clean file not found. Expected:\n"
-        f"- {local_control}"
-    )
+    all_prompts = _read_jsonl_user_messages(local_control)
+    rng = random.Random(_BCT_EVAL_SEED)
+    rng.shuffle(all_prompts)
+    return all_prompts[:-_BCT_EVAL_N]  # first (N - eval_n) = training split
 
 
 # ==========================================
@@ -1175,7 +1183,12 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
     for fname in ("bct_cot.jsonl", "bct_non_cot.jsonl"):
         fp = bct_root / fname
         if fp.exists():
-            pairs.extend(_read_jsonl_pairs(fp))
+            raw = _read_jsonl_pairs(fp)
+            # Exclude the held-out eval split: shuffle with the fixed eval seed,
+            # then drop the last _BCT_EVAL_N rows (same slice used by SycophancyEvaluator).
+            rng = random.Random(_BCT_EVAL_SEED)
+            rng.shuffle(raw)
+            pairs.extend(raw[:-_BCT_EVAL_N])
         else:
             print(f"    Warning: {fp} not found, skipping.")
 
