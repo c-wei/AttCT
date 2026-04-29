@@ -498,7 +498,7 @@ def main():
             if getattr(args, "eval_anthropic", False):
                 _syco_extra["anthropic_eval"] = True
 
-        _eval_limit = args.eval_limit if args.eval_limit is not None else 200
+        _eval_limit = args.eval_limit if args.eval_limit is not None else 500
 
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
@@ -545,7 +545,8 @@ def main():
                     model.eval()
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit,
+                                            **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
@@ -555,7 +556,8 @@ def main():
                 else:
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit,
+                                            **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
