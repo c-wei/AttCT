@@ -94,19 +94,28 @@ class InterleavedTrainer:
 
         # Checkpoint scheduling — based on the actual number of OPTIMIZER steps
         # the loop will take (i.e. micro-batches divided by grad_accumulation).
+        # Mid-training checkpoints (save + behavioral eval) are scheduled at
+        # 1/3, 2/3, 3/3 of total steps. With --no-checkpoint the caller passes
+        # checkpoint_fn=None, in which case we skip mid-training saves entirely
+        # so the run doesn't bloat HF / disk with intermediate adapters.
         dataset_micro_batches = max(1, len(attct_dataloader) * self.epochs)
         dataset_steps = max(1, dataset_micro_batches // self.grad_accumulation)
         if self.max_steps is not None:
             total_optimizer_steps = min(self.max_steps, dataset_steps)
         else:
             total_optimizer_steps = dataset_steps
-        self.checkpoint_steps = {
-            total_optimizer_steps // 3,
-            (2 * total_optimizer_steps) // 3,
-            total_optimizer_steps,
-        }
-        self.checkpoint_steps.discard(0)
-        print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
+        if checkpoint_fn is None:
+            self.checkpoint_steps = set()
+            print("Mid-training checkpoint saves: SKIPPED (--no-checkpoint). "
+                  f"Total optimizer steps: {total_optimizer_steps}")
+        else:
+            self.checkpoint_steps = {
+                total_optimizer_steps // 3,
+                (2 * total_optimizer_steps) // 3,
+                total_optimizer_steps,
+            }
+            self.checkpoint_steps.discard(0)
+            print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
         self.optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, model.parameters()),

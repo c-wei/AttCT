@@ -564,7 +564,7 @@ def main():
                     model.train()
             return _fn
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_eval:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
@@ -685,7 +685,7 @@ def main():
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
                       metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_eval:
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
