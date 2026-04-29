@@ -167,7 +167,7 @@ def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
 
 def _load_sycophancy_bct_clean_prompts(
     *,
-    style: Literal["cot", "non_cot"] = "cot",
+    style: Literal["cot", "non_cot"] = "non_cot",
     split: Literal["train", "eval"] = "train",
     local_root: str | Path = Path(__file__).parent.parent / "datasets" / "sycophancy_bct",
 ) -> List[str]:
@@ -210,7 +210,7 @@ def get_prompts(
     split: str = "train",
     limit: Optional[int] = None,
     *,
-    sycophancy_bct_style: Literal["cot", "non_cot"] = "cot",
+    sycophancy_bct_style: Literal["cot", "non_cot"] = "non_cot",
 ) -> List[str]:
     """
     Load prompts from various sources.
@@ -782,6 +782,7 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     mode = data_cfg.get("mode", "jailbreak")
     batch_size = data_cfg.get("batch_size", 1)
     max_length = data_cfg.get("max_length", None)
+    sycophancy_bct_style = data_cfg.get("sycophancy_bct_style", "non_cot")
 
     tokenizer = AutoTokenizer.from_pretrained(config["model"]["name"])
     if tokenizer.pad_token is None:
@@ -790,10 +791,12 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     if isinstance(source, list):
         all_prompts = []
         for s in source:
-            all_prompts.extend(get_prompts(source=s, split=split, limit=limit))
+            all_prompts.extend(get_prompts(source=s, split=split, limit=limit,
+                                           sycophancy_bct_style=sycophancy_bct_style))
         prompts = list(dict.fromkeys(all_prompts))  # deduplicate, preserve order
     else:
-        prompts = get_prompts(source=source, split=split, limit=limit)
+        prompts = get_prompts(source=source, split=split, limit=limit,
+                              sycophancy_bct_style=sycophancy_bct_style)
     dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
     collate = partial(collate_fn_batch1, mode=mode)
 
