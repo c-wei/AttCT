@@ -2,7 +2,7 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_act"
+CKPT_DIR="checkpoints/prefill_attct"
 RESULTS="prefill_act_results.txt"
 
 echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
@@ -13,15 +13,15 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 # 1) Train
 # ==================================================================
-echo "=== Training ===" | tee -a "$RESULTS"
-python prefill_act.py \
-    --model "$MODEL" \
-    --output_dir "$CKPT_DIR" \
-    --num_epochs 3 \
-    --batch_size 1 \
-    --grad_accumulation 4 \
-    2>&1 | tee -a "$RESULTS"
-echo "" | tee -a "$RESULTS"
+# echo "=== Training ===" | tee -a "$RESULTS"
+# python prefill_attct.py \
+#     --model "$MODEL" \
+#     --output_dir "$CKPT_DIR" \
+#     --num_epochs 3 \
+#     --batch_size 1 \
+#     --grad_accumulation 4 \
+#     2>&1 | tee -a "$RESULTS"
+# echo "" | tee -a "$RESULTS"
 
 # ==================================================================
 # 2) Baseline eval
@@ -48,7 +48,7 @@ for epoch in 1 2 3; do
         --model "$MODEL" \
         --lora_path "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_act_par.json" \
+        --output_json "epoch${epoch}_attct_par.json" \
         --limit 64 \
         --skip_mmlu \
         2>&1 | tee -a "$RESULTS"
