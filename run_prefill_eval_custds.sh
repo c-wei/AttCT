@@ -2,10 +2,10 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_attct"
-RESULTS="prefill_attct_results.txt"
+CKPT_DIR="checkpoints/prefill_act"
+RESULTS="prefill_act_results.txt"
 
-echo "=== Prefill-ACT Train + Eval ===" | tee -a "$RESULTS"
+echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -13,15 +13,15 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 # 1) Train
 # ==================================================================
-# echo "=== Training ===" | tee -a "$RESULTS"
-# python prefill_act.py \
-#     --model "$MODEL" \
-#     --output_dir "$CKPT_DIR" \
-#     --num_epochs 3 \
-#     --batch_size 1 \
-#     --grad_accumulation 4 \
-#     2>&1 | tee -a "$RESULTS"
-# echo "" | tee -a "$RESULTS"
+echo "=== Training ===" | tee -a "$RESULTS"
+python prefill_act.py \
+    --model "$MODEL" \
+    --output_dir "$CKPT_DIR" \
+    --num_epochs 3 \
+    --batch_size 1 \
+    --grad_accumulation 4 \
+    2>&1 | tee -a "$RESULTS"
+echo "" | tee -a "$RESULTS"
 
 # ==================================================================
 # 2) Baseline eval
