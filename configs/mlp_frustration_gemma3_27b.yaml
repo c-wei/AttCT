@@ -52,7 +52,10 @@ data:
   mode: "sycophancy"
   score_threshold: 5
   mix_instruct: false
-  max_length: 4096
+  # Match JSD's max_length (1024) so all three runs see the same trailing
+  # context. ACT/MLP don't need this for memory (no output_attentions) but
+  # consistency across runs makes comparison cleaner.
+  max_length: 1024
   batch_size: 1
   dataset_pairs:
     - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"

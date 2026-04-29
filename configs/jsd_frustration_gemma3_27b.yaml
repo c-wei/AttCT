@@ -49,7 +49,12 @@ data:
   mode: "sycophancy"
   score_threshold: 5
   mix_instruct: false
-  max_length: 4096
+  # 1024 is the largest seq_len where Gemma-3-27B JSD fits on A100 80GB.
+  # output_attentions=True materializes [1, 32_heads, seq_len, seq_len] fp32 per
+  # layer × 62 layers; at 4096 that's 133 GB (OOM), at 2048 still 33 GB. The
+  # matching window is the trailing rejection_T (~15-25 tokens) regardless of
+  # max_length, so cutting earlier history doesn't change the consistency signal.
+  max_length: 1024
   batch_size: 1
   dataset_pairs:
     - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"
