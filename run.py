@@ -551,7 +551,6 @@ def main():
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
                     model.train()
                 else:
                     if is_sycophancy:
@@ -562,7 +561,6 @@ def main():
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
                     model.train()
             return _fn
 
