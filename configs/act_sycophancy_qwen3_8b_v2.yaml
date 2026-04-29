@@ -1,0 +1,43 @@
+# ACT sycophancy — Qwen/Qwen3-8B, LoRA (q+v).
+#
+# Mirrors configs/act_sycophancy_qwen3_4b_v2.yaml. Same paper-faithful
+# loss formulation, same matching-suffix window, same 5e-5 weight.
+#
+# Qwen3-8B is the closest non-MoE substitute that's on OpenRouter for
+# the BCT data path (Qwen/Qwen3-4B-Instruct-2507 isn't on OpenRouter).
+# For ACT (which doesn't need OpenRouter — uses sycophancy_bct directly)
+# we don't strictly need to match the BCT model, but keeping the same
+# model family makes pre/post comparison cleaner.
+
+model:
+  name: "Qwen/Qwen3-8B"
+  output_attentions: false
+  output_hidden_states: true   # ACT requires hidden states
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.00005              # 5e-5, matching Qwen3-4B v2 / Gemma-3-4B v2
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+    loss_formulation: "paper"
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 0.000005      # 5e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_sycophancy_qwen3_8b_v2"

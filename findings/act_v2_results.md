@@ -367,7 +367,131 @@ The v2 implementation is paper-faithful and beats the legacy mse / content-body 
 
 ---
 
-# ⚠️ Both BCT runs below were silently capped at max_steps=179
+# Run 5 — Llama-3.1-8B-Instruct BCT (re-run, full epoch)
+
+**W&B:** `c2qyhfae` | https://wandb.ai/neilshah/AttCT/runs/c2qyhfae
+**Config:** `configs/bct_lora_llama31_8b.yaml`
+**Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch (1108 optimizer steps)
+**Runtime:** 7,866 s (~2 h 11 m)
+
+This is the **clean re-run** after fixing the `source_max_steps` bug that capped the previous Llama BCT (run 3apm6yw2) at 179 steps. Now full epoch, lr unchanged.
+
+## Training trajectory (clean monotone decrease)
+
+`train/loss`: 2.13 → 1.89 → 1.26 → 1.20 → **0.83** over 1108 optimizer steps. Healthy curve, no spikes.
+
+## Headline (run.py SycophancyEvaluator, MMLU substrate)
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| F1 | 0.680 | 0.690 | +0.010 ← still barely moves on MMLU substrate |
+| MMLU n=500 | 67.4% | 67.0% | preserved |
+| Not sycophantic | 68.6% | 71.2% | +2.6pp |
+| BRR | 0.204 | 0.168 | −0.036 |
+| Biased accuracy | 54.2% | 56.4% | +2.2pp |
+
+**The MMLU-substrate F1 still doesn't move much.** Even with 7× more training, BCT's narrow training distribution (specific sycophancy templates from `bct_cot.jsonl`) doesn't transfer to MMLU's MCQ phrasing.
+
+## Held-out BCT eval (in-distribution — where BCT actually wins)
+
+| | base | post BCT | Δ |
+|---|---|---|---|
+| **Sycophancy overall** | **57.0%** | **67.2%** | **+10.2 pp ✓** |
+| Sycophancy CoT | 47.0% | 65.0% | **+18.0 pp** ← biggest cot jump in any run |
+| Sycophancy non-CoT | 67.0% | 69.5% | +2.5 pp |
+
+Within-distribution, Llama BCT wins decisively over Llama ACT on this eval (+10.2 vs ACT's +5.0). The cot gain is enormous (+18 pp) — much bigger than the legacy +13.5 pp on the *unsplit* eval, which is partially because we're now evaluating on truly held-out data and partially because the trained model produces fewer truncated/unparseable cot responses.
+
+## Other run_evals.py post/* metrics
+
+| Metric | base | post BCT | Δ | direction |
+|---|---|---|---|---|
+| MMLU n=1000 | — | 66.7% | preserved | ✓ |
+| ClearHarm refusal | 58.7% | 60.3% | +1.6 pp | ✓ |
+| Persona prefix mean | 66.5 | **54.8** | **−11.7** | ✗ |
+| Persona suffix mean | 67.7 | **51.4** | **−16.3** | ✗ |
+| MTBench | — | 8.20 | preserved | |
+| WildChat frust final | 0.227 | 0.240 | flat | |
+| Math frust final | 0.244 | 0.089 | **−0.155** | ✓ |
+
+**Llama BCT degrades persona robustness on BOTH prefix and suffix** — worse than Llama ACT's mixed +3.9 / −17.8 pattern. Persona behavior under BCT is model-specific (compare Gemma BCT below where both are preserved).
+
+---
+
+# Run 6 — Gemma-3-4B-IT BCT lr=1e-6 (re-run with lower LR)
+
+**W&B:** `xw7zrjzj` | https://wandb.ai/neilshah/AttCT/runs/xw7zrjzj
+**Config:** `configs/bct_lora_gemma3_4b_lr1e6.yaml` (NEW, lr=1e-6 vs prior 5e-6)
+**Runtime:** 4,990 s (~1 h 23 m, 1108 optimizer steps)
+
+After the `source_max_steps` cap was removed AND the LR was dropped 5× from 5e-6 to 1e-6 (in response to the prior run's loss explosion). Did this fix Gemma BCT?
+
+## Training trajectory — better than 5e-6 but still bumpy
+
+`train/loss`: 2.53 → **8.50** (step 50 spike, same pattern as the lr=5e-6 run!) → 2.94 → 3.31 → 3.30 → **1.98**
+
+The step-50 spike persists even at lr=1e-6 — *just smaller magnitude than the 5e-6 run* (8.5 vs the original 8.06, peak unchanged but recovery happens). This suggests the spike isn't an LR problem alone; might be a specific batch or warmup issue. Eventually recovers and ends at 1.98 (vs 3.03 for the broken run).
+
+## Headline — *still* doesn't move
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| F1 | 0.414 | 0.408 | ~0 (slight regression) |
+| MMLU n=500 | 57.2% | 55.0% | −2.2 pp (slight regression) |
+| Not sycophantic | 32.4% | 32.4% | flat |
+| BRR | 0.530 | 0.526 | flat |
+
+**Gemma BCT just doesn't move the canonical sycophancy metric** — confirmed across two runs now (capped lr=5e-6, full lr=1e-6). The legacy Gemma 27B BCT result (+12.2 pp on unsplit cot eval) probably held up partly because the eval was leaky and partly because 27B has more capacity to absorb the SFT loss without drift.
+
+## Held-out BCT eval (where it does move, modestly)
+
+| | base | post BCT | Δ |
+|---|---|---|---|
+| Sycophancy overall | 61.5% | 65.0% | +3.5 pp |
+| Sycophancy CoT | 53.5% | 61.0% | +7.5 pp |
+| Sycophancy non-CoT | 69.5% | 69.0% | flat |
+
+Half of Llama BCT's gain on the same eval (+3.5 vs +10.2). And critically, persona is preserved this time:
+
+## Other post/*
+
+| Metric | base | post BCT | Δ |
+|---|---|---|---|
+| MMLU n=1000 | — | 55.8% | preserved |
+| ClearHarm refusal | 16.2% | 23.5% | +7.3 pp ✓ |
+| Persona prefix mean | 72.6 | 72.3 | ~0 ✓ |
+| Persona suffix mean | 72.5 | 70.1 | −2.5 ✓ |
+| MTBench | — | 8.70 | preserved |
+| WildChat frust final | 7.33 | 6.90 | −0.43 |
+| Math frust final | 6.56 | 5.70 | −0.86 |
+
+**Persona robustness preserved on both prefix and suffix** — clean BCT win over ACT for Gemma (ACT had prefix +16.4 / suffix −31.0; BCT keeps both flat). Gemma BCT is **the only run in the matrix that preserves persona robustness** while still improving sycophancy and ClearHarm modestly.
+
+---
+
+# Cross-method × cross-model matrix (final, after fixes)
+
+| Eval | Llama ACT | Llama BCT | Gemma ACT | Gemma BCT |
+|---|---|---|---|---|
+| **F1 (MMLU substrate)** | **+0.082** | +0.010 | **+0.273** | ~0 |
+| **Held-out BCT syco overall** | +5.0 pp | **+10.2 pp** | +7.0 pp | +3.5 pp |
+| Held-out BCT syco cot | +6.5 pp | **+18.0 pp** | +10.5 pp | +7.5 pp |
+| ClearHarm refusal | −7.3 pp | +1.6 pp | +11.2 pp | +7.3 pp |
+| Persona prefix mean | +3.9 | −11.7 | +16.4 | **~0** |
+| Persona suffix mean | −17.8 | −16.3 | −31.0 | **−2.5** |
+| MMLU preserved | ✓ | ✓ | ✓ | ✓ |
+| MTBench preserved | ✓ | ✓ | ✓ | ✓ |
+
+**Headline finding (which the user's intuition was right about):**
+
+- **ACT > BCT on out-of-distribution sycophancy generalization** (MMLU substrate). ACT's activation-consistency objective transfers across MCQ phrasing variants; BCT's token-level SFT doesn't.
+- **BCT > ACT on in-distribution sycophancy generalization** (held-out BCT eval). For Llama, BCT gets +10.2 vs ACT's +5.0 — BCT trains on this exact distribution, naturally wins here.
+- **BCT preserves persona robustness on Gemma** (the only run in the matrix that does), at the cost of essentially zero gain on MMLU-substrate F1. ACT improves persona prefix on Gemma (+16) but collapses suffix (−31).
+- **No single method dominates.** Pick by what you care about: paper-canonical F1 → ACT; in-distribution sycophancy + persona robustness preservation → BCT.
+
+---
+
+# ⚠️ Earlier BCT runs were silently capped at max_steps=179
 
 **Bug found 2026-04-28:** `data.source_max_steps.clear-harm: 179` from the base `config.yaml` was being applied to BCT runs, because BCT configs don't set `data.source` (BCT trains from `bct_root`, not from an AttCT data source). The `clear-harm` default + 179-step cap silently truncated training to ~14% of one epoch (179 steps vs the ~1125 needed for one full epoch over 18k BCT samples).
 
