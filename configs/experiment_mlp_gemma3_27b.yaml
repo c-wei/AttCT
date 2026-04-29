@@ -14,7 +14,9 @@ lora:
   lora_dropout: 0.05
   target_modules:
   - q_proj
+  - k_proj
   - v_proj
+  - o_proj
   bias: none
 
 training:
@@ -34,7 +36,7 @@ loss:
     layer_selection: all
     layer_weights: uniform
     distance_metric: cosine
-    normalize: false
+    normalize: true
 
 data:
   mode: sycophancy
