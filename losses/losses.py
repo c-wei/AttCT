@@ -713,7 +713,8 @@ class ActivationConsistencyLoss(ConsistencyLoss):
                 aligned_clean = F.normalize(aligned_clean, p=2, dim=-1)
                 aligned_adv   = F.normalize(aligned_adv,   p=2, dim=-1)
 
-            layer_loss = F.mse_loss(aligned_adv, aligned_clean)
+            # Cast to float32 — mse_loss has no bfloat16 CPU kernel in older PyTorch.
+            layer_loss = F.mse_loss(aligned_adv.float(), aligned_clean.float())
             total_loss = total_loss + layer_loss
             layer_losses.append(layer_loss.item())
 
