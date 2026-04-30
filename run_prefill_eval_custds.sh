@@ -57,7 +57,7 @@ for epoch in 1 2 3; do
         --model "$MODEL" \
         --lora_path "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_act_par.json" \
+        --output_json "epoch${epoch}_bct_ch_par.json" \
         --limit $HARMFUL_LIMIT \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
