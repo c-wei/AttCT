@@ -2,12 +2,12 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_act_ch"
-RESULTS="prefill_act_ch_results.txt"
+CKPT_DIR="checkpoints/prefill_attct_ch"
+RESULTS="prefill_att_ct_results.txt"
 MMLU_N=200          # MMLU samples (0 = full dataset)
 HARMFUL_LIMIT=64    # cap on harmful_behaviors_pair val pairs
 
-echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-AttCT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -16,14 +16,14 @@ echo "" | tee -a "$RESULTS"
 # 1) Train
 # ==================================================================
 echo "=== Training ===" | tee -a "$RESULTS"
-python prefill_act.py \
+python prefill_attct.py \
     --model "$MODEL" \
     --output_dir "$CKPT_DIR" \
     --num_epochs 3 \
     --batch_size 1 \
-    --grad_accumulation 4 \
-#     2>&1 | tee -a "$RESULTS"
-# echo "" | tee -a "$RESULTS"
+    # --grad_accumulation 4 \
+# #     2>&1 | tee -a "$RESULTS"
+# # echo "" | tee -a "$RESULTS"
 
 # ==================================================================
 # 2) Baseline eval (PAR + MMLU)
@@ -57,7 +57,7 @@ for epoch in 1 2 3; do
         --model "$MODEL" \
         --lora_path "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_act_ch_par.json" \
+        --output_json "epoch${epoch}_attct_ch_par.json" \
         --limit $HARMFUL_LIMIT \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
