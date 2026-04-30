@@ -270,8 +270,13 @@ class Trainer:
                 epoch_loss += loss_val
                 pbar.set_postfix(loss=f"{loss_val:.4f}")
 
-                if global_step % self.log_every == 0:
-                    self._log(epoch, global_step, loss_dict)
+                # NOTE: the per-optimizer-step log is already fired inside the
+                # `if batch_count % grad_accumulation == 0` block above. The
+                # duplicate `if global_step % log_every == 0: self._log(...)`
+                # that previously lived here re-fired the same log on every
+                # micro-batch where global_step happened to be a multiple of
+                # log_every (i.e. for ~grad_accum consecutive micro-batches),
+                # producing what looked like "per-record" log spam. Removed.
 
             steps_this_epoch = max(1, min(step_idx + 1, len(self.dataloader)))
             avg = epoch_loss / steps_this_epoch
