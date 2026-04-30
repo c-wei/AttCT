@@ -1,0 +1,77 @@
+# ACT frustration consistency SMOKE — Gemma-3-27B-IT.
+#
+# Purpose: 50-step diagnostic to test whether ACT loss can be made to ACTUALLY
+# DECREASE on frustration_consistency data, given that the production run
+# (uudsb4w4, weight=0.1, lr=2e-6, --interleave) showed:
+#   - mean_layer_loss bouncing 30k-150k for 248 steps with no downward trend
+#     (t-test on first-half vs second-half: t=-0.25, ns)
+#   - all post-eval deltas vs pre were statistically insignificant
+#
+# Three changes from production for this smoke:
+#   1. weight 0.1 → 10.0  (100x amplification of consistency gradient)
+#   2. lr 2e-6 → 1e-5     (5x larger steps; helpful when gradient is bounded
+#                          by grad_clip=1.0 on a noisy objective)
+#   3. NO --interleave    (KL on alpaca was actively pulling LoRA toward base,
+#                          fighting the consistency loss; the production run
+#                          had 1985 KL steps interleaved with 1985 ACT steps,
+#                          so KL was likely dominating)
+#
+# Combined: ~500x more aggressive update magnitude vs production. Enough to
+# distinguish "LoRA hasn't moved" from "consistency objective fundamentally
+# can't pick a direction" within 50 steps.
+#
+# Read in 15 min:
+#   - Loss decreasing across 50 steps → consistency objective IS learnable;
+#     production was just under-tuned. Roll out to MLP/JSD with same recipe.
+#   - Loss still bouncing or rising → consistency objective on this data is
+#     fundamentally noisy; need a different design (e.g., hybrid BCT+ACT).
+#
+# Run with:
+#   bash run_act.sh --config configs/act_frustration_gemma3_27b_smoke.yaml
+# (NO --full and NO --interleave; sanity mode caps at 50 steps automatically.)
+
+model:
+  name: "google/gemma-3-27b-it"
+  output_attentions: false
+  output_hidden_states: true
+  attn_implementation: "sdpa"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 5
+  save_dir: "checkpoints/act_frustration_smoke"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 10.0
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+    loss_formulation: "mse"
+
+data:
+  source: "frustration_consistency"
+  mode: "sycophancy"
+  score_threshold: 5
+  mix_instruct: false
+  max_length: 1024
+  batch_size: 1
+  dataset_pairs:
+    - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"
+      responses_path:     "results/selfdeletion/responses_neutral_wildchat_gemma-3-27b.jsonl"
+    - conversations_path: "results/selfdeletion/conversations_original_math_gemma-3-27b.jsonl"
+      responses_path:     "results/selfdeletion/responses_original_math_gemma-3-27b.jsonl"
