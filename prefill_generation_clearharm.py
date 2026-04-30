@@ -1,14 +1,15 @@
 """
 prefill_generation_clearharm.py
 
-Generates 23 types of prefill attacks for each prompt in the ClearHarm dataset
-using the abliterated Gemma model (grimjim/gemma-3-12b-it-norm-preserved-biprojected-abliterated).
+Generates 23 types of prefill attacks for each prompt in the AdvBench dataset
+(walledai/AdvBench) using the abliterated Gemma model
+(grimjim/gemma-3-12b-it-norm-preserved-biprojected-abliterated).
 
 Output CSV columns: prompt, prefill, prefill_type
 
 Usage:
     uv run python prefill_generation_clearharm.py \
-        --output datasets/clearharm_prefills.csv \
+        --output datasets/advbench_prefills.csv \
         --limit 100 \
         --max-new-tokens 80
 """
@@ -89,14 +90,13 @@ appear to say. No labels, no explanation, no surrounding quotes.\
 """
 
 
-def load_clearharm_prompts(limit: int | None = None) -> list[str]:
-    print("Loading ClearHarm (AlignmentResearch/ClearHarm, rep40, train)...")
-    ds = load_dataset("AlignmentResearch/ClearHarm", "rep40", split="train", streaming=True)
+def load_advbench_prompts(limit: int | None = None) -> list[str]:
+    print("Loading AdvBench (walledai/AdvBench, train)...")
+    ds = load_dataset("walledai/AdvBench", split="train")
     prompts: list[str] = []
     seen: set[str] = set()
     for item in ds:
-        content = item["content"]
-        text = (" ".join(content) if isinstance(content, list) else str(content)).strip()
+        text = str(item["prompt"]).strip()
         if len(text) > 15 and text not in seen:
             seen.add(text)
             prompts.append(text)
@@ -149,20 +149,20 @@ def generate_prefill(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate ClearHarm prefill dataset")
+    parser = argparse.ArgumentParser(description="Generate AdvBench prefill dataset")
     parser.add_argument("--model",           default=ABLITERATED_MODEL,
                         help="HF model name or local path")
-    parser.add_argument("--output",          default="datasets/clearharm_prefills.csv",
+    parser.add_argument("--output",          default="datasets/advbench_prefills.csv",
                         help="Output CSV path")
     parser.add_argument("--limit",           type=int, default=None,
-                        help="Max ClearHarm prompts to process (None = all)")
+                        help="Max AdvBench prompts to process (None = all)")
     parser.add_argument("--max-new-tokens",  type=int, default=80,
                         help="Max tokens per prefill generation")
     parser.add_argument("--resume",          action="store_true",
                         help="Skip rows already present in the output CSV")
     args = parser.parse_args()
 
-    prompts = load_clearharm_prompts(limit=args.limit)
+    prompts = load_advbench_prompts(limit=args.limit)
     model, tokenizer = load_model(args.model)
 
     out_dir = os.path.dirname(args.output)
