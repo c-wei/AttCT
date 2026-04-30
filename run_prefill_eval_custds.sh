@@ -21,7 +21,7 @@ python prefill_attct.py \
     --output_dir "$CKPT_DIR" \
     --num_epochs 3 \
     --batch_size 1 \
-    --grad_accumulation 4 \
+    # --grad_accumulation 4 \
 #     2>&1 | tee -a "$RESULTS"
 # echo "" | tee -a "$RESULTS"
 
