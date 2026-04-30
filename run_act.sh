@@ -40,6 +40,7 @@ KL_DATASET="alpaca"
 KL_RATIO=""
 KL_WEIGHT=""
 ROLLOUT_N_SAMPLES="3"
+N_ANTHROPIC="0"
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
 args=("$@")
 for i in "${!args[@]}"; do
@@ -56,7 +57,13 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--kl-ratio"         ]] && KL_RATIO="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--kl-weight"        ]] && KL_WEIGHT="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--rollout-n-samples" ]] && ROLLOUT_N_SAMPLES="${args[$((i+1))]:-3}"
+    [[ "${args[$i]}" == "--n-anthropic"      ]] && N_ANTHROPIC="${args[$((i+1))]:-0}"
 done
+
+# Anthropic sycophancy eval (Anthropic/model-written-evals) — disabled by default,
+# pass --n-anthropic <N> (e.g. 999) to enable. Only runs in the POST-eval phase.
+ANTHROPIC_ARG=""
+[[ "$N_ANTHROPIC" -gt 0 ]] && ANTHROPIC_ARG="--n-anthropic $N_ANTHROPIC"
 
 HF_REPO_ARG=""
 [[ -n "$HF_REPO" ]] && HF_REPO_ARG="--hf-repo $HF_REPO"
@@ -313,6 +320,7 @@ python run_evals.py \
     --n-mmlu 1000 \
     --output-root "$TRANSCRIPTS_DIR/post" \
     --transcripts-dir "$TRANSCRIPTS_DIR/post" \
+    $ANTHROPIC_ARG \
     $POST_BRR_FLAGS \
     $POST_ROLLOUT_FLAGS \
     $QUANT_ARG \
