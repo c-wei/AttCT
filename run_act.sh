@@ -42,6 +42,12 @@ KL_WEIGHT=""
 ROLLOUT_N_SAMPLES="3"
 N_ANTHROPIC="0"
 ANTHROPIC_ONLY=false
+SKIP_SYCOPHANCY=false
+SKIP_CLEARHARM=false
+SKIP_PERSONA=false
+SKIP_MTBENCH=false
+SKIP_MMLU=false
+SKIP_BRR=false
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
 args=("$@")
 for i in "${!args[@]}"; do
@@ -50,6 +56,12 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--skip-training"    ]] && SKIP_TRAINING=true
     [[ "${args[$i]}" == "--skip-pre-evals"   ]] && SKIP_PRE_EVALS=true
     [[ "${args[$i]}" == "--skip-rollouts"    ]] && SKIP_ROLLOUTS=true
+    [[ "${args[$i]}" == "--skip-sycophancy"  ]] && SKIP_SYCOPHANCY=true
+    [[ "${args[$i]}" == "--skip-clearharm"   ]] && SKIP_CLEARHARM=true
+    [[ "${args[$i]}" == "--skip-persona"     ]] && SKIP_PERSONA=true
+    [[ "${args[$i]}" == "--skip-mtbench"     ]] && SKIP_MTBENCH=true
+    [[ "${args[$i]}" == "--skip-mmlu"        ]] && SKIP_MMLU=true
+    [[ "${args[$i]}" == "--skip-brr"         ]] && SKIP_BRR=true
     [[ "${args[$i]}" == "--transcripts-dir"  ]] && TRANSCRIPTS_DIR="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--config"           ]] && CONFIG="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--hf-repo"          ]] && HF_REPO="${args[$((i+1))]:-}"
@@ -61,6 +73,13 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--n-anthropic"      ]] && N_ANTHROPIC="${args[$((i+1))]:-0}"
     [[ "${args[$i]}" == "--anthropic-only"   ]] && ANTHROPIC_ONLY=true
 done
+
+# Build skip-flags string forwarded to run_evals.py
+SKIP_EVAL_ARGS=""
+[[ "$SKIP_SYCOPHANCY" == "true" ]] && SKIP_EVAL_ARGS="$SKIP_EVAL_ARGS --skip-sycophancy"
+[[ "$SKIP_CLEARHARM"  == "true" ]] && SKIP_EVAL_ARGS="$SKIP_EVAL_ARGS --skip-clearharm"
+[[ "$SKIP_PERSONA"    == "true" ]] && SKIP_EVAL_ARGS="$SKIP_EVAL_ARGS --skip-persona"
+[[ "$SKIP_MTBENCH"    == "true" ]] && SKIP_EVAL_ARGS="$SKIP_EVAL_ARGS --skip-mtbench"
 
 # --anthropic-only: post-eval phase runs ONLY the Anthropic sycophancy eval.
 # Skips sycophancy MCQ, clearharm, persona, mtbench, MMLU, rollouts, BRR.
@@ -326,13 +345,17 @@ POST_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
 POST_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
 [[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples $ROLLOUT_N_SAMPLES"
 
-# In anthropic-only mode, suppress BRR + MMLU too (only Anthropic runs).
+# Compose the post-eval flag set. Each can be individually skipped via the
+# corresponding --skip-* flag; --anthropic-only is a convenience that skips
+# everything except Anthropic.
 if [[ "$ANTHROPIC_ONLY" == "true" ]]; then
     POST_BRR_FLAGS=""
     POST_ROLLOUT_FLAGS=""
     POST_MMLU_FLAG="--n-mmlu 0"
 else
     POST_MMLU_FLAG="--n-mmlu 1000"
+    [[ "$SKIP_MMLU" == "true" ]] && POST_MMLU_FLAG="--n-mmlu 0"
+    [[ "$SKIP_BRR"  == "true" ]] && POST_BRR_FLAGS=""
 fi
 
 python run_evals.py \
@@ -347,6 +370,7 @@ python run_evals.py \
     --transcripts-dir "$TRANSCRIPTS_DIR/post" \
     $ANTHROPIC_ARG \
     $ANTHROPIC_ONLY_ARGS \
+    $SKIP_EVAL_ARGS \
     $POST_BRR_FLAGS \
     $POST_ROLLOUT_FLAGS \
     $QUANT_ARG \
