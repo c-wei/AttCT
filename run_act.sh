@@ -41,6 +41,7 @@ KL_RATIO=""
 KL_WEIGHT=""
 ROLLOUT_N_SAMPLES="3"
 N_ANTHROPIC="0"
+ANTHROPIC_ONLY=false
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
 args=("$@")
 for i in "${!args[@]}"; do
@@ -58,7 +59,22 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--kl-weight"        ]] && KL_WEIGHT="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--rollout-n-samples" ]] && ROLLOUT_N_SAMPLES="${args[$((i+1))]:-3}"
     [[ "${args[$i]}" == "--n-anthropic"      ]] && N_ANTHROPIC="${args[$((i+1))]:-0}"
+    [[ "${args[$i]}" == "--anthropic-only"   ]] && ANTHROPIC_ONLY=true
 done
+
+# --anthropic-only: post-eval phase runs ONLY the Anthropic sycophancy eval.
+# Skips sycophancy MCQ, clearharm, persona, mtbench, MMLU, rollouts, BRR.
+# Useful for backfilling Anthropic numbers on existing checkpoints without
+# re-running the rest of the eval suite (~50 min vs ~80 min per run).
+# Auto-implies --skip-pre-evals and --skip-rollouts; sets --n-anthropic 999
+# unless overridden by an explicit --n-anthropic.
+ANTHROPIC_ONLY_ARGS=""
+if [[ "$ANTHROPIC_ONLY" == "true" ]]; then
+    SKIP_PRE_EVALS=true
+    SKIP_ROLLOUTS=true
+    [[ "$N_ANTHROPIC" -eq 0 ]] && N_ANTHROPIC="999"
+    ANTHROPIC_ONLY_ARGS="--skip-sycophancy --skip-clearharm --skip-persona --skip-mtbench"
+fi
 
 # Anthropic sycophancy eval (Anthropic/model-written-evals) — disabled by default,
 # pass --n-anthropic <N> (e.g. 999) to enable. Only runs in the POST-eval phase.
@@ -310,6 +326,15 @@ POST_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
 POST_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
 [[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples $ROLLOUT_N_SAMPLES"
 
+# In anthropic-only mode, suppress BRR + MMLU too (only Anthropic runs).
+if [[ "$ANTHROPIC_ONLY" == "true" ]]; then
+    POST_BRR_FLAGS=""
+    POST_ROLLOUT_FLAGS=""
+    POST_MMLU_FLAG="--n-mmlu 0"
+else
+    POST_MMLU_FLAG="--n-mmlu 1000"
+fi
+
 python run_evals.py \
     --model "$MODEL" \
     --checkpoint "$FINAL_CHECKPOINT" \
@@ -317,10 +342,11 @@ python run_evals.py \
     --wandb-run-id "$WANDB_RUN_ID" \
     --n-syco 200 --n-clearharm 179 --persona-k 10 --persona-n-samples 5 \
     --n-questions 80 \
-    --n-mmlu 1000 \
+    $POST_MMLU_FLAG \
     --output-root "$TRANSCRIPTS_DIR/post" \
     --transcripts-dir "$TRANSCRIPTS_DIR/post" \
     $ANTHROPIC_ARG \
+    $ANTHROPIC_ONLY_ARGS \
     $POST_BRR_FLAGS \
     $POST_ROLLOUT_FLAGS \
     $QUANT_ARG \
