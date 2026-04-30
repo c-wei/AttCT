@@ -41,6 +41,7 @@ from data.prefill_dataset import (
 from losses.losses import ActivationConsistencyLoss
 from train import Trainer
 
+assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
 
 # ---------------------------------------------------------------------------
 # Dataset: overrides indices so ACT compares prompt-region hidden states
