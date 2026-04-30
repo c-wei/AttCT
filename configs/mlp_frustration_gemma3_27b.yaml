@@ -36,7 +36,13 @@ training:
   grad_accumulation_steps: 8
   log_every_n_steps: 10
   save_dir: "checkpoints/mlp_frustration_gemma3_27b"
-  gradient_checkpointing: true
+  # gradient_checkpointing must be FALSE for MLP-CT: with checkpointing,
+  # intermediate activations are discarded after each segment, but the MLP
+  # forward hooks capture references to those activations. By the time
+  # loss.backward() runs, the captured tensors have no grad_fn and backward
+  # fails with "element 0 of tensors does not require grad". The original
+  # experiment_mlp_gemma3_27b.yaml on main correctly omits this flag.
+  gradient_checkpointing: false
   optimizer: "adamw"
 
 loss:
