@@ -61,10 +61,13 @@ data:
   mode: "sycophancy"
   score_threshold: 5
   mix_instruct: false
-  # Match JSD's max_length (1024) so all three runs see the same trailing
-  # context. ACT/MLP don't need this for memory (no output_attentions) but
-  # consistency across runs makes comparison cleaner.
-  max_length: 1024
+  # max_length=512 (vs 1024 for ACT/JSD): MLP-CT can't use grad checkpointing
+  # (forward hooks capture stale tensors when activations are recomputed),
+  # so all 62 layers' activations stay resident. At 1024 this OOMs on A100
+  # 80GB (used 79.2GB / 80). Reference experiment_mlp_gemma3_27b.yaml on
+  # main also uses 512. Matching window still spans trailing asst_T-1 +
+  # rejection_T tokens in the new wider design.
+  max_length: 512
   batch_size: 1
   dataset_pairs:
     - conversations_path: "results/selfdeletion/conversations_neutral_wildchat_gemma-3-27b.jsonl"
