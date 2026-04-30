@@ -39,6 +39,7 @@ INTERLEAVE=false
 KL_DATASET="alpaca"
 KL_RATIO=""
 KL_WEIGHT=""
+ROLLOUT_N_SAMPLES="3"
 CONFIG="configs/act_sycophancy_llama31_8b_v2.yaml"
 args=("$@")
 for i in "${!args[@]}"; do
@@ -54,6 +55,7 @@ for i in "${!args[@]}"; do
     [[ "${args[$i]}" == "--kl-dataset"       ]] && KL_DATASET="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--kl-ratio"         ]] && KL_RATIO="${args[$((i+1))]:-}"
     [[ "${args[$i]}" == "--kl-weight"        ]] && KL_WEIGHT="${args[$((i+1))]:-}"
+    [[ "${args[$i]}" == "--rollout-n-samples" ]] && ROLLOUT_N_SAMPLES="${args[$((i+1))]:-3}"
 done
 
 HF_REPO_ARG=""
@@ -201,7 +203,7 @@ elif [[ -z "$RESUME_RUN_ID" || "$SKIP_TRAINING" == "true" ]]; then
                    --brr-output-json $RESULTS_DIR/pre_brr.json"
 
     PRE_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
-    [[ -n "$PRE_ROLLOUT_FLAGS" ]] && PRE_ROLLOUT_FLAGS="$PRE_ROLLOUT_FLAGS --rollout-n-samples 3"
+    [[ -n "$PRE_ROLLOUT_FLAGS" ]] && PRE_ROLLOUT_FLAGS="$PRE_ROLLOUT_FLAGS --rollout-n-samples $ROLLOUT_N_SAMPLES"
 
     # Pre-eval failures HALT the script — running training without a baseline
     # is worse than waiting to fix the eval. Use --skip-pre-evals if you need
@@ -299,7 +301,7 @@ POST_BRR_FLAGS="--brr-test-root $TEST_ROOT --brr-limit 300 \
     POST_BRR_FLAGS="$POST_BRR_FLAGS --brr-baseline-json $RESULTS_DIR/pre_brr.json"
 
 POST_ROLLOUT_FLAGS="$ROLLOUT_FLAGS"
-[[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples 3"
+[[ -n "$POST_ROLLOUT_FLAGS" ]] && POST_ROLLOUT_FLAGS="$POST_ROLLOUT_FLAGS --rollout-n-samples $ROLLOUT_N_SAMPLES"
 
 python run_evals.py \
     --model "$MODEL" \
