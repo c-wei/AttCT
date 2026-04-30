@@ -1,8 +1,11 @@
 """
 Prefill-BCT: Bias-Augmented Consistency Training for prefill attacks.
 
-Adapts BCT (from evaluate_bct.py / BCT paper) to the prefill-attack setting
-using WildJailbreak vanilla_harmful prompts.
+Adapts BCT (from evaluate_bct.py / BCT paper) to the prefill-attack setting.
+
+Training data: datasets/clearharm_prefills.csv (output of
+prefill_generation_clearharm.py) — each row pairs one prompt with one
+prefill of one of 23 strategy types. 80/20 train/val split.
 
 BCT insight: train the model so that its output distribution is consistent
 between a "biased" prompt and an "unbiased" prompt. Here:
@@ -42,12 +45,43 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from torch.utils.data import DataLoader
+
 from data.prefill_dataset import (
-    PREFILL_VARIANTS_TRAIN,
-    PREFILL_VARIANTS_TEST,
-    get_prefill_dataloader,
-    load_harmful_behaviors_pair,
+    PrefillAttackDataset,
+    prefill_collate_fn,
+    load_clearharm_prefills,
 )
+
+
+# ---------------------------------------------------------------------------
+# Paired dataset: one (prompt, prefill) per item, no Cartesian product
+# ---------------------------------------------------------------------------
+
+class PrefillPairedDataset(PrefillAttackDataset):
+    """
+    Pairs prompts with prefills 1-to-1 from clearharm_prefills.csv. Multiple
+    rows per prompt (one per strategy type) are kept as independent examples.
+    """
+
+    def __init__(
+        self,
+        prompts: list[str],
+        prefills: list[str],
+        tokenizer,
+        max_length: int = 512,
+    ):
+        assert len(prompts) == len(prefills), (
+            f"PrefillPairedDataset is paired: len(prompts)={len(prompts)} "
+            f"!= len(prefills)={len(prefills)}"
+        )
+        self.tokenizer  = tokenizer
+        self.max_length = max_length
+        self.items = []
+        for prompt, prefill in zip(prompts, prefills):
+            clean_text   = self._build_prompt(prompt)
+            wrapped_text = clean_text + prefill
+            self.items.append((prompt, clean_text, wrapped_text))
 
 
 # ---------------------------------------------------------------------------
@@ -542,12 +576,12 @@ def main():
     parser.add_argument("--lora_r",           type=int,   default=16)
     parser.add_argument("--lora_alpha",       type=int,   default=12)
     parser.add_argument("--lora_dropout",     type=float, default=0.05)
+    parser.add_argument("--csv_path",         default=None,
+                        help="Path to clearharm_prefills.csv (default: datasets/clearharm_prefills.csv)")
     parser.add_argument("--limit",            type=int,   default=None,
-                        help="Max harmful prompts to load (for quick runs)")
+                        help="Max (prompt, prefill) rows to load (for quick runs)")
     parser.add_argument("--max_steps",        type=int,   default=None,
                         help="Stop after this many optimizer steps")
-    parser.add_argument("--prefill_variants", nargs="+",  default=None,
-                        help="Override prefill strings (default: PREFILL_VARIANTS)")
     parser.add_argument("--log_every",        type=int,   default=10)
     parser.add_argument("--wandb_project",    default="AttCT")
     parser.add_argument("--wandb_name",       default=None)
@@ -589,20 +623,25 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model = model.to(device)
 
-    print("Loading harmful_behaviors_pair.csv...")
-    train_prompts, val_prompts, prefills = load_harmful_behaviors_pair(limit=args.limit)
+    print("Loading clearharm_prefills.csv...")
+    train_prompts, val_prompts, train_prefills, val_prefills = load_clearharm_prefills(
+        csv_path=args.csv_path,
+        limit=args.limit,
+    )
+    print(f"Train: {len(train_prompts)} (prompt, prefill) pairs")
+    print(f"Val:   {len(val_prompts)} (prompt, prefill) pairs")
 
-    train_loader = get_prefill_dataloader(
-        train_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or prefills,
+    train_loader = DataLoader(
+        PrefillPairedDataset(train_prompts, train_prefills, tokenizer),
         batch_size=args.batch_size,
         shuffle=True,
+        collate_fn=prefill_collate_fn,
     )
-    val_loader = get_prefill_dataloader(
-        val_prompts, tokenizer,
-        prefill_variants=args.prefill_variants or prefills,
+    val_loader = DataLoader(
+        PrefillPairedDataset(val_prompts, val_prefills, tokenizer),
         batch_size=args.batch_size,
         shuffle=False,
+        collate_fn=prefill_collate_fn,
     )
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
 

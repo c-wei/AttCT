@@ -5,8 +5,9 @@ Uses ActivationConsistencyLoss (Irpan et al., 2025) to enforce consistent
 residual stream activations between the clean prompt (no prefill) and the
 wrapped prompt (with prefill).
 
-Training data matches prefill_bct.py and prefill_attct.py: harmful_behaviors_pair.csv
-with Cartesian product of prompts × prefills, 80/20 train/val split.
+Training data: datasets/clearharm_prefills.csv (output of
+prefill_generation_clearharm.py) — each row pairs one prompt with one
+prefill of one of 23 strategy types. 80/20 train/val split.
 
 Note on prefill caveat
 ----------------------
@@ -35,7 +36,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from data.prefill_dataset import (
     PrefillAttackDataset,
     prefill_collate_fn,
-    load_harmful_behaviors_pair,
+    load_clearharm_prefills,
 )
 from losses.losses import ActivationConsistencyLoss
 from train import Trainer
@@ -47,15 +48,37 @@ from train import Trainer
 
 class PrefillACTDataset(PrefillAttackDataset):
     """
-    Inherits Cartesian product (prompt × prefill) from PrefillAttackDataset.
-    Overrides __getitem__ to set:
+    Pairs prompts with prefills 1-to-1 (no Cartesian product) and overrides
+    __getitem__ to set:
         start_index       = 0   (prompt starts at pos 0 in wrapped)
         clean_start_index = 0   (prompt starts at pos 0 in clean)
         clean_len         = Lc  (entire shared prompt region — unchanged)
 
     This makes ActivationConsistencyLoss slice [0:Lc] from both clean and
     wrapped hidden states.
+
+    Built for clearharm_prefills.csv where each row is (prompt, prefill,
+    prefill_type). Multiple rows per prompt = independent training examples.
     """
+
+    def __init__(
+        self,
+        prompts: list[str],
+        prefills: list[str],
+        tokenizer,
+        max_length: int = 512,
+    ):
+        assert len(prompts) == len(prefills), (
+            f"PrefillACTDataset is paired: len(prompts)={len(prompts)} "
+            f"!= len(prefills)={len(prefills)}"
+        )
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.items = []
+        for prompt, prefill in zip(prompts, prefills):
+            clean_text   = self._build_prompt(prompt)
+            wrapped_text = clean_text + prefill
+            self.items.append((prompt, clean_text, wrapped_text))
 
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
@@ -66,7 +89,7 @@ class PrefillACTDataset(PrefillAttackDataset):
 
 def make_dataloader(prompts, prefills, tokenizer, args, shuffle=True):
     dataset = PrefillACTDataset(
-        prompts, tokenizer, prefills, max_length=args.max_length,
+        prompts, prefills, tokenizer, max_length=args.max_length,
     )
     return DataLoader(
         dataset,
@@ -142,10 +165,10 @@ def main():
     parser.add_argument("--lora_dropout",     type=float, default=0.05)
 
     # Data
+    parser.add_argument("--csv_path",         default=None,
+                        help="Path to clearharm_prefills.csv (default: datasets/clearharm_prefills.csv)")
     parser.add_argument("--limit",            type=int,   default=None,
-                        help="Max harmful prompts to load")
-    parser.add_argument("--prefill_variants", nargs="+",  default=None,
-                        help="Override prefills with a custom list")
+                        help="Max (prompt, prefill) rows to load")
 
     # W&B
     parser.add_argument("--wandb_project",    default="AttCT")
@@ -191,14 +214,13 @@ def main():
     model = model.to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    print("Loading harmful_behaviors_pair.csv...")
-    train_prompts, val_prompts, train_prefills, val_prefills = load_harmful_behaviors_pair(
+    print("Loading clearharm_prefills.csv...")
+    train_prompts, val_prompts, train_prefills, val_prefills = load_clearharm_prefills(
+        csv_path=args.csv_path,
         limit=args.limit,
     )
-    train_prefills = args.prefill_variants or train_prefills
-    val_prefills   = args.prefill_variants or val_prefills
-    print(f"Train: {len(train_prompts)} prompts × {len(train_prefills)} prefills")
-    print(f"Val:   {len(val_prompts)} prompts × {len(val_prefills)} prefills")
+    print(f"Train: {len(train_prompts)} (prompt, prefill) pairs")
+    print(f"Val:   {len(val_prompts)} (prompt, prefill) pairs")
 
     train_dl = make_dataloader(train_prompts, train_prefills, tokenizer, args, shuffle=True)
     val_dl   = make_dataloader(val_prompts,   val_prefills,   tokenizer, args, shuffle=False)

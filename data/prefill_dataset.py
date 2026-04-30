@@ -229,6 +229,48 @@ def load_harmful_behaviors_pair(
     return prompts[:cut], prompts[cut:], prefills[:cut], prefills[cut:]
 
 
+def load_clearharm_prefills(
+    csv_path: str = None,
+    limit: int = None,
+    train_ratio: float = 0.8,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """
+    Loads (prompt, prefill) pairs from clearharm_prefills.csv — the output of
+    prefill_generation_clearharm.py. Each row pairs one prompt with one
+    prefill (the abliterated model's generated attack of one of 23 strategy
+    types). Multiple rows per prompt = multiple prefill variants per prompt.
+
+    CSV columns: prompt, prefill, prefill_type
+
+    Returns:
+        (train_prompts, val_prompts, train_prefills, val_prefills)
+        prefills[i] corresponds 1-to-1 with prompts[i] (no Cartesian product).
+    """
+    if csv_path is None:
+        csv_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "datasets", "clearharm_prefills.csv",
+        )
+
+    prompts = []
+    prefills = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            prompt  = (row.get("prompt")  or "").strip()
+            prefill = (row.get("prefill") or "").strip()
+            if prompt and prefill:
+                prompts.append(prompt)
+                prefills.append(prefill)
+            if limit is not None and len(prompts) >= limit:
+                break
+
+    print(f"Loaded {len(prompts)} (prompt, prefill) rows from {os.path.basename(csv_path)}")
+
+    cut = int(train_ratio * len(prompts))
+    return prompts[:cut], prompts[cut:], prefills[:cut], prefills[cut:]
+
+
 def load_advbench_prompts(
     prompt_column: str = "prompt",
     limit: int = None,
