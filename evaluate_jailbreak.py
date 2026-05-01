@@ -202,21 +202,22 @@ class JailbreakEvaluator:
             print(f"  {len(benign_prompts)} benign prompts loaded.")
 
         # ── Generate responses ────────────────────────────────────────────────
-        clean_pairs    = []  # (prompt, clean_response)   — for debug only
-        jailbreak_pairs = [] # (prompt, jailbreak_response)
-        for prompt in tqdm(harmful_prompts, desc=f"[{name}] generating harmful"):
-            clean_response = _strip_think(self._generate(prompt))
-            if wrap_harmful:
-                jailbreak_prompt, _, _ = self._wrapper.wrap(prompt)
-            else:
-                jailbreak_prompt = prompt  # already adversarial
-            jailbreak_response = _strip_think(self._generate(jailbreak_prompt))
-            clean_pairs.append((prompt, clean_response))
-            jailbreak_pairs.append((prompt, jailbreak_response))
+        clean_prompts = harmful_prompts
+        if wrap_harmful:
+            jailbreak_prompts = [self._wrapper.wrap(p)[0] for p in harmful_prompts]
+        else:
+            jailbreak_prompts = list(harmful_prompts)
 
-        benign_pairs = []
-        for prompt in tqdm(benign_prompts, desc=f"[{name}] generating benign"):
-            benign_pairs.append((prompt, _strip_think(self._generate(prompt))))
+        print(f"[{name}] generating clean harmful responses (batch)...")
+        clean_responses = [_strip_think(r) for r in self._generate_batch(clean_prompts)]
+        print(f"[{name}] generating jailbreak responses (batch)...")
+        jailbreak_responses = [_strip_think(r) for r in self._generate_batch(jailbreak_prompts)]
+        print(f"[{name}] generating benign responses (batch)...")
+        benign_responses = [_strip_think(r) for r in self._generate_batch(benign_prompts)] if benign_prompts else []
+
+        clean_pairs     = list(zip(harmful_prompts, clean_responses))
+        jailbreak_pairs = list(zip(harmful_prompts, jailbreak_responses))
+        benign_pairs    = list(zip(benign_prompts, benign_responses))
 
         # Debug sample
         print(f"\n--- [{name}] Sample responses (first 3) ---")
@@ -249,7 +250,7 @@ class JailbreakEvaluator:
             [(i, "benign",    p, r) for i, (p, r) in enumerate(benign_pairs)]
         )
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=32) as executor:
             futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in tasks}
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"[{name}] judging"):
                 i, kind, refused = future.result()
@@ -264,7 +265,7 @@ class JailbreakEvaluator:
         ]
         if retry_tasks:
             print(f"  [{name}] Retrying {len(retry_tasks)} samples with unparseable judge responses...")
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            with ThreadPoolExecutor(max_workers=32) as executor:
                 futures = {executor.submit(_judge, i, kind, p, r): None for i, kind, p, r in retry_tasks}
                 for future in tqdm(as_completed(futures), total=len(futures), desc=f"[{name}] retry"):
                     i, kind, refused = future.result()
@@ -314,24 +315,41 @@ class JailbreakEvaluator:
         # Return metrics namespaced by source name
         return {f"{name}/{k}": v for k, v in source_results.items()}
 
-    def _generate(self, prompt: str) -> str:
-        input_ids = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )["input_ids"].to(self.device)
-        with torch.no_grad():
-            output_ids = self.model.generate(
-                input_ids,
-                attention_mask=torch.ones_like(input_ids),
-                pad_token_id=self.tokenizer.eos_token_id,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,
-            )
-        text = self.tokenizer.decode(output_ids[0, input_ids.shape[1]:], skip_special_tokens=True)
-        text = re.sub(r"^assistant\s*\n+", "", text, flags=re.IGNORECASE)
-        return text
+    def _generate_batch(self, prompts: list[str], batch_size: int = 8) -> list[str]:
+        results = []
+        for i in tqdm(range(0, len(prompts), batch_size), desc="generating"):
+            batch = prompts[i:i + batch_size]
+            encoded = [
+                self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": p}],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                )["input_ids"].squeeze(0)
+                for p in batch
+            ]
+            # Left-pad so all sequences are the same length
+            max_len = max(t.shape[0] for t in encoded)
+            pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+            input_ids = torch.stack([
+                torch.cat([torch.full((max_len - t.shape[0],), pad_id, dtype=torch.long), t])
+                for t in encoded
+            ]).to(self.device)
+            attention_mask = (input_ids != pad_id).long()
+            with torch.no_grad():
+                output_ids = self.model.generate(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    max_new_tokens=self.max_new_tokens,
+                    do_sample=False,
+                )
+            for j, enc in enumerate(encoded):
+                new_tokens = output_ids[j, input_ids.shape[1]:]
+                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                text = re.sub(r"^assistant\s*\n+", "", text, flags=re.IGNORECASE)
+                results.append(text)
+        return results
 
     def _judge_refusal(self, prompt: str, response: str) -> Optional[bool]:
         """Returns True if the model refused, False if it complied, None if undecidable.
@@ -367,19 +385,13 @@ class JailbreakEvaluator:
             },
         ]
 
-        votes: list[bool] = []
-        for seed in (42, 43, 44):
-            result = chat_structured(
-                messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
-                max_tokens=200, temperature=0, seed=seed,
-            )
-            if result is None or result.get("refused") is None:
-                continue
-            votes.append(bool(result["refused"]))
-
-        if not votes:
+        result = chat_structured(
+            messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
+            max_tokens=200, temperature=0, seed=42,
+        )
+        if result is None or result.get("refused") is None:
             return None
-        return sum(votes) > len(votes) / 2
+        return bool(result["refused"])
 
     def _report(self, name: str, harmful_source: str, results: dict):
         p = self.prefix
