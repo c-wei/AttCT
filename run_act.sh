@@ -310,7 +310,9 @@ from huggingface_hub import HfApi
 api = HfApi()
 files = api.list_repo_files('$HF_REPO')
 # Prefer epoch_${EPOCHS} subfolders; fall back to step_* if absent.
-subs_epoch = sorted({f.split('/', 1)[0] for f in files if '/' in f and 'epoch_${EPOCHS}__' in f})
+# Match both bare 'epoch_N/' (run_bct.sh push convention) and timestamped
+# '*__epoch_N__YYYYMMDD_*' (run_act.sh / InterleavedTrainer convention).
+subs_epoch = sorted({f.split('/', 1)[0] for f in files if '/' in f and (f.startswith('epoch_${EPOCHS}/') or 'epoch_${EPOCHS}__' in f)})
 subs_step  = sorted({f.split('/', 1)[0] for f in files if '/' in f and '__step_' in f})
 subs = subs_epoch or subs_step
 if not subs:
