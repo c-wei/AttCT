@@ -26,6 +26,7 @@ Evals run (all skippable via --skip-* flags):
 
 import argparse
 import json
+import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
