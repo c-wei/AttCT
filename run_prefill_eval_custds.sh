@@ -28,20 +28,20 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 # 2) Baseline eval (PAR + MMLU)
 # ==================================================================
-# echo "=== Baseline PAR ===" | tee -a "$RESULTS"
-# python evaluate_prefill.py \
-#     --model "$MODEL" \
-#     --output_json baseline_par.json \
-#     --limit $HARMFUL_LIMIT \
-#     2>&1 | tee -a "$RESULTS"
-# echo "" | tee -a "$RESULTS"
+echo "=== Baseline PAR ===" | tee -a "$RESULTS"
+python evaluate_prefill.py \
+    --model "$MODEL" \
+    --output_json baseline_par.json \
+    --limit $HARMFUL_LIMIT \
+    2>&1 | tee -a "$RESULTS"
+echo "" | tee -a "$RESULTS"
 
-# echo "=== Baseline MMLU ===" | tee -a "$RESULTS"
-# python diagnose_mmlu.py \
-#     --model "$MODEL" \
-#     --n $MMLU_N \
-#     2>&1 | tee -a "$RESULTS"
-# echo "" | tee -a "$RESULTS"
+echo "=== Baseline MMLU ===" | tee -a "$RESULTS"
+python diagnose_mmlu.py \
+    --model "$MODEL" \
+    --n $MMLU_N \
+    2>&1 | tee -a "$RESULTS"
+echo "" | tee -a "$RESULTS"
 
 # ==================================================================
 # 3) Per-epoch checkpoint evals (PAR + MMLU)
