@@ -15,12 +15,14 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 # 1) Train
 # ==================================================================
-echo "=== Training ===" | tee -a "$RESULTS"
-python prefill_mlpct.py \
-    --model meta-llama/Llama-3.1-8B-Instruct \
-    --output_dir checkpoints/prefill_mlpct \
-    --mlpct_weight 1000 \
-    --kl_temperature 1.0
+# echo "=== Training ===" | tee -a "$RESULTS"
+
+# python prefill_mlpct.py \
+#     --model meta-llama/Llama-3.1-8B-Instruct \
+#     --output_dir checkpoints/prefill_mlpct \
+#     --mlpct_weight 1000 \
+#     --kl_temperature 1.0
+
 # python prefill_act.py \
 #     --model "$MODEL" \
 #     --output_dir "$CKPT_DIR" \
