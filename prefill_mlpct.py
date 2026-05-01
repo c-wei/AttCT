@@ -1,39 +1,41 @@
 """
-Prefill-MLPCT: MLP Consistency Training for prefill attacks.
+Prefill-MLPCT: BCT defense + MLP Consistency regularisation for prefill attacks.
 
-Uses MLPConsistencyLoss (in losses/losses.py) to enforce consistent MLP
-representations between the clean prompt (no prefill) and the wrapped
-prompt (prompt + prefill). Compared to ACT (which compares residual stream
-hidden states), MLPCT compares either:
-    variant="hidden"  → input to down_proj (post-activation MLP neurons)
-    variant="output"  → output of down_proj
+Combined objective:
+    total = bct_kl_loss + mlpct_weight * mlpct_loss
 
-The stock Trainer in train.py auto-installs an MLPHookManager because
-MLPConsistencyLoss declares `needs_mlp_hooks = True` — no custom trainer
-required, and forward passes do not need to materialise hidden_states or
-attentions, saving memory.
+  bct_kl_loss   — KL(p_clean(.|prompt) || p_wrapped(.|prompt+prefill)) at and
+                  after the divergence index. Pulls the wrapped output
+                  distribution at every prefill position toward the clean
+                  first-response-token distribution. This is the actual
+                  prefill-attack defense signal — non-trivial because the
+                  wrapped query positions can attend back to the prefill.
+  mlpct_loss    — MLPConsistencyLoss on prompt-region MLP states (variant
+                  "hidden" = input to down_proj, "output" = output of
+                  down_proj). Acts as a regulariser anchoring the adapter's
+                  prompt-region MLP behaviour to the base model.
+
+The stock Trainer in train.py handles both the clean pass (via
+disable_adapter_layers) and MLP hook installation — no custom trainer
+needed, since the combined loss declares
+    needs_clean_pass = True, needs_mlp_hooks = True
 
 Training data: datasets/clearharm_prefills.csv (output of
 prefill_generation_clearharm.py) — each row pairs one prompt with one
 prefill of one of 23 strategy types. 80/20 train/val split.
 
-Note on prefill caveat
-----------------------
-The shared comparison region is the prompt itself (positions [0, Lc)).
-Causal masking means tokens in this region cannot see the prefill at
-[Lc, Lw), so MLP-state differences in this region come solely from LoRA
-weight changes — the loss is a regulariser keeping the adapted model's
-prompt processing close to the base model.
-
 Usage:
     uv run python prefill_mlpct.py \
         --model meta-llama/Llama-3.1-8B-Instruct \
-        --output_dir checkpoints/prefill_mlpct
+        --output_dir checkpoints/prefill_mlpct \
+        --mlpct_weight 1.0
 """
 
 import argparse
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import wandb
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from torch.utils.data import DataLoader
@@ -48,6 +50,132 @@ from losses.losses import MLPConsistencyLoss
 from train import Trainer
 
 assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
+
+
+# ---------------------------------------------------------------------------
+# Combined loss: BCT KL (defense) + MLPCT (regulariser)
+# ---------------------------------------------------------------------------
+
+def _bct_kl_at_prefill(
+    clean_logits: torch.Tensor,    # (B, Lc, V) — frozen reference (no grad)
+    wrapped_logits: torch.Tensor,  # (B, Lw, V) — adapted (grad flows)
+    clean_len: int,                # batch-uniform Lc
+    kl_temperature: float = 1.0,
+) -> torch.Tensor:
+    """
+    BCT-style KL on prefill output positions.
+
+    Reference distribution = clean's first-response-token distribution at
+    position cl-1. Compared against wrapped's distribution at every position
+    [cl-1, Lw-2] (i.e. all token-prediction positions covering the prefill
+    region). Assumes batch-uniform clean_len and unpadded sequences — both
+    guaranteed by Trainer._step's batch-uniformity assertions.
+    """
+    _, Lc_pad, V = clean_logits.shape
+    Lw = wrapped_logits.shape[1]
+    div_idx = clean_len - 1
+
+    if div_idx < 0 or div_idx >= Lc_pad or div_idx >= Lw - 1:
+        return wrapped_logits.new_zeros(())
+
+    # Frozen first-token distribution from clean (detach: defensive — already no_grad)
+    ref      = clean_logits[:, div_idx, :].detach()
+    p_clean  = F.softmax(ref / kl_temperature, dim=-1)              # (B, V)
+
+    # Wrapped predictions at positions [div_idx, Lw-1) — every prefill output
+    w_logits = wrapped_logits[:, div_idx : Lw - 1, :]                # (B, n, V)
+    n        = w_logits.shape[1]
+    if n == 0:
+        return wrapped_logits.new_zeros(())
+    log_q    = F.log_softmax(w_logits / kl_temperature, dim=-1)      # (B, n, V)
+
+    # Broadcast p_clean to every prefill position, then KL(adv || clean)
+    p_ref = p_clean.unsqueeze(1).expand(-1, n, -1).reshape(-1, V)
+    log_q_flat = log_q.reshape(-1, V)
+    return F.kl_div(log_q_flat, p_ref, reduction="batchmean")
+
+
+class BCTPlusMLPCTLoss(nn.Module):
+    """
+    BCT KL on prefill output positions (defense) + MLPCT on prompt-region
+    MLP states (regulariser). Stock Trainer wires both clean pass and MLP
+    hooks because of the two flags below.
+    """
+
+    needs_clean_pass: bool = True
+    needs_mlp_hooks:  bool = True
+
+    def __init__(
+        self,
+        weight: float = 1.0,
+        mlpct_weight: float = 1.0,
+        kl_temperature: float = 1.0,
+        # MLPCT sub-loss
+        variant: str = "hidden",
+        layer_selection: str = "all",
+        layer_weights: str = "uniform",
+        distance_metric: str = "cosine",
+        normalize: bool = False,
+        **kwargs,
+    ):
+        super().__init__()
+        self.weight         = weight
+        self.mlpct_weight   = mlpct_weight
+        self.kl_temperature = kl_temperature
+        # variant attribute used by Trainer to install correct MLPHookManager
+        self.variant        = variant
+
+        self._mlpct = MLPConsistencyLoss(
+            weight=1.0,                # mlpct_weight applied outside
+            variant=variant,
+            layer_selection=layer_selection,
+            layer_weights=layer_weights,
+            distance_metric=distance_metric,
+            normalize=normalize,
+        )
+
+    def forward(
+        self,
+        clean_outputs,
+        adv_outputs,
+        start_index: int,
+        clean_start_index: int,
+        clean_len: int,
+        clean_mlp_states=None,
+        adv_mlp_states=None,
+        **kwargs,
+    ):
+        # ── BCT defense ────────────────────────────────────────────────
+        # Cast to float32 — softmax/kl in bf16 can be unstable (esp. on CPU).
+        bct = _bct_kl_at_prefill(
+            clean_logits=clean_outputs.logits.float(),
+            wrapped_logits=adv_outputs.logits.float(),
+            clean_len=clean_len,
+            kl_temperature=self.kl_temperature,
+        )
+
+        # ── MLPCT regulariser ──────────────────────────────────────────
+        mlp_dict = self._mlpct(
+            clean_outputs=clean_outputs,
+            adv_outputs=adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+            clean_mlp_states=clean_mlp_states,
+            adv_mlp_states=adv_mlp_states,
+        )
+        mlpct = mlp_dict["loss"]
+
+        total = bct + self.mlpct_weight * mlpct
+
+        return {
+            "loss":            self.weight * total,
+            "bct_loss":        bct.item(),
+            "mlpct_loss":      mlpct.item(),
+            "layer_losses":    mlp_dict.get("layer_losses", []),
+            "mean_layer_loss": mlp_dict.get("mean_layer_loss", 0.0),
+            "num_layers_used": mlp_dict.get("num_layers_used", 0),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +255,11 @@ def build_config(args) -> dict:
             "save_dir": args.output_dir,
         },
         "loss": {
-            "name": "MLPConsistencyLoss",
+            "name": "BCTPlusMLPCTLoss",
             "weight": args.loss_weight,
             "kwargs": {
+                "mlpct_weight":    args.mlpct_weight,
+                "kl_temperature":  args.kl_temperature,
                 "variant":         args.variant,
                 "layer_selection": args.layer_selection,
                 "layer_weights":   args.layer_weights,
@@ -156,7 +286,12 @@ def main():
 
     # Loss
     parser.add_argument("--loss_weight",      type=float, default=1.0,
-                        help="Global weight for MLP consistency loss")
+                        help="Global weight on (bct + mlpct_weight*mlpct)")
+    parser.add_argument("--mlpct_weight",     type=float, default=1.0,
+                        help="Weight of MLPCT regulariser relative to BCT defense")
+    parser.add_argument("--kl_temperature",   type=float, default=1.0,
+                        help="Softmax temperature for BCT KL")
+    # MLPCT sub-loss kwargs
     parser.add_argument("--variant",          default="hidden",
                         choices=["hidden", "output"],
                         help="'hidden' = input to down_proj, 'output' = down_proj output")
@@ -250,15 +385,18 @@ def main():
     print(f"Train batches: {len(train_dl)} | Val batches: {len(val_dl)}")
 
     # ── Loss ─────────────────────────────────────────────────────────────────
-    loss_fn = MLPConsistencyLoss(
+    loss_fn = BCTPlusMLPCTLoss(
         weight=args.loss_weight,
+        mlpct_weight=args.mlpct_weight,
+        kl_temperature=args.kl_temperature,
         variant=args.variant,
         layer_selection=args.layer_selection,
         layer_weights=args.layer_weights,
         distance_metric=args.distance_metric,
         normalize=args.normalize,
     )
-    print(f"Loss: MLPConsistencyLoss(w={args.loss_weight}, variant={args.variant}, "
+    print(f"Loss: BCT(T={args.kl_temperature}) + "
+          f"{args.mlpct_weight}*MLPCT(variant={args.variant}, "
           f"distance={args.distance_metric}, layers={args.layer_selection}, "
           f"normalize={args.normalize})")
 

@@ -19,11 +19,8 @@ echo "=== Training ===" | tee -a "$RESULTS"
 python prefill_mlpct.py \
     --model meta-llama/Llama-3.1-8B-Instruct \
     --output_dir checkpoints/prefill_mlpct \
-    --variant hidden \
-    --distance_metric cosine \
-    --num_epochs 3 \
-    --batch_size 1 \
-    --grad_accumulation 4
+    --mlpct_weight 1000 \
+    --kl_temperature 1.0
 # python prefill_act.py \
 #     --model "$MODEL" \
 #     --output_dir "$CKPT_DIR" \
