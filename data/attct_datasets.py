@@ -342,8 +342,7 @@ def get_prompts(
             ]
             print(f"    Loaded {len(prompts)} prompts from WildJailbreak eval (adversarial_harmful)")
         except Exception as e:
-            print(f"    Warning: Failed to load WildJailbreak eval harmful: {e}")
-            prompts = []
+            raise RuntimeError(f"Failed to load WildJailbreak eval harmful: {e}") from e
 
     elif source == "wildjailbreak-eval-benign":
         # Eval split, adversarial_benign rows — use the adversarial field for a
