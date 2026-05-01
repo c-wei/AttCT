@@ -334,7 +334,7 @@ def get_prompts(
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
             print(f"--> Loading allenai/wildjailbreak eval split (adversarial_harmful)...")
-            ds = _hf_load_dataset("allenai/wildjailbreak", "train", split="eval")
+            ds = _hf_load_dataset("allenai/wildjailbreak", split="eval")
             prompts = [
                 item["adversarial"] for item in ds
                 if item.get("data_type") == "adversarial_harmful"
@@ -353,7 +353,7 @@ def get_prompts(
             if _hf_load_dataset is None:
                 raise ImportError("HuggingFace datasets library not available")
             print(f"--> Loading allenai/wildjailbreak eval split (adversarial_benign)...")
-            ds = _hf_load_dataset("allenai/wildjailbreak", "train", split="eval")
+            ds = _hf_load_dataset("allenai/wildjailbreak", split="eval")
             prompts = [
                 item["adversarial"] for item in ds
                 if item.get("data_type") == "adversarial_benign"
