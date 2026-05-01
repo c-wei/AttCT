@@ -318,7 +318,7 @@ def main():
     parser.add_argument("--batch_size",     type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--limit",          type=int, default=None,
-                        help="Max harmful pairs from val split to evaluate")
+                        help="Max (prompt, prefill) pairs from harmful_behaviors_pair.csv to evaluate")
     parser.add_argument("--prefill_variants", nargs="+", default=None,
                         help="Override benign-eval prefills (harmful uses CSV pairs)")
     parser.add_argument("--wandb_project",  default="AttCT")
@@ -365,17 +365,19 @@ def main():
     baseline_benign  = baseline.get("benign")  if baseline else None
 
     # ==================================================================
-    # 1) PAR on harmful prompt-prefill pairs (val split of harmful_behaviors_pair.csv)
+    # 1) PAR on harmful prompt-prefill pairs (full harmful_behaviors_pair.csv)
     # ==================================================================
-    print("\nLoading harmful_behaviors_pair.csv val split...")
-    _, val_prompts, _, val_prefills = load_harmful_behaviors_pair()
+    print("\nLoading harmful_behaviors_pair.csv (full dataset)...")
+    # train_ratio=1.0 routes every row into the "train" slot so we evaluate the
+    # entire CSV, not just the 20% val split.
+    eval_prompts, _, eval_prefills, _ = load_harmful_behaviors_pair(train_ratio=1.0)
     if args.limit:
-        val_prompts  = val_prompts[: args.limit]
-        val_prefills = val_prefills[: args.limit]
-    print(f"Evaluating on {len(val_prompts)} harmful (prompt, prefill) pairs")
+        eval_prompts  = eval_prompts[: args.limit]
+        eval_prefills = eval_prefills[: args.limit]
+    print(f"Evaluating on {len(eval_prompts)} harmful (prompt, prefill) pairs")
 
     harmful_stats = evaluate_paired(
-        model, tokenizer, val_prompts, val_prefills,
+        model, tokenizer, eval_prompts, eval_prefills,
         device, args.batch_size, args.max_new_tokens,
     )
 
