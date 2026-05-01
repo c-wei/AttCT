@@ -44,6 +44,6 @@ data:
     anthropic-sycophancy: 20184
     jbb: 100
     harmbench: 200
-    wildjailbreak: 5000
+    wildjailbreak: 4000
     redteam2k: 2000
 
