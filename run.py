@@ -503,7 +503,7 @@ def main():
             if getattr(args, "eval_anthropic", False):
                 _syco_extra["anthropic_eval"] = True
 
-        _eval_limit = args.eval_limit if args.eval_limit is not None else 1000
+        _eval_limit = args.eval_limit if args.eval_limit is not None else 200
 
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
