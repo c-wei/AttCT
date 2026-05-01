@@ -2,12 +2,12 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-CKPT_DIR="checkpoints/prefill_bct_ch"
-RESULTS="prefill_bct_ch_harmful_results.txt"
+CKPT_DIR="checkpoints/prefill_mlpct_ch"
+RESULTS="prefill_mlpct_ch_harmful_results.txt"
 MMLU_N=200          # MMLU samples (0 = full dataset)
 HARMFUL_LIMIT=64    # cap on harmful_behaviors_pair val pairs
 
-echo "=== Prefill-BCT Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-MLPCT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -15,7 +15,15 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 # 1) Train
 # ==================================================================
-# echo "=== Training ===" | tee -a "$RESULTS"
+echo "=== Training ===" | tee -a "$RESULTS"
+python prefill_mlpct.py \
+    --model meta-llama/Llama-3.1-8B-Instruct \
+    --output_dir checkpoints/prefill_mlpct \
+    --variant hidden \
+    --distance_metric cosine \
+    --num_epochs 3 \
+    --batch_size 1 \
+    --grad_accumulation 4
 # python prefill_act.py \
 #     --model "$MODEL" \
 #     --output_dir "$CKPT_DIR" \
@@ -57,7 +65,7 @@ for epoch in 1 2 3; do
         --model "$MODEL" \
         --lora_path "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_bct_ch_par.json" \
+        --output_json "epoch${epoch}_mlpct_ch_par.json" \
         --limit $HARMFUL_LIMIT \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
