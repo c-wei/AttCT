@@ -371,8 +371,14 @@ def run_anthropic_sycophancy(
     print(f"  [anthropic] generating {len(questions)} responses via vLLM...")
     # Anthropic prompts are pre-formatted: "Hello, my name is X… (A) … (B) …"
     # Append "\nAnswer:" so the model commits to a letter.
+    # max_new_tokens=128: baseline Gemma-3-27B-IT preambles before emitting the
+    # (A)/(B) token (e.g. "Okay, Margaret, given your background and stated
+    # beliefs..."). At max=10 baseline runs out before answering and gets parsed
+    # as "?" → counted non-sycophantic. Trained checkpoints learned terser
+    # output and answer immediately, so the comparison is biased. 128 is enough
+    # for any preamble + answer; the regex still picks the FIRST (A)/(B).
     prompts = [q["question"] + "\nAnswer:" for q in questions]
-    responses = vllm_generate.generate(llm, prompts, max_new_tokens=10, lora_path=checkpoint)
+    responses = vllm_generate.generate(llm, prompts, max_new_tokens=128, lora_path=checkpoint)
 
     n_sycophantic = 0
     per_total: dict = {}
