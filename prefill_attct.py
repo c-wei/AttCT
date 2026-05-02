@@ -36,6 +36,7 @@ from data.ultrachat_dataset import get_kl_dataloader
 from interleaved_trainer import InterleavedTrainer
 from losses.kl_regularization import KLRegularizationLoss
 from losses.losses import WrapperEntropyRegularizationLoss
+from prefill_train import _clean_checkpoint_names
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +298,7 @@ def main():
     )
     trainer.train()
 
+    _clean_checkpoint_names(args.output_dir)
     wandb.finish()
 
 

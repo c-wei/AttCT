@@ -2,6 +2,7 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
+PREFILL_MODE=""
 CKPT_DIR="checkpoints/prefill_mlpct_ch"
 RESULTS="prefill_mlpct_ch_harmful_results.txt"
 MMLU_N=200          # MMLU samples (0 = full dataset)
@@ -33,47 +34,34 @@ echo "" | tee -a "$RESULTS"
 # # echo "" | tee -a "$RESULTS"
 
 # ==================================================================
-# 2) Baseline eval (PAR + MMLU)
+# 2) Baseline eval (PAR + MMLU in one shared-vLLM run)
 # ==================================================================
-echo "=== Baseline PAR ===" | tee -a "$RESULTS"
-python evaluate_prefill.py \
+echo "=== Baseline (PAR + MMLU) ===" | tee -a "$RESULTS"
+python prefill_run_evals.py \
     --model "$MODEL" \
     --output_json baseline_par.json \
     --limit $HARMFUL_LIMIT \
-    2>&1 | tee -a "$RESULTS"
-echo "" | tee -a "$RESULTS"
-
-echo "=== Baseline MMLU ===" | tee -a "$RESULTS"
-python diagnose_mmlu.py \
-    --model "$MODEL" \
-    --n $MMLU_N \
+    --n-mmlu $MMLU_N \
+    --metric-prefix "pre/" \
     2>&1 | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
 
 # ==================================================================
-# 3) Per-epoch checkpoint evals (PAR + MMLU)
+# 3) Per-epoch checkpoint evals (PAR + MMLU in one call each)
 # ==================================================================
 for epoch in 1 2 3; do
-    # Glob the timestamped checkpoint folder (e.g. epoch_1__20260429_002040)
     LORA_PATHS=( "$CKPT_DIR"/epoch_${epoch} )
     LORA_PATH="${LORA_PATHS[0]}"
     echo "=== Epoch $epoch (checkpoint: $LORA_PATH) ===" | tee -a "$RESULTS"
 
-    echo "--- PAR ---" | tee -a "$RESULTS"
-    python evaluate_prefill.py \
+    python prefill_run_evals.py \
         --model "$MODEL" \
-        --lora_path "$LORA_PATH" \
+        --checkpoint "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_mlpct_ch_par.json" \
+        --output_json "epoch${epoch}_"$PREFILL_MODE"_ch_par.json" \
         --limit $HARMFUL_LIMIT \
-        2>&1 | tee -a "$RESULTS"
-    echo "" | tee -a "$RESULTS"
-
-    echo "--- MMLU ---" | tee -a "$RESULTS"
-    python diagnose_mmlu.py \
-        --model "$MODEL" \
-        --lora_path "$LORA_PATH" \
-        --n $MMLU_N \
+        --n-mmlu $MMLU_N \
+        --metric-prefix "epoch${epoch}/" \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
 done
