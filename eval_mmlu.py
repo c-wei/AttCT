@@ -41,6 +41,69 @@ def format_prompt(item: dict) -> str:
     )
 
 
+def run_mmlu(
+    llm,
+    checkpoint: str | None = None,
+    n_samples: int = 200,
+    metric_prefix: str = "",
+    seed: int = 42,
+) -> dict:
+    """
+    Run MMLU on a pre-loaded vLLM engine and return a metrics dict.
+
+    Designed to be called from run_evals.py (shared vLLM session) — no wandb
+    init / finish here, the caller handles logging. Returns the metrics dict
+    so the caller can do whatever it wants with it.
+
+    For standalone use see main() below.
+    """
+    random.seed(seed)
+
+    print(f"Loading MMLU test set (sampling {n_samples} questions)...")
+    ds = load_dataset("cais/mmlu", "all", split="test")
+    indices = random.sample(range(len(ds)), n_samples)
+    samples = [ds[i] for i in indices]
+
+    prompts = [format_prompt(item) for item in samples]
+    sampling_params = SamplingParams(max_tokens=1, temperature=0.0, logprobs=5)
+    lora_request = LoRARequest("adapter", 1, checkpoint) if checkpoint else None
+
+    print(f"Evaluating {len(prompts)} questions...")
+    outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
+
+    correct = 0
+    for item, output in zip(samples, outputs):
+        # Take the single generated token; strip and uppercase for robustness
+        pred_text = output.outputs[0].text.strip().upper()
+        pred_letter = pred_text[0] if pred_text else ""
+        pred_idx = CHOICE_LABELS.index(pred_letter) if pred_letter in CHOICE_LABELS else -1
+
+        # Fallback: check logprobs for A/B/C/D if generated token isn't a letter
+        if pred_idx == -1 and output.outputs[0].logprobs:
+            top_logprobs = output.outputs[0].logprobs[0]
+            best_score = float("-inf")
+            for tok_id, lp in top_logprobs.items():
+                tok_str = lp.decoded_token.strip().upper()
+                if tok_str in CHOICE_LABELS:
+                    score = lp.logprob
+                    if score > best_score:
+                        best_score = score
+                        pred_idx = CHOICE_LABELS.index(tok_str)
+
+        if pred_idx == item["answer"]:
+            correct += 1
+
+    accuracy = correct / n_samples
+    print(f"\nMMLU accuracy: {accuracy:.4f}  ({correct}/{n_samples})")
+
+    p = metric_prefix
+    return {
+        f"{p}mmlu/accuracy":  accuracy,
+        f"{p}mmlu/n_correct": correct,
+        f"{p}mmlu/n_samples": n_samples,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",     default=None, help="Path to a saved LoRA checkpoint")
@@ -58,13 +121,6 @@ def main():
         config = yaml.safe_load(f)
     model_name = args.model or config["model"]["name"]
 
-    random.seed(args.seed)
-
-    print(f"Loading MMLU test set (sampling {args.n_samples} questions)...")
-    ds = load_dataset("cais/mmlu", "all", split="test")
-    indices = random.sample(range(len(ds)), args.n_samples)
-    samples = [ds[i] for i in indices]
-
     print(f"Loading vLLM engine: {model_name}  checkpoint={args.checkpoint}")
     llm = vllm_generate.load_llm(
         model_name,
@@ -72,40 +128,14 @@ def main():
         max_model_len=args.max_model_len,
     )
 
-    prompts = [format_prompt(item) for item in samples]
+    metrics = run_mmlu(
+        llm,
+        checkpoint=args.checkpoint,
+        n_samples=args.n_samples,
+        metric_prefix=args.metric_prefix,
+        seed=args.seed,
+    )
 
-    sampling_params = SamplingParams(max_tokens=1, temperature=0.0, logprobs=5)
-    lora_request = LoRARequest("adapter", 1, args.checkpoint) if args.checkpoint else None
-
-    print(f"Evaluating {len(prompts)} questions...")
-    outputs = llm.generate(prompts, sampling_params, lora_request=lora_request)
-
-    correct = 0
-    for item, output in zip(samples, outputs):
-        # Take the single generated token; strip and uppercase for robustness
-        pred_text = output.outputs[0].text.strip().upper()
-        pred_letter = pred_text[0] if pred_text else ""
-        pred_idx = CHOICE_LABELS.index(pred_letter) if pred_letter in CHOICE_LABELS else -1
-
-        # Fallback: check logprobs for A/B/C/D if generated token isn't a letter
-        if pred_idx == -1 and output.outputs[0].logprobs:
-            top_logprobs = output.outputs[0].logprobs[0]  # logprobs at position 0
-            best_score = float("-inf")
-            for tok_id, lp in top_logprobs.items():
-                tok_str = lp.decoded_token.strip().upper()
-                if tok_str in CHOICE_LABELS:
-                    score = lp.logprob
-                    if score > best_score:
-                        best_score = score
-                        pred_idx = CHOICE_LABELS.index(tok_str)
-
-        if pred_idx == item["answer"]:
-            correct += 1
-
-    accuracy = correct / args.n_samples
-    print(f"\nMMlU accuracy: {accuracy:.4f}  ({correct}/{args.n_samples})")
-
-    p = args.metric_prefix
     wandb.init(
         project="AttCT",
         name=args.run_name,
@@ -114,11 +144,7 @@ def main():
         resume="allow" if args.wandb_run_id else None,
         config={"checkpoint": args.checkpoint, "n_samples": args.n_samples, "model": model_name},
     )
-    wandb.log({
-        f"{p}mmlu/accuracy":  accuracy,
-        f"{p}mmlu/n_correct": correct,
-        f"{p}mmlu/n_samples": args.n_samples,
-    })
+    wandb.log(metrics)
     wandb.finish()
 
 

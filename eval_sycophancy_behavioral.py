@@ -91,16 +91,33 @@ def _extract_answer_letter(text: str) -> str | None:
 
 def _load_eval_pairs(bct_root: Path, style: str, n: int) -> list[dict]:
     """
-    Load (hint_prompt, correct_answer_letter) pairs from bct_{style}.jsonl.
+    Load (hint_prompt, correct_answer_letter) pairs for the sycophancy eval.
+
+    Prefers the held-out split file `bct_{style}_eval.jsonl` (1000 records,
+    disjoint from the training split). Falls back to the unsplit legacy
+    `bct_{style}.jsonl` (5000 records, overlaps with training) with a warning.
 
     Skips examples where the ground-truth answer cannot be parsed to a letter
     (e.g. "None of the given options") — these are unevaluable.
 
     Returns list of dicts with keys: prompt, correct_answer.
     """
-    path = bct_root / f"bct_{style}.jsonl"
-    if not path.exists():
-        raise FileNotFoundError(f"BCT data not found: {path}")
+    eval_path   = bct_root / f"bct_{style}_eval.jsonl"
+    legacy_path = bct_root / f"bct_{style}.jsonl"
+    if eval_path.exists():
+        path = eval_path
+    elif legacy_path.exists():
+        import warnings
+        warnings.warn(
+            f"Held-out split {eval_path.name} not found; falling back to "
+            f"unsplit {legacy_path.name}. The first {n} examples overlap with "
+            "training data. Pull split files from sukratii-mlp branch."
+        )
+        path = legacy_path
+    else:
+        raise FileNotFoundError(
+            f"BCT data not found: tried {eval_path} and {legacy_path}"
+        )
 
     pairs = []
     n_skipped = 0

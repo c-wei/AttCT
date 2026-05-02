@@ -1,0 +1,44 @@
+# BCT (SFT) — gemma-3-4b-it, LoRA q+v, LR 1e-6.
+#
+# Lower-LR variant of bct_lora_gemma3_4b_lr5e6.yaml. The 5e-6 run blew up
+# at step 50 (loss 2.53 → 8.06 → never recovered). This was AT the same
+# time as the silent 179-step cap, so we don't know whether the spike
+# would still occur with a full epoch — but dropping LR by 5× is the
+# safest first attempt.
+#
+# Mirrors the legacy Gemma-3-27B BCT recipe at the same LR
+# (configs/bct_lora_gemma3_27b_lr1e6.yaml), which trained cleanly.
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: false
+  attn_implementation: "sdpa"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch over the BCT data (~1125 steps)
+  learning_rate: 1.0e-6        # 1e-6, 5× lower than the lr5e6 variant
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_lora_gemma3_4b_lr1e6"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/fresh_bct_gemma3_4b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false

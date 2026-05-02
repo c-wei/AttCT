@@ -148,6 +148,7 @@ class InterleavedTrainer:
         start_index = int(batch["start_index"][0].item())
         clean_start_index = int(batch["clean_start_index"][0].item())
         clean_len = int(batch["clean_len"][0].item())
+        match_len = int(batch["match_len"][0].item()) if "match_len" in batch else clean_len
 
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
 
@@ -179,6 +180,7 @@ class InterleavedTrainer:
             start_index=start_index,
             clean_start_index=clean_start_index,
             clean_len=clean_len,
+            match_len=match_len,
             wrapper_mask=wrapper_mask,
         )
 

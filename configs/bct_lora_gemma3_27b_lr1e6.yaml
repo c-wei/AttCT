@@ -4,11 +4,16 @@ model:
   output_hidden_states: false
   attn_implementation: "sdpa"
 
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  double_quant: true
+
 lora:
   r: 8
   lora_alpha: 16
   lora_dropout: 0.05
-  target_modules: ["q_proj", "v_proj"]
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
   bias: "none"
 
 training:

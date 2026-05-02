@@ -1,0 +1,46 @@
+# BCT (SFT) — Llama-3.1-8B-Instruct, LoRA q+v.
+#
+# Mirrors the canonical Gemma-3-4B BCT recipe (configs/bct_lora_gemma3_4b_lr5e6.yaml)
+# and the existing Llama config in configs/bct_sft.yaml — except this points at
+# fresh BCT targets generated *by the model itself* rather than the legacy
+# GPT-3.5-Turbo data in datasets/sycophancy_bct (which the paper calls "stale").
+#
+# To generate fresh data once before the first run:
+#   uv run python run.py --config configs/bct_lora_llama31_8b.yaml \
+#       --data-mode sycophancy --fresh-data --skip-eval
+# (the --fresh-data flag will create datasets/fresh_bct_llama31_8b/ via
+# OpenRouter using meta-llama/Llama-3.1-8B-Instruct as the responder model).
+# Subsequent runs reuse the saved data automatically.
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  output_attentions: false
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_lora_llama31_8b"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/fresh_bct_llama31_8b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false
