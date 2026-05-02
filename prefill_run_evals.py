@@ -42,6 +42,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
+import torch
 import wandb
 from datasets import load_dataset
 from transformers import AutoTokenizer
@@ -53,6 +54,14 @@ from evaluate_bct import run_brr_with_llm
 from eval_mmlu import format_prompt as _format_mmlu_prompt, CHOICE_LABELS
 
 import vllm_generate
+
+# Fail loud and fast if CUDA isn't visible — otherwise vLLM silently falls
+# back to its CPU runner (cpu_model_runner) and an 8B eval crawls for hours.
+assert torch.cuda.is_available(), (
+    "CUDA not available — vLLM would fall back to CPU. "
+    "Check `nvidia-smi`; if the GPU is there, `unset CUDA_VISIBLE_DEVICES` "
+    "(empty string hides all GPUs)."
+)
 
 
 # ─── Refusal judge (OpenRouter LLM) ───────────────────────────────────────────
