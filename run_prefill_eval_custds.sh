@@ -52,7 +52,7 @@ echo "" | tee -a "$RESULTS"
 # ==================================================================
 for epoch in 1 2 3; do
     # Glob for the epoch directory with timestamp suffix
-    LORA_PATH=$(ls -d "$CKPT_DIR"/epoch_${epoch}__* 2>/dev/null | head -1)
+    LORA_PATH=$(ls -d "$CKPT_DIR"/epoch_${epoch}* 2>/dev/null | head -1)
     
     if [[ -z "$LORA_PATH" ]]; then
         echo "WARNING: No checkpoint found for epoch $epoch, skipping..." | tee -a "$RESULTS"

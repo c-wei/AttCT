@@ -62,7 +62,20 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 from data.prefill_dataset import load_harmful_behaviors_pair
-from eval_mmlu import format_prompt as _format_mmlu_prompt, CHOICE_LABELS
+
+# Inlined from eval_mmlu (which imports vllm at module top — unimportable on
+# vllm-less HF environments). Keeping these here lets MMLU run on both backends.
+CHOICE_LABELS = ["A", "B", "C", "D"]
+
+
+def _format_mmlu_prompt(item: dict) -> str:
+    choices = "\n".join(f"{lbl}. {ch}" for lbl, ch in zip(CHOICE_LABELS, item["choices"]))
+    return (
+        "The following is a multiple choice question. Answer with the letter only.\n\n"
+        f"Question: {item['question']}\n"
+        f"{choices}\n"
+        "Answer:"
+    )
 
 # Fail loud and fast if CUDA isn't visible — both backends are unusably slow on CPU.
 assert torch.cuda.is_available(), (
