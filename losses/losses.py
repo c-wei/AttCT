@@ -690,12 +690,17 @@ class ActivationConsistencyLoss(ConsistencyLoss):
             layer_indices = [num_layers - 1]
         elif self.layer_selection == "middle":
             layer_indices = [num_layers // 2]
+        elif self.layer_selection == "last_half":
+            layer_indices = list(range(num_layers // 2, num_layers))
+        elif self.layer_selection == "last_quarter":
+            layer_indices = list(range((3 * num_layers) // 4, num_layers))
         elif isinstance(self.layer_selection, (list, tuple)):
             layer_indices = list(self.layer_selection)
         else:
             raise ValueError(
                 f"Unknown layer_selection: '{self.layer_selection}'. "
-                "Choose 'all', 'last', 'middle', or a list of indices."
+                "Choose 'all', 'last', 'middle', 'last_half', 'last_quarter', "
+                "or a list of indices."
             )
 
         clean_start_index = kwargs.get("clean_start_index", 0)

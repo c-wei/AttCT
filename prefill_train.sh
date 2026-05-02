@@ -33,13 +33,9 @@ BCT_ARGS=(
 )
 
 # ACT — vary loss weight, layer selection, normalisation
-ACT_LABELS=(w1_all      w1_lasthalf       w1_last      w1_all_norm)
+ACT_LABELS=(w1_all     w1_all_norm)
 ACT_ARGS=(
   "--loss_weight 1.0   --layer_selection all"
-#   "--loss_weight 10.0  --layer_selection all"
-  "--loss_weight 1.0   --layer_selection last_half"
-#   "--loss_weight 10.0  --layer_selection last_half"
-  "--loss_weight 1.0   --layer_selection last"
   "--loss_weight 1.0   --layer_selection all  --normalize"
 )
 

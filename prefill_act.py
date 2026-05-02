@@ -145,7 +145,7 @@ def main():
     parser.add_argument("--loss_weight",      type=float, default=1.0,
                         help="Weight for activation consistency loss")
     parser.add_argument("--layer_selection",  default="all",
-                        choices=["all", "last", "middle"],
+                        choices=["all", "last", "middle", "last_half", "last_quarter"],
                         help="Which transformer layers to apply ACT to")
     parser.add_argument("--normalize",        action="store_true", default=False,
                         help="L2-normalize activations before MSE")
