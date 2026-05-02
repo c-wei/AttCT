@@ -13,7 +13,7 @@
 #     bash prefill_train.sh
 set -e
 
-MODEL="meta-llama/Llama-3.1-8B-Instruct"
+MODEL="meta-llama/Meta-Llama-3-8B-Instruct"
 GRID_ROOT="checkpoints/grid"
 FINAL_EPOCH="epoch_3"   # marker used to detect "already trained"
 
@@ -25,37 +25,33 @@ mkdir -p "$GRID_ROOT"
 # ──────────────────────────────────────────────────────────────────────
 
 # BCT — vary KL temperature, refusal-SFT weight, learning rate
-BCT_LABELS=(t1_sft01     t2_sft01     t05_sft01    t1_sft0      t1_sft03     t1_lr5e6)
+BCT_LABELS=(t1_sft01     t05_sft01    t1_sft03)
 BCT_ARGS=(
   "--kl_temperature 1.0  --sft_coeff 0.1"
-  "--kl_temperature 2.0  --sft_coeff 0.1"
   "--kl_temperature 0.5  --sft_coeff 0.1"
-  "--kl_temperature 1.0  --sft_coeff 0.0"
   "--kl_temperature 1.0  --sft_coeff 0.3"
-  "--kl_temperature 1.0  --sft_coeff 0.1 --lr 5e-6"
 )
 
 # ACT — vary loss weight, layer selection, normalisation
-ACT_LABELS=(w1_all       w10_all      w1_lasthalf  w10_lasthalf w1_last      w1_all_norm)
+ACT_LABELS=(w1_all      w1_lasthalf       w1_last      w1_all_norm)
 ACT_ARGS=(
   "--loss_weight 1.0   --layer_selection all"
-  "--loss_weight 10.0  --layer_selection all"
+#   "--loss_weight 10.0  --layer_selection all"
   "--loss_weight 1.0   --layer_selection last_half"
-  "--loss_weight 10.0  --layer_selection last_half"
+#   "--loss_weight 10.0  --layer_selection last_half"
   "--loss_weight 1.0   --layer_selection last"
   "--loss_weight 1.0   --layer_selection all  --normalize"
 )
 
 # AttCT — exercise all three attention-consistency flavours + KL anchor sweep
 ATTCT_LABELS=(
-  wrap_w1_kl1     wrap_w1_kl10    wrap_w01_kl1    wrap_lindecay
+  wrap_w1_kl1     wrap_w1_kl10    wrap_w01_kl1
   jsd_w1_kl1      jsd_w10_kl1     jsd_lasthalf
   comb_5050       comb_8020       comb_2080
 )
 ATTCT_ARGS=(
   "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 1.0   --layer_weights uniform"
   "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 10.0  --layer_weights uniform"
-  "--attct_loss_type wrapper  --loss_weight 0.1  --kl_weight 1.0   --layer_weights uniform"
   "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 1.0   --layer_weights linear_decay"
 
   "--attct_loss_type jsd      --loss_weight 1.0  --kl_weight 1.0   --layer_selection all"
