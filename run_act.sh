@@ -320,10 +320,30 @@ if not subs:
 print(subs[-1])
 ")
         echo "==> HF subfolder: $HF_SUBFOLDER"
+        # Download to /tmp first (local overlay disk, no network FS) then rsync
+        # into $SAVE_DIR. snapshot_download writes per-file metadata to
+        # <local_dir>/.huggingface/download/, and on RunPod's network FS
+        # (mfs://us-md-1.runpod.net) those metadata writes intermittently fail
+        # with OSError EIO. Five-attempt exponential-backoff retry handles the
+        # transient case; staging on /tmp avoids re-hitting EIO on retry.
+        TMP_HF_DIR="/tmp/hf_pull_${HF_SUBFOLDER//\//_}_$$"
+        mkdir -p "$TMP_HF_DIR"
         uv run --no-project python -c "
+import time
 from huggingface_hub import snapshot_download
-snapshot_download(repo_id='$HF_REPO', allow_patterns='$HF_SUBFOLDER/*', local_dir='$SAVE_DIR')
+for attempt in range(5):
+    try:
+        snapshot_download(repo_id='$HF_REPO', allow_patterns='$HF_SUBFOLDER/*', local_dir='$TMP_HF_DIR')
+        break
+    except OSError as e:
+        if attempt == 4:
+            raise
+        wait = 2 ** attempt
+        print(f'  [hf-pull] OSError on attempt {attempt+1}/5, retrying in {wait}s: {e}', flush=True)
+        time.sleep(wait)
 "
+        rsync -a "$TMP_HF_DIR/$HF_SUBFOLDER/" "$SAVE_DIR/$HF_SUBFOLDER/"
+        rm -rf "$TMP_HF_DIR"
         FINAL_CHECKPOINT="$SAVE_DIR/$HF_SUBFOLDER"
     fi
 fi
