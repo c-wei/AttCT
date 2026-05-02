@@ -1,0 +1,41 @@
+# Defaults for `prefill_train.py --mode mlpct`.
+# CLI flags override these. Keys must match argparse arg names.
+
+model:      meta-llama/Llama-3.1-8B-Instruct
+output_dir: checkpoints/prefill_mlpct
+
+# Data — defaults to the HF dataset; uncomment csv_path to load a local CSV.
+hf_dataset:  carolinewei/ClearHarm_prefills
+hf_split:    train
+# csv_path:  datasets/clearharm_prefills.csv
+train_ratio: 0.8
+
+# Loss: BCT KL (defense) + MLPCT (regulariser)
+loss_weight:    1.0
+mlpct_weight:   1.0       # tune up to ~100–1000 for MLPCT to outweigh BCT
+kl_temperature: 1.0
+
+# MLPCT sub-loss
+variant:         hidden    # hidden = input to down_proj | output = down_proj output
+distance_metric: cosine    # cosine | mse | smooth_l1 | normalized_mse
+layer_selection: all       # all | last | middle | last_half | last_quarter
+layer_weights:   uniform
+normalize:       false
+
+# Training
+lr:                5.0e-6
+num_epochs:        3
+batch_size:        1
+grad_accumulation: 1
+grad_clip:         1.0
+log_every:         10
+max_length:        512
+
+# LoRA — MLP modules included so the regulariser has direct knobs
+lora_r:        8
+lora_alpha:    16
+lora_dropout:  0.05
+lora_targets:  [q_proj, v_proj, gate_proj, up_proj, down_proj]
+
+# Attention backend
+attn_impl: sdpa

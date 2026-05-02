@@ -1,0 +1,40 @@
+# Defaults for `prefill_train.py --mode attct`.
+# CLI flags override these. Keys must match argparse arg names.
+
+model:      meta-llama/Llama-3.1-8B-Instruct
+output_dir: checkpoints/prefill_attct
+
+# Data — defaults to the HF dataset; uncomment csv_path to load a local CSV.
+hf_dataset:  carolinewei/ClearHarm_prefills
+hf_split:    train
+# csv_path:  datasets/clearharm_prefills.csv
+train_ratio: 0.8
+
+# Loss (wrapper entropy on AttCT pass)
+loss_weight:    1.0
+layer_weights:  uniform   # uniform | linear_decay | exponential_decay
+normalize:      true
+
+# KL anchor on UltraChat (interleaved with AttCT step)
+kl_weight:       1.0
+kl_temperature:  1.0
+kl_dataset:      ultrachat   # ultrachat | alpaca
+kl_ratio:        1.0         # fraction of AttCT steps that fire a KL step
+
+# Training
+lr:                5.0e-6
+num_epochs:        3
+batch_size:        1
+grad_accumulation: 1
+grad_clip:         1.0
+log_every:         10
+max_length:        512
+
+# LoRA
+lora_r:        8
+lora_alpha:    16
+lora_dropout:  0.05
+lora_targets:  [q_proj, v_proj]
+
+# AttCT needs attention weights — eager backend
+attn_impl: eager

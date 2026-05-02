@@ -1,0 +1,34 @@
+# Defaults for `prefill_train.py --mode bct`.
+# CLI flags override these. Keys must match argparse arg names.
+
+model:      meta-llama/Llama-3.1-8B-Instruct
+output_dir: checkpoints/prefill_bct
+
+# Data — defaults to the HF dataset; uncomment csv_path to load a local CSV.
+hf_dataset:  carolinewei/ClearHarm_prefills
+hf_split:    train
+# csv_path:  datasets/clearharm_prefills.csv
+train_ratio: 0.8
+
+# Loss
+loss_weight:    1.0
+sft_coeff:      0.1     # 0 disables refusal-pair SFT regularisation
+kl_temperature: 1.0
+
+# Training
+lr:                2.0e-5
+num_epochs:        3
+batch_size:        4
+grad_accumulation: 1
+grad_clip:         1.0
+log_every:         10
+max_length:        512
+
+# LoRA
+lora_r:        16
+lora_alpha:    12
+lora_dropout:  0.05
+lora_targets:  [q_proj, k_proj, v_proj, o_proj]
+
+# Attention backend (sdpa | eager | flash_attention_2)
+attn_impl: sdpa
