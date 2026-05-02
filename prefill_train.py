@@ -66,7 +66,12 @@ from prefill_attct import PrefillAttCTDataset, prefill_attct_collate_fn
 from prefill_bct   import PrefillPairedDataset, PrefillBCTTrainer, load_refusal_pairs
 from prefill_mlpct import PrefillMLPCTDataset, BCTPlusMLPCTLoss
 
-from losses.losses           import ActivationConsistencyLoss, WrapperEntropyRegularizationLoss
+from losses.losses           import (
+    ActivationConsistencyLoss,
+    WrapperEntropyRegularizationLoss,
+    JSDAttentionConsistencyLoss,
+    CombinedJSDWrapperLoss,
+)
 from losses.kl_regularization import KLRegularizationLoss
 
 from train               import Trainer
@@ -152,11 +157,26 @@ def build_loss(mode, args):
             normalize=args.normalize,
         )
     if mode == "attct":
-        return WrapperEntropyRegularizationLoss(
-            weight=args.loss_weight,
-            normalize=args.normalize,
-            layer_weights=args.layer_weights,
-        )
+        # --attct_loss_type picks which attention-consistency loss to use
+        if args.attct_loss_type == "wrapper":
+            return WrapperEntropyRegularizationLoss(
+                weight=args.loss_weight,
+                normalize=args.normalize,
+                layer_weights=args.layer_weights,
+            )
+        if args.attct_loss_type == "jsd":
+            return JSDAttentionConsistencyLoss(
+                weight=args.loss_weight,
+                layer_weights=args.layer_weights,
+                layer_selection=args.layer_selection,
+            )
+        if args.attct_loss_type == "combined":
+            return CombinedJSDWrapperLoss(
+                weight=args.loss_weight,
+                jsd_weight=args.jsd_weight,
+                wrapper_weight=args.wrapper_weight,
+            )
+        raise ValueError(f"Unknown attct_loss_type: {args.attct_loss_type!r}")
     if mode == "bct":
         return None
     raise ValueError(f"Unknown mode: {mode}")
@@ -224,6 +244,16 @@ def main():
                         help="(mlpct) distance between aligned MLP states")
     parser.add_argument("--normalize",         action="store_true", default=False,
                         help="L2-normalize states before distance (act, mlpct)")
+
+    # AttCT: choose attention-consistency loss flavour
+    parser.add_argument("--attct_loss_type",   default="wrapper",
+                        choices=["wrapper", "jsd", "combined"],
+                        help="(attct) wrapper = WrapperEntropyRegularization, "
+                             "jsd = JSDAttentionConsistency, combined = both")
+    parser.add_argument("--jsd_weight",        type=float, default=0.5,
+                        help="(attct combined) JSD component weight")
+    parser.add_argument("--wrapper_weight",    type=float, default=0.5,
+                        help="(attct combined) Wrapper component weight")
 
     # AttCT: KL anchor on UltraChat
     parser.add_argument("--kl_weight",         type=float, default=1.0,
