@@ -3,12 +3,12 @@ set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
 PREFILL_MODE=""
-CKPT_DIR="checkpoints/prefill_mlpct_ch"
-RESULTS="prefill_mlpct_ch_harmful_results.txt"
+CKPT_DIR="checkpoints/prefill_act_ch"
+RESULTS="prefill_act_ch_harmful_results.txt"
 MMLU_N=200          # MMLU samples (0 = full dataset)
 HARMFUL_LIMIT=64    # cap on harmful_behaviors_pair val pairs
 
-echo "=== Prefill-MLPCT Train + Eval ===" | tee "$RESULTS"
+echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
 echo "Model: $MODEL" | tee -a "$RESULTS"
 echo "Started: $(date)" | tee -a "$RESULTS"
 echo "" | tee -a "$RESULTS"
@@ -50,15 +50,20 @@ echo "" | tee -a "$RESULTS"
 # 3) Per-epoch checkpoint evals (PAR + MMLU in one call each)
 # ==================================================================
 for epoch in 1 2 3; do
-    LORA_PATHS=( "$CKPT_DIR"/epoch_${epoch} )
-    LORA_PATH="${LORA_PATHS[0]}"
-    echo "=== Epoch $epoch (checkpoint: $LORA_PATH) ===" | tee -a "$RESULTS"
+    # Glob for the epoch directory with timestamp suffix
+    LORA_PATH=$(ls -d "$CKPT_DIR"/epoch_${epoch}__* 2>/dev/null | head -1)
+    
+    if [[ -z "$LORA_PATH" ]]; then
+        echo "WARNING: No checkpoint found for epoch $epoch, skipping..." | tee -a "$RESULTS"
+        continue
+    fi
 
+    echo "=== Epoch $epoch (checkpoint: $LORA_PATH) ===" | tee -a "$RESULTS"
     python prefill_run_evals.py \
         --model "$MODEL" \
         --checkpoint "$LORA_PATH" \
         --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_"$PREFILL_MODE"_ch_par.json" \
+        --output_json "epoch${epoch}_${PREFILL_MODE}_ch_par.json" \
         --limit $HARMFUL_LIMIT \
         --n-mmlu $MMLU_N \
         --metric-prefix "epoch${epoch}/" \

@@ -40,7 +40,6 @@ from data.prefill_dataset import (
 )
 from losses.losses import ActivationConsistencyLoss
 from train import Trainer
-from prefill_train import _clean_checkpoint_names
 
 assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
 
@@ -255,7 +254,6 @@ def main():
     print("\nRunning eval on val set...")
     trainer.eval_loss(val_dl)
 
-    _clean_checkpoint_names(args.output_dir)
     wandb.finish()
 
 

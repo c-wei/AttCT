@@ -52,7 +52,6 @@ from data.prefill_dataset import (
     prefill_collate_fn,
     load_clearharm_prefills,
 )
-from prefill_train import _clean_checkpoint_names
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +668,6 @@ def main():
         max_steps=args.max_steps,
     )
     trainer.train()
-    _clean_checkpoint_names(args.output_dir)
     wandb.finish()
 
 

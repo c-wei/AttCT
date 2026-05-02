@@ -46,9 +46,6 @@ Usage
 
 import argparse
 import os
-import re
-import shutil
-from pathlib import Path
 
 import torch
 import wandb
@@ -84,48 +81,6 @@ assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU
 
 def _default_config_path(mode: str) -> str:
     return os.path.join(os.path.dirname(__file__), "configs", "prefill", f"{mode}.yaml")
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint cleanup: ensure final folders are exactly epoch_1, epoch_2, epoch_3
-# ---------------------------------------------------------------------------
-
-_TIMESTAMP_RE = re.compile(r"^(epoch_\d+)__\d{8}_\d{6}$")
-
-
-def _clean_checkpoint_names(output_dir: str) -> None:
-    """
-    Tidy `output_dir` so the per-epoch checkpoints land at exactly
-    `epoch_1`, `epoch_2`, `epoch_3`:
-
-      • rename  `epoch_<N>__<timestamp>` → `epoch_<N>` (overwriting any existing
-        target — assumes the most recent match is the one we want)
-      • remove  `step_*` folders entirely (mid-training fractional checkpoints
-        that only matter when behavioral eval is wired in; redundant for the
-        prefill workflow)
-
-    Trainer / InterleavedTrainer always append a timestamp so multiple runs
-    don't clobber each other; PrefillBCTTrainer doesn't but still writes
-    step_* duplicates. This helper handles both.
-    """
-    out = Path(output_dir)
-    if not out.exists():
-        return
-
-    # Sort by mtime so when multiple `epoch_N__*` folders exist we keep the latest.
-    subs = sorted([p for p in out.iterdir() if p.is_dir()], key=lambda p: p.stat().st_mtime)
-    for sub in subs:
-        if sub.name.startswith("step_"):
-            shutil.rmtree(sub)
-            print(f"[cleanup] removed {sub}")
-            continue
-        m = _TIMESTAMP_RE.match(sub.name)
-        if m:
-            target = out / m.group(1)
-            if target.exists() and target != sub:
-                shutil.rmtree(target)
-            sub.rename(target)
-            print(f"[cleanup] renamed {sub.name} → {target.name}")
 
 
 def _load_yaml_defaults(parser: argparse.ArgumentParser, mode: str, config_path: str | None):
@@ -456,7 +411,6 @@ def main():
         print("\nRunning eval on val set...")
         trainer.eval_loss(val_dl)
 
-    _clean_checkpoint_names(args.output_dir)
     wandb.finish()
 
 
