@@ -39,6 +39,7 @@ echo "" | tee -a "$RESULTS"
 echo "=== Baseline (PAR + MMLU) ===" | tee -a "$RESULTS"
 python prefill_run_evals.py \
     --model "$MODEL" \
+    --backend hf \
     --output_json baseline_par.json \
     --limit $HARMFUL_LIMIT \
     --n-mmlu $MMLU_N \
@@ -61,6 +62,7 @@ for epoch in 1 2 3; do
     echo "=== Epoch $epoch (checkpoint: $LORA_PATH) ===" | tee -a "$RESULTS"
     python prefill_run_evals.py \
         --model "$MODEL" \
+        --backend hf \
         --checkpoint "$LORA_PATH" \
         --baseline_json baseline_par.json \
         --output_json "epoch${epoch}_${PREFILL_MODE}_ch_par.json" \
