@@ -13,7 +13,7 @@
 #     bash prefill_train.sh
 set -e
 
-MODEL="Qwen/Qwen2.5-7B-Instruct"
+MODEL="meta-llama/Llama-3.1-8B-Instruct"
 GRID_ROOT="checkpoints/grid"
 FINAL_EPOCH="epoch_3"   # marker used to detect "already trained"
 
