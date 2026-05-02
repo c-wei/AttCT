@@ -12,7 +12,10 @@ lora:
 
 training:
   epochs: 1
-  max_steps: 500
+  # max_steps: null — let the per-source cap below or the explicit per-config
+  # override decide. The previous global default of 500 silently truncated
+  # full-epoch ACT/BCT runs when configs forgot to override it.
+  max_steps: null
   learning_rate: 0.000005
   grad_clip: 1.0
   log_every_n_steps: 10
@@ -31,10 +34,13 @@ data:
   mode: "jailbreak"
   batch_size: 1
   max_length: 512
-  # Default max_steps per data source (used when --max-steps is not passed)
+  # Default max_steps per data source (used when --max-steps is not passed).
+  # Note: BCT (SFTLoss) runs skip this cap — see run.py — because BCT trains
+  # from data.bct_root, not from any of these sources. AttCT/JSD/etc. runs
+  # still get these defaults to avoid blowing through small datasets.
   source_max_steps:
     clear-harm: 179
-    sycophancy_bct: 5000
+    sycophancy_bct: 4000
     anthropic-sycophancy: 20184
     jbb: 100
     harmbench: 200

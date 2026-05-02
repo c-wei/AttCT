@@ -1,0 +1,51 @@
+# ACT sycophancy — gemma-3-4b-it, LoRA (q+v).
+#
+# Verification run for the post-fix ACT implementation:
+#   * matching window = longest matching token suffix between clean / wrapped
+#     (was: content-body slice — see losses/losses.py docstring)
+#   * loss_formulation: "paper" — sums the squared L2 norm over hidden_dim,
+#     matching Eq. 1 of Irpan et al. 2025 (was: F.mse_loss / D)
+#   * embedding layer (hidden_states[0]) skipped from the average
+#   * eval clean pass now runs under θ_init for parity with training
+#
+# Paper reference (Gemma 3 4B sycophancy, full FT, weight=1e-4): F1 ≈ 0.65
+# (see Figure 2 in Irpan et al. 2025 — ACT lands at the top-right of the
+# Gemma 3 4B panel, matching/beating BCT).
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: true
+  attn_implementation: "sdpa" # gemma-3 needs sdpa with hidden states
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  # 5e-5 (half the paper recipe). The 1e-4 setting blew up on Gemma-3-4B at
+  # step 3500/4000 — layer losses reached the thousands and training crashed.
+  # Llama-3.1-8B trained cleanly at 1e-4 (final layer_max ≈ 0.4), but Gemma's
+  # residual stream amplifies LoRA drift faster, so we halve the weight.
+  weight: 0.00005
+  kwargs:
+    layer_selection: "all"     # all transformer layers; embedding skipped
+    normalize: false
+    loss_formulation: "paper"  # sums over hidden_dim — paper Eq. 1
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch over the 5k sycophancy_bct prompts
+  learning_rate: 0.000005      # 5e-6 — matches prior LoRA setups
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_sycophancy_gemma3_4b_v2"

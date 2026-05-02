@@ -15,7 +15,10 @@ dependencies = [
     "httpx",
     "setuptools",
     "numpy<2.3",
+    # openrouter_client.py uses json_repair to parse Gemini / GPT structured
+    # responses that occasionally come back as malformed JSON.
     "json-repair",
+    "requests",
 ]
 
 [dependency-groups]

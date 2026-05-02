@@ -172,6 +172,7 @@ class Trainer:
         start_index       = int(batch["start_index"][0].item())
         clean_start_index = int(batch["clean_start_index"][0].item())
         clean_len         = int(batch["clean_len"][0].item())
+        match_len         = int(batch["match_len"][0].item()) if "match_len" in batch else clean_len
 
         adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
         self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
@@ -217,6 +218,7 @@ class Trainer:
             start_index=start_index,
             clean_start_index=clean_start_index,
             clean_len=clean_len,
+            match_len=match_len,
             wrapper_mask=wrapper_mask,
             clean_mlp_states=clean_mlp_states,
             adv_mlp_states=adv_mlp_states,
@@ -250,15 +252,16 @@ class Trainer:
                     self.optimizer.zero_grad()
                     global_step += 1
 
-                    # Fire checkpoint callback at the three designated steps.
-                    # The model is saved first so the checkpoint corresponds to
-                    # the weights that behavioral eval will measure.
-                    if global_step in self.checkpoint_steps:
+                    # Mid-training checkpoints + behavioral evals fire together at
+                    # ~33%/66%/100% of optimizer steps. Both are skipped when
+                    # `checkpoint_fn` is None (i.e. caller passed --no-checkpoint),
+                    # because the only reason to save mid-train is to feed the eval.
+                    # The end-of-epoch save below is independent and always happens.
+                    if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
                         self._save_checkpoint(tag=f"step_{global_step}")
-                        if self.checkpoint_fn is not None:
-                            print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
-                            self.checkpoint_fn(global_step)
-                            self.model.train()  # restore train mode after eval
+                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
+                        self.checkpoint_fn(global_step)
+                        self.model.train()  # restore train mode after eval
 
                     if global_step % self.log_every == 0:
                         self._log(epoch, global_step, loss_dict)

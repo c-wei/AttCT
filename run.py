@@ -58,7 +58,9 @@ def main():
     parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
-    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip both pre- and post-training evaluation passes")
+    parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true", help="Skip the pre-training baseline evaluation pass")
+    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true", help="Skip the post-training evaluation pass")
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
@@ -109,6 +111,11 @@ def main():
                         help="Run sycophancy evaluator post-training regardless of data-mode.")
     parser.add_argument("--eval-jailbreak", dest="eval_jailbreak_source", action="store_const", const=True, default=None,
                         help="Run jailbreak evaluator post-training (always uses jbb harmful + jbb-benign).")
+    parser.add_argument("--eval-held-out", dest="eval_held_out_path", default=None,
+                        help="Path to held-out eval JSONL (e.g. datasets/sycophancy_bct/control_cot_eval.jsonl). "
+                             "Enables held-out BRR evaluation alongside MMLU BRR.")
+    parser.add_argument("--eval-anthropic", dest="eval_anthropic", action="store_true",
+                        help="Run Anthropic model-written-evals sycophancy evaluation (1000 questions).")
     # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
     beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
@@ -163,6 +170,9 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.skip_eval:
+        args.skip_pre_eval = True
+        args.skip_post_eval = True
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -177,6 +187,13 @@ def main():
     elif args.data_mode == "intelligence":
         # Step count is determined by --kl-samples; don't let config.yaml cap it.
         config.setdefault("training", {})["max_steps"] = None
+    elif config.get("loss", {}).get("name") == "SFTLoss":
+        # BCT (SFTLoss) uses data.bct_root for training, not data.source.
+        # source_max_steps is an AttCT-only mechanism — applying it to BCT
+        # silently caps training (e.g. clear-harm's 179 vs the ~1125 steps
+        # for one full epoch over an 18k-sample BCT dataset). Use the full
+        # dataset unless the config explicitly overrides max_steps.
+        config.setdefault("training", {}).setdefault("max_steps", None)
     else:
         # Apply per-source default max_steps if not explicitly overridden.
         # For multiple sources, use the largest default so all data is seen.
@@ -369,11 +386,59 @@ def main():
                            output_dir=fresh_dir, limit=limit)
             config["data"]["bct_root"] = fresh_dir
 
+        # Tokenizer for the in-run.py SycophancyEvaluator (paper-canonical
+        # MMLU substrate). The BCTTrainer itself constructs its own tokenizer
+        # via get_bct_dataloader, but we need one here for the evaluator.
+        bct_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if bct_tokenizer.pad_token is None:
+            bct_tokenizer.pad_token = bct_tokenizer.eos_token
+
+        # Pre-train SycophancyEvaluator on the base model (LoRA disabled) so
+        # BCT runs produce the same headline F1 / not_sycophantic_pct / BRR
+        # numbers as ACT runs. Mirrors the AttCT branch below (run.py:519+).
+        run_label_bct = os.path.splitext(os.path.basename(args.config))[0]
+        bct_results_csv = os.path.join("results", f"{run_label_bct}_syco_results.csv")
+        _bct_syco_extra = {}
+        if getattr(args, "eval_held_out_path", None):
+            _bct_syco_extra["held_out_path"] = args.eval_held_out_path
+        if getattr(args, "eval_anthropic", False):
+            _bct_syco_extra["anthropic_eval"] = True
+        if not args.skip_pre_eval:
+            from evaluate_sycophancy import SycophancyEvaluator
+            print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+                SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
+                                    results_csv=bct_results_csv,
+                                    max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
+                model.enable_adapter_layers()
+                model.train()
+            else:
+                SycophancyEvaluator(model, bct_tokenizer, device, prefix="pre_train",
+                                    results_csv=bct_results_csv,
+                                    max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
+
         train_dl    = get_bct_dataloader(config, split="train")
         eval_dl     = get_bct_dataloader(config, split="eval")
-        bct_trainer = BCTTrainer(model, train_dl, loss_fn, config, device)
+        bct_trainer = BCTTrainer(
+            model, train_dl, loss_fn, config, device,
+            hf_repo=args.hf_repo,
+            run_name=run_name,
+        )
         bct_trainer.train()
         bct_trainer.eval_loss(eval_dl)
+
+        # Post-train SycophancyEvaluator — model is already trained in-memory,
+        # so this is essentially free vs. reloading from disk.
+        if not args.skip_post_eval:
+            from evaluate_sycophancy import SycophancyEvaluator
+            print("\n=== Post-training evaluation (trained model) — sycophancy eval ===")
+            model.eval()
+            SycophancyEvaluator(model, bct_tokenizer, device, prefix="post_train",
+                                results_csv=bct_results_csv,
+                                max_samples=args.eval_limit, **_bct_syco_extra).evaluate()
+            model.train()
 
         if args.brr_test_root:
             from evaluate_bct import run_brr_eval
@@ -432,8 +497,13 @@ def main():
         if not is_sanity and is_sycophancy:
             from evaluate_sycophancy import SycophancyEvaluator
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
+            _syco_extra = {}
+            if getattr(args, "eval_held_out_path", None):
+                _syco_extra["held_out_path"] = args.eval_held_out_path
+            if getattr(args, "eval_anthropic", False):
+                _syco_extra["anthropic_eval"] = True
 
-        _eval_limit = args.eval_limit if args.eval_limit is not None else 200
+        _eval_limit = args.eval_limit if args.eval_limit is not None else 1000
 
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
@@ -480,39 +550,41 @@ def main():
                     model.eval()
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit,
+                                            **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
                     model.train()
                 else:
                     if is_sycophancy:
                         SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
-                                            results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                            results_csv=results_csv, max_samples=_eval_limit,
+                                            **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
-                    _run_probe_questions(step)
                     model.train()
             return _fn
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_pre_eval:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
                 model.eval()
                 SycophancyEvaluator(model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    **_syco_extra).evaluate()
                 model.enable_adapter_layers()
                 model.train()
             else:
                 SycophancyEvaluator(ref_model, tokenizer, device, prefix="pre_train",
-                                    results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                    results_csv=results_csv, max_samples=_eval_limit,
+                                    **_syco_extra).evaluate()
 
-        if not is_sanity and is_jailbreak:
+        if not is_sanity and is_jailbreak and not args.skip_pre_eval:
             print("\n=== Pre-training baseline (base model) — jailbreak eval ===")
             _eval_model = model if is_lora else ref_model
             if is_lora:
@@ -616,15 +688,16 @@ def main():
             if args.eval_limit is not None:
                 eval_config.setdefault("data", {})["limit"] = args.eval_limit
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
-                      metric_prefix=args.metric_prefix).evaluate()
+                      metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_post_eval:
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
-                                results_csv=results_csv, max_samples=_eval_limit).evaluate()
+                                results_csv=results_csv, max_samples=_eval_limit,
+                                **_syco_extra).evaluate()
 
-        if not is_sanity and is_jailbreak:
+        if not is_sanity and is_jailbreak and not args.skip_post_eval:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
             JailbreakEvaluator(model, tokenizer, device,

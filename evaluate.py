@@ -16,8 +16,9 @@ class Evaluator:
         device:     torch.device to run on.
     """
 
-    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device, metric_prefix: str = "eval/"):
+    def __init__(self, model, dataloader: DataLoader, loss_fn, config: dict, device: torch.device, metric_prefix: str = "eval/", ref_model=None):
         self.model = model
+        self.ref_model = ref_model           # frozen θ_init for full-FT eval (None when LoRA)
         self.dataloader = dataloader
         self.loss_fn = loss_fn
         self.device = device
@@ -55,13 +56,29 @@ class Evaluator:
             start_index       = int(batch["start_index"][0].item())
             clean_start_index = int(batch["clean_start_index"][0].item()) if "clean_start_index" in batch else start_index
             clean_len         = int(batch["clean_len"][0].item())
+            match_len         = int(batch["match_len"][0].item()) if "match_len" in batch else clean_len
 
             adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
 
             if self.needs_clean_pass:
                 clean_input_ids      = batch["clean_input_ids"].to(self.device)
                 clean_attention_mask = batch["clean_attention_mask"].to(self.device)
-                clean_outputs        = self._forward(clean_input_ids, clean_attention_mask)
+                # Clean pass must run under θ_init for parity with training. For
+                # full FT we have a frozen ref model; for LoRA we toggle adapters
+                # off for the duration of the clean forward.
+                if self.ref_model is not None:
+                    clean_outputs = self.ref_model(
+                        input_ids=clean_input_ids,
+                        attention_mask=clean_attention_mask,
+                        output_attentions=self.output_attentions,
+                        output_hidden_states=self.output_hidden_states,
+                    )
+                elif hasattr(self.model, "disable_adapter_layers"):
+                    self.model.disable_adapter_layers()
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    self.model.enable_adapter_layers()
+                else:
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
             else:
                 clean_outputs = None
 
@@ -75,6 +92,7 @@ class Evaluator:
                 start_index=start_index,
                 clean_start_index=clean_start_index,
                 clean_len=clean_len,
+                match_len=match_len,
                 wrapper_mask=wrapper_mask,
             )
 
