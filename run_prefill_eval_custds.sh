@@ -2,9 +2,9 @@
 set -e
 
 MODEL="meta-llama/Llama-3.1-8B-Instruct"
-PREFILL_MODE=""
-CKPT_DIR="checkpoints/prefill_act_ch"
-RESULTS="prefill_act_ch_harmful_results.txt"
+PREFILL_MODE="bct"
+CKPT_DIR="checkpoints/prefill_bct_ch"
+RESULTS="prefill_bct_ch_harmful_results.txt"
 MMLU_N=200          # MMLU samples (0 = full dataset)
 HARMFUL_LIMIT=64    # cap on harmful_behaviors_pair val pairs
 
