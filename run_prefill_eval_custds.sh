@@ -24,9 +24,9 @@ set -e
 
 MODEL_TAG="${MODEL_TAG:-llama}"     # llama | qwen
 METHODS="${METHODS:-bct act attct mlpct}"
-HARMFUL_LIMIT="${HARMFUL_LIMIT:-64}"
+HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
 MMLU_N="${MMLU_N:-50}"
-BACKEND="${BACKEND:-hf}"
+BACKEND="${BACKEND:-vllm}"
 
 case "$MODEL_TAG" in
   llama) MODEL="meta-llama/Llama-3.1-8B-Instruct" ;;
