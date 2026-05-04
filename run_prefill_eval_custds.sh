@@ -31,7 +31,7 @@ set -e
 MODEL_TAG="${MODEL_TAG:-llama}"     # llama | qwen
 METHODS="${METHODS:-bct act attct mlpct}"
 HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
-MMLU_N="${MMLU_N:-50}"
+MMLU_N="${MMLU_N:-0}"
 BACKEND="${BACKEND:-vllm}"
 
 # BRR is opt-in. Set BRR_TEST_ROOT to a cot-transparency test root to enable.
