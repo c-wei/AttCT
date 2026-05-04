@@ -1,77 +1,119 @@
 #!/bin/bash
+# run_prefill_eval_custds.sh — grid eval runner for prefill defenses.
+#
+# Walks every grid cell under checkpoints/prefill_<MODEL_TAG>/grid/, evaluates
+# each saved epoch (epoch_1, epoch_2, epoch_3) with prefill_run_evals.py, and
+# writes results into <cell>/eval_epoch_<N>.json. Resumable: existing eval
+# JSONs are skipped — delete them to force a re-run.
+#
+# Naming-format compatibility
+# ---------------------------
+# Old runs save epoch_N__YYYYMMDD_HHMMSS; newer runs save plain epoch_N.
+# A single `epoch_${N}*` glob picks up both. If multiple match (multiple
+# timestamped runs in the same cell), the newest one wins.
+#
+# Usage
+# -----
+#   MODEL_TAG=llama bash run_prefill_eval_custds.sh
+#   MODEL_TAG=qwen  bash run_prefill_eval_custds.sh
+#   METHODS="bct attct"  MODEL_TAG=llama  bash run_prefill_eval_custds.sh
+#
+# Pair with prefill_pick_best.py afterwards to produce <method>_best.json.
+
 set -e
 
-MODEL="meta-llama/Llama-3.1-8B-Instruct"
-PREFILL_MODE="bct"
-CKPT_DIR="checkpoints/prefill_bct_ch"
-RESULTS="prefill_bct_ch_harmful_results.txt"
-MMLU_N=200          # MMLU samples (0 = full dataset)
-HARMFUL_LIMIT=64    # cap on harmful_behaviors_pair val pairs
+MODEL_TAG="${MODEL_TAG:-llama}"     # llama | qwen
+METHODS="${METHODS:-bct act attct mlpct}"
+HARMFUL_LIMIT="${HARMFUL_LIMIT:-64}"
+MMLU_N="${MMLU_N:-50}"
+BACKEND="${BACKEND:-hf}"
 
-echo "=== Prefill-ACT Train + Eval ===" | tee "$RESULTS"
-echo "Model: $MODEL" | tee -a "$RESULTS"
-echo "Started: $(date)" | tee -a "$RESULTS"
-echo "" | tee -a "$RESULTS"
+case "$MODEL_TAG" in
+  llama) MODEL="meta-llama/Llama-3.1-8B-Instruct" ;;
+  qwen)  MODEL="Qwen/Qwen2.5-7B-Instruct" ;;
+  *) echo "Unknown MODEL_TAG=$MODEL_TAG (expected: llama | qwen)"; exit 1 ;;
+esac
 
-# ==================================================================
-# 1) Train
-# ==================================================================
-# echo "=== Training ===" | tee -a "$RESULTS"
+GRID_ROOT="checkpoints/prefill_${MODEL_TAG}/grid"
+BASELINE_JSON="baseline_${MODEL_TAG}.json"
+RESULTS="grid_eval_${MODEL_TAG}.log"
 
-# python prefill_mlpct.py \
-#     --model meta-llama/Llama-3.1-8B-Instruct \
-#     --output_dir checkpoints/prefill_mlpct \
-#     --mlpct_weight 1000 \
-#     --kl_temperature 1.0
+if [[ ! -d "$GRID_ROOT" ]]; then
+  echo "Grid root not found: $GRID_ROOT"
+  exit 1
+fi
 
-# python prefill_act.py \
-#     --model "$MODEL" \
-#     --output_dir "$CKPT_DIR" \
-#     --num_epochs 3 \
-#     --batch_size 1 \
-#     --grad_accumulation 4 \
-# #     2>&1 | tee -a "$RESULTS"
-# # echo "" | tee -a "$RESULTS"
+echo "=== Grid eval ===" | tee "$RESULTS"
+echo "Model:     $MODEL"            | tee -a "$RESULTS"
+echo "Tag:       $MODEL_TAG"        | tee -a "$RESULTS"
+echo "Backend:   $BACKEND"          | tee -a "$RESULTS"
+echo "Methods:   $METHODS"          | tee -a "$RESULTS"
+echo "Grid root: $GRID_ROOT"        | tee -a "$RESULTS"
+echo "Started:   $(date)"           | tee -a "$RESULTS"
+echo ""                              | tee -a "$RESULTS"
 
-# ==================================================================
-# 2) Baseline eval (PAR + MMLU in one shared-vLLM run)
-# ==================================================================
-echo "=== Baseline (PAR + MMLU) ===" | tee -a "$RESULTS"
-python prefill_run_evals.py \
-    --model "$MODEL" \
-    --backend hf \
-    --output_json baseline_par.json \
-    --limit $HARMFUL_LIMIT \
-    --n-mmlu $MMLU_N \
-    --metric-prefix "pre/" \
-    2>&1 | tee -a "$RESULTS"
-echo "" | tee -a "$RESULTS"
+# ──────────────────────────────────────────────────────────────────────
+# Baseline (no checkpoint) — once per model
+# ──────────────────────────────────────────────────────────────────────
+if [[ ! -f "$BASELINE_JSON" ]]; then
+  echo "=== Baseline ($BASELINE_JSON) ===" | tee -a "$RESULTS"
+  python prefill_run_evals.py \
+      --model "$MODEL" \
+      --backend "$BACKEND" \
+      --output_json "$BASELINE_JSON" \
+      --limit "$HARMFUL_LIMIT" \
+      --n-mmlu "$MMLU_N" \
+      --metric-prefix "pre/" \
+      2>&1 | tee -a "$RESULTS"
+  echo "" | tee -a "$RESULTS"
+else
+  echo "=== Baseline cached — $BASELINE_JSON ===" | tee -a "$RESULTS"
+fi
 
-# ==================================================================
-# 3) Per-epoch checkpoint evals (PAR + MMLU in one call each)
-# ==================================================================
-for epoch in 1 2 3; do
-    # Glob for the epoch directory with timestamp suffix
-    LORA_PATH=$(ls -d "$CKPT_DIR"/epoch_${epoch}* 2>/dev/null | head -1)
-    
-    if [[ -z "$LORA_PATH" ]]; then
-        echo "WARNING: No checkpoint found for epoch $epoch, skipping..." | tee -a "$RESULTS"
-        continue
+# ──────────────────────────────────────────────────────────────────────
+# Per-cell × per-epoch evals
+# ──────────────────────────────────────────────────────────────────────
+for cell_dir in "$GRID_ROOT"/*/; do
+  cell=$(basename "$cell_dir")
+  method="${cell%%_*}"   # split on first underscore: bct_t1_sft01 → bct
+
+  # Filter to methods of interest
+  if ! [[ " $METHODS " =~ " $method " ]]; then
+    continue
+  fi
+
+  echo "=== Cell: $cell (method=$method) ===" | tee -a "$RESULTS"
+
+  for epoch in 1 2 3; do
+    out_json="${cell_dir}eval_epoch_${epoch}.json"
+    if [[ -f "$out_json" ]]; then
+      echo "  epoch $epoch — cached ($out_json)" | tee -a "$RESULTS"
+      continue
     fi
 
-    echo "=== Epoch $epoch (checkpoint: $LORA_PATH) ===" | tee -a "$RESULTS"
+    # epoch_N* matches both `epoch_3` and `epoch_3__TIMESTAMP`; pick newest if multiple
+    lora=$(ls -dt "${cell_dir}epoch_${epoch}"* 2>/dev/null | head -1)
+    if [[ -z "$lora" ]]; then
+      echo "  epoch $epoch — no checkpoint, skipping" | tee -a "$RESULTS"
+      continue
+    fi
+
+    echo "  epoch $epoch → $lora" | tee -a "$RESULTS"
     python prefill_run_evals.py \
         --model "$MODEL" \
-        --backend hf \
-        --checkpoint "$LORA_PATH" \
-        --baseline_json baseline_par.json \
-        --output_json "epoch${epoch}_${PREFILL_MODE}_ch_par.json" \
-        --limit $HARMFUL_LIMIT \
-        --n-mmlu $MMLU_N \
-        --metric-prefix "epoch${epoch}/" \
+        --backend "$BACKEND" \
+        --checkpoint "$lora" \
+        --baseline_json "$BASELINE_JSON" \
+        --output_json "$out_json" \
+        --limit "$HARMFUL_LIMIT" \
+        --n-mmlu "$MMLU_N" \
+        --metric-prefix "${cell}_e${epoch}/" \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
+  done
 done
 
 echo "=== Done: $(date) ===" | tee -a "$RESULTS"
-echo "Results saved to $RESULTS"
+echo ""
+echo "Per-cell eval JSONs: $GRID_ROOT/<cell>/eval_epoch_<N>.json"
+echo "Run prefill_pick_best.py --model_tag $MODEL_TAG  to produce <method>_best.json"
