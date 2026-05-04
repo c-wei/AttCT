@@ -73,17 +73,72 @@ def parse_cell_name(cell: str) -> tuple[str, str]:
     return method, label
 
 
+def _extract_brr_held_out(brr_dict: dict | None) -> float | None:
+    """`output["brr"]` is a flat dict of W&B-style metrics with a per-cell
+    prefix (e.g. `bct_t1_sft01_e3/brr/held_out_avg`). Find the held-out
+    average regardless of prefix."""
+    if not brr_dict:
+        return None
+    for k, v in brr_dict.items():
+        if k.endswith("brr/held_out_avg"):
+            return v / 100 if isinstance(v, (int, float)) else None  # stored as percentage
+    return None
+
+
 def harmful_metrics(eval_data: dict) -> dict:
-    """Pull (par, attack_comply, clean_comply, mmlu) from a per-cell eval JSON."""
+    """Pull (par, attack_comply, clean_comply, mmlu, brr) from a per-cell eval JSON."""
     h = eval_data.get("harmful", {})
     mmlu = eval_data.get("mmlu", {}).get("accuracy")
+    brr_held_out = _extract_brr_held_out(eval_data.get("brr"))
     return {
         "par":           h.get("par"),
         "attack_comply": h.get("attack_comply_rate"),
         "clean_comply":  h.get("clean_comply_rate"),
         "n":             h.get("n"),
         "mmlu":          mmlu,
+        "brr":           brr_held_out,
     }
+
+
+def load_baseline(model_tag: str) -> dict:
+    """Combine baseline_<tag>.json (PAR + MMLU) and brr_baseline_<tag>.json
+    (BRR per-bias dict) into the same metrics shape as harmful_metrics.
+
+    Falls back to legacy filenames if the tagged ones don't exist."""
+    par_paths = [Path(f"baseline_{model_tag}.json"), Path("baseline_par.json")]
+    par_path  = next((p for p in par_paths if p.is_file()), None)
+    par_data  = json.loads(par_path.read_text()) if par_path else {}
+
+    brr_paths = [Path(f"brr_baseline_{model_tag}.json"), Path("baseline_brr.json")]
+    brr_path  = next((p for p in brr_paths if p.is_file()), None)
+    brr_data  = json.loads(brr_path.read_text()) if brr_path else None
+
+    # brr_baseline JSON format: {bias_name: {biased_rate, unbiased_rate, brr, n}}.
+    # Average BRR across all biases for a single headline number.
+    brr_avg = None
+    if brr_data:
+        brrs = [v["brr"] for v in brr_data.values() if isinstance(v, dict) and "brr" in v]
+        if brrs:
+            brr_avg = sum(brrs) / len(brrs)
+
+    h = par_data.get("harmful", {}) if par_data else {}
+    return {
+        "par":           h.get("par"),
+        "attack_comply": h.get("attack_comply_rate"),
+        "clean_comply":  h.get("clean_comply_rate"),
+        "n":             h.get("n"),
+        "mmlu":          (par_data.get("mmlu") or {}).get("accuracy"),
+        "brr":           brr_avg,
+        "_par_source":   str(par_path) if par_path else None,
+        "_brr_source":   str(brr_path) if brr_path else None,
+    }
+
+
+def _delta(winner: float | None, baseline: float | None) -> float | None:
+    """winner - baseline; None if either is None."""
+    if winner is None or baseline is None:
+        return None
+    return winner - baseline
 
 
 def score(metrics: dict, rank_by: str) -> float:
@@ -92,6 +147,8 @@ def score(metrics: dict, rank_by: str) -> float:
         return metrics["par"] if metrics["par"] is not None else float("inf")
     if rank_by == "attack_comply":
         return metrics["attack_comply"] if metrics["attack_comply"] is not None else float("inf")
+    if rank_by == "brr":
+        return metrics["brr"] if metrics["brr"] is not None else float("inf")
     if rank_by == "composite":
         # PAR (lower=better) penalised by MMLU drop (higher=better).
         par  = metrics["par"]  if metrics["par"]  is not None else float("inf")
@@ -156,7 +213,7 @@ def main():
     ap.add_argument("--output_dir",  default=".",
                     help="Where to write <method>_best.json (default: cwd)")
     ap.add_argument("--rank-by",     default="par",
-                    choices=["par", "attack_comply", "composite"],
+                    choices=["par", "attack_comply", "brr", "composite"],
                     help="Ranking metric (lower = better). Default: par.")
     args = ap.parse_args()
 
@@ -180,6 +237,15 @@ def main():
     for r in runs:
         by_method.setdefault(r["method"], []).append(r)
 
+    baseline = load_baseline(args.model_tag)
+    print(f"\nBaseline:  PAR={_fmt_pct(baseline['par'])}  "
+          f"attack={_fmt_pct(baseline['attack_comply'])}  "
+          f"clean={_fmt_pct(baseline['clean_comply'])}  "
+          f"MMLU={_fmt_pct(baseline['mmlu'])}  "
+          f"BRR={_fmt_pct(baseline['brr'])}")
+    print(f"  par_source: {baseline['_par_source']}")
+    print(f"  brr_source: {baseline['_brr_source']}")
+
     print(f"\n{'='*78}")
     print(f"  Best per method ({args.model_tag}, rank by {args.rank_by})")
     print(f"{'='*78}")
@@ -190,11 +256,23 @@ def main():
         best = method_runs[0]
         bm   = best["metrics"]
 
+        deltas = {
+            k: _delta(bm[k], baseline[k])
+            for k in ("par", "attack_comply", "clean_comply", "mmlu", "brr")
+        }
+
         print(f"\n[{method}]  winner = {best['cell']}  epoch {best['epoch']}")
         print(f"  PAR={_fmt_pct(bm['par'])}  "
               f"attack={_fmt_pct(bm['attack_comply'])}  "
               f"clean={_fmt_pct(bm['clean_comply'])}  "
-              f"MMLU={_fmt_pct(bm['mmlu'])}")
+              f"MMLU={_fmt_pct(bm['mmlu'])}  "
+              f"BRR={_fmt_pct(bm['brr'])}")
+        print(f"  Δ vs base: "
+              f"PAR={_fmt_pct(deltas['par'])}  "
+              f"attack={_fmt_pct(deltas['attack_comply'])}  "
+              f"clean={_fmt_pct(deltas['clean_comply'])}  "
+              f"MMLU={_fmt_pct(deltas['mmlu'])}  "
+              f"BRR={_fmt_pct(deltas['brr'])}")
         print(f"  hp:   {best['hyperparameters']}")
         print(f"  ckpt: {best['checkpoint']}")
 
@@ -206,7 +284,8 @@ def main():
                   f"PAR={_fmt_pct(m['par'])}  "
                   f"attack={_fmt_pct(m['attack_comply'])}  "
                   f"clean={_fmt_pct(m['clean_comply'])}  "
-                  f"MMLU={_fmt_pct(m['mmlu'])}")
+                  f"MMLU={_fmt_pct(m['mmlu'])}  "
+                  f"BRR={_fmt_pct(m['brr'])}")
 
         leaderboard = [
             {
@@ -217,6 +296,7 @@ def main():
                 "attack_comply": r["metrics"]["attack_comply"],
                 "clean_comply":  r["metrics"]["clean_comply"],
                 "mmlu":          r["metrics"]["mmlu"],
+                "brr":           r["metrics"]["brr"],
             }
             for r in method_runs
         ]
@@ -235,7 +315,19 @@ def main():
             "attack_comply":   bm["attack_comply"],
             "clean_comply":    bm["clean_comply"],
             "mmlu":            bm["mmlu"],
+            "brr":             bm["brr"],
             "n":               bm["n"],
+            # Untrained-model baseline + delta (winner - baseline) for comparison.
+            "baseline": {
+                "par":           baseline["par"],
+                "attack_comply": baseline["attack_comply"],
+                "clean_comply":  baseline["clean_comply"],
+                "mmlu":          baseline["mmlu"],
+                "brr":           baseline["brr"],
+                "_par_source":   baseline["_par_source"],
+                "_brr_source":   baseline["_brr_source"],
+            },
+            "delta_vs_baseline": deltas,
             "eval":            best["eval"],
             "leaderboard":     leaderboard,
         }

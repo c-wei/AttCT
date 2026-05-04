@@ -18,6 +18,12 @@
 #   MODEL_TAG=qwen  bash run_prefill_eval_custds.sh
 #   METHODS="bct attct"  MODEL_TAG=llama  bash run_prefill_eval_custds.sh
 #
+# BRR (opt-in): set BRR_TEST_ROOT to a cot-transparency test root and BRR
+# results land at <cell>/brr_epoch_<N>.json. Optional BRR_LIMIT and
+# BRR_BIAS_TYPES env vars get forwarded.
+#   BRR_TEST_ROOT=/path/to/cot-transparency/test  MODEL_TAG=llama \
+#       bash run_prefill_eval_custds.sh
+#
 # Pair with prefill_pick_best.py afterwards to produce <method>_best.json.
 
 set -e
@@ -28,6 +34,12 @@ HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
 MMLU_N="${MMLU_N:-50}"
 BACKEND="${BACKEND:-vllm}"
 
+# BRR is opt-in. Set BRR_TEST_ROOT to a cot-transparency test root to enable.
+# Per-cell results land at <cell>/brr_epoch_<N>.json; baseline at brr_baseline_<tag>.json.
+BRR_TEST_ROOT="${BRR_TEST_ROOT:-}"
+BRR_LIMIT="${BRR_LIMIT:-}"
+BRR_BIAS_TYPES="${BRR_BIAS_TYPES:-}"
+
 case "$MODEL_TAG" in
   llama) MODEL="meta-llama/Llama-3.1-8B-Instruct" ;;
   qwen)  MODEL="Qwen/Qwen2.5-7B-Instruct" ;;
@@ -36,7 +48,16 @@ esac
 
 GRID_ROOT="checkpoints/prefill_${MODEL_TAG}/grid"
 BASELINE_JSON="baseline_${MODEL_TAG}.json"
+BRR_BASELINE_JSON="brr_baseline_${MODEL_TAG}.json"
 RESULTS="grid_eval_${MODEL_TAG}.log"
+
+# Compose the BRR-related CLI args once. Empty string when BRR is off.
+brr_args=()
+if [[ -n "$BRR_TEST_ROOT" ]]; then
+  brr_args+=(--brr-test-root "$BRR_TEST_ROOT")
+  [[ -n "$BRR_LIMIT"      ]] && brr_args+=(--brr-limit      "$BRR_LIMIT")
+  [[ -n "$BRR_BIAS_TYPES" ]] && brr_args+=(--brr-bias-types  $BRR_BIAS_TYPES)  # word-split intentional
+fi
 
 if [[ ! -d "$GRID_ROOT" ]]; then
   echo "Grid root not found: $GRID_ROOT"
@@ -64,6 +85,8 @@ if [[ ! -f "$BASELINE_JSON" ]]; then
       --limit "$HARMFUL_LIMIT" \
       --n-mmlu "$MMLU_N" \
       --metric-prefix "pre/" \
+      ${brr_args[@]:+"${brr_args[@]}"} \
+      ${BRR_TEST_ROOT:+--brr-output-json "$BRR_BASELINE_JSON"} \
       2>&1 | tee -a "$RESULTS"
   echo "" | tee -a "$RESULTS"
 else
@@ -99,6 +122,7 @@ for cell_dir in "$GRID_ROOT"/*/; do
     fi
 
     echo "  epoch $epoch → $lora" | tee -a "$RESULTS"
+    brr_out_json="${cell_dir}brr_epoch_${epoch}.json"
     python prefill_run_evals.py \
         --model "$MODEL" \
         --backend "$BACKEND" \
@@ -108,6 +132,8 @@ for cell_dir in "$GRID_ROOT"/*/; do
         --limit "$HARMFUL_LIMIT" \
         --n-mmlu "$MMLU_N" \
         --metric-prefix "${cell}_e${epoch}/" \
+        ${brr_args[@]:+"${brr_args[@]}"} \
+        ${BRR_TEST_ROOT:+--brr-baseline-json "$BRR_BASELINE_JSON" --brr-output-json "$brr_out_json"} \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
   done
