@@ -1,0 +1,53 @@
+# Generic instruction-only SFT control for Gemma-3-4B-IT.
+#
+# Purpose:
+#   Control for the effect of ordinary extra LoRA fine-tuning, separate from
+#   consistency-training objectives. This mirrors the instruct-only SFT
+#   structure of bct_instruct_baseline_1868.yaml, while matching the Gemma-3-4B
+#   BCT cross-model recipe where it matters for comparability.
+#
+# Anchors:
+#   - Data/objective style from bct_instruct_baseline_1868.yaml:
+#       source=instruct_only, SFTLoss, mask_prompt=true.
+#   - Gemma-3-4B LoRA/training recipe from bct_lora_gemma3_4b_lr1e6.yaml:
+#       QKVO LoRA, lr=1e-6, AdamW, weight_decay=0.01, grad_clip=1.0.
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: false
+  output_hidden_states: false
+  attn_implementation: "sdpa"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  # Match the Gemma-3-4B BCT optimizer budget rather than dataset epochs.
+  # BCT full epoch is ~1125 optimizer steps; using max_steps avoids dependence
+  # on the size of the generic instruction dataset.
+  max_steps: 1125
+  learning_rate: 1.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/instruct_control_gemma3_4b_sft"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  source: "instruct_only"
+  instruct_path: "datasets/sycophancy_bct/instruct_samples.jsonl"
+  batch_size: 2
+  max_length: 2048
+  # Standard instruction SFT behavior: train only on assistant/completion tokens.
+  mask_prompt: true
