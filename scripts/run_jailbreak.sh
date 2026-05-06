@@ -1,30 +1,47 @@
 #!/usr/bin/env bash
-# Canonical MLP-CT jailbreak training + eval runner (Gemma-3-4B by default).
+# Canonical jailbreak training + eval runner. Method-agnostic: defaults to
+# MLP-CT but picks up ACT, BCT, or any other consistency loss via $METHOD +
+# $CONFIG overrides.
 #
-# Mirrors the sycophancy runner pattern. Final ablation outcome:
-#   train on filtered WildJailbreak vanilla → eval on
-#       1. ClearHarm (wrapped)
-#       2. JBB harmful + benign (wrapped harmful, raw benign)
-#       3. WildJailbreak vanilla HELD-OUT (training prompts excluded, wrapped)
+# Pipeline:
+#   1. (auto) compliance-filter the harmful source against the BASE model →
+#      JSONL of "kept" prompts (refused on clean AND complied on at least one
+#      wrap). Cached at datasets/filtered_jailbreak/<MODEL_TAG>_<SOURCE>.jsonl,
+#      reusable across all CT methods on the same base model.
+#   2. Train via run.py --eval-jailbreak with the filtered JSONL.
+#   3. Evaluate (pre + post) on:
+#        - ClearHarm (wrapped at eval time)
+#        - JBB harmful + benign (wrapped harmful, raw benign)
+#        - WildJailbreak vanilla HELD-OUT (training prompts excluded, wrapped)
 #
 # Required env vars: HF_TOKEN, OPENROUTER_API_KEY, WANDB_API_KEY.
 #
-# Usage (defaults — auto-runs filter if filtered JSONL is missing):
-#   bash scripts/run_mlpct_jailbreak.sh
+# Usage (defaults — MLP-CT on Gemma-3-4B):
+#   bash scripts/run_jailbreak.sh
 #
-# Filtering control via RUN_FILTER env var:
+# Train ACT instead:
+#   METHOD=act CONFIG=configs/act_jailbreak_gemma3_4b.yaml \
+#     bash scripts/run_jailbreak.sh
+#
+# Train MLP-CT on a different model:
+#   MODEL=Qwen/Qwen3-8B bash scripts/run_jailbreak.sh
+#
+# Filter control via RUN_FILTER env var:
 #   RUN_FILTER=auto   (default) Run filter only if $TRAIN_DATA does not exist.
-#   RUN_FILTER=true   Always run the filter (overwrites $TRAIN_DATA).
+#   RUN_FILTER=true   Always run filter (overwrites $TRAIN_DATA).
 #   RUN_FILTER=false  Never run filter; abort if $TRAIN_DATA missing.
 #
-# Optional overrides:
-#   MODEL=google/gemma-3-27b-it CONFIG=configs/experiment_mlp_gemma3_27b.yaml \
-#     bash scripts/run_mlpct_jailbreak.sh
-#   FILTER_SOURCE=harmbench RUN_FILTER=true bash scripts/run_mlpct_jailbreak.sh
+# Other knobs:
+#   FILTER_SOURCE=harmbench   change harmful pool (default: wildjailbreak)
+#   FILTER_LIMIT=400          cap raw prompts before filtering
+#   FILTER_N_WRAPS=4          wraps per prompt during filtering
+#   EVAL_LIMIT=100            prompts per eval source
+#   MAX_STEPS=200             optimizer steps
 
 set -euo pipefail
 
 MODEL="${MODEL:-google/gemma-3-4b-it}"
+METHOD="${METHOD:-mlpct}"  # used in default RUN_NAME / SAVE_DIR / HF_REPO
 
 # MODEL_TAG: short slug used to key per-model artifacts (filter JSONL, save dir,
 # run name). Same baseline → same filter, regardless of which CT method
@@ -40,9 +57,10 @@ if [ -z "${MODEL_TAG:-}" ]; then
     esac
 fi
 
+# Method-default config; override CONFIG to use ACT/BCT yaml.
 CONFIG="${CONFIG:-configs/experiment_mlp_${MODEL_TAG}.yaml}"
-HF_REPO="${HF_REPO:-Sukratii/mlpct-jailbreak-checkpoints}"
-WANDB_GROUP="${WANDB_GROUP:-mlpct_jailbreak_final}"
+HF_REPO="${HF_REPO:-Sukratii/${METHOD}-jailbreak-checkpoints}"
+WANDB_GROUP="${WANDB_GROUP:-${METHOD}_jailbreak_final}"
 MAX_STEPS="${MAX_STEPS:-200}"
 EVAL_LIMIT="${EVAL_LIMIT:-100}"
 
@@ -52,10 +70,11 @@ FILTER_SOURCE="${FILTER_SOURCE:-wildjailbreak}"
 FILTER_LIMIT="${FILTER_LIMIT:-400}"
 FILTER_N_WRAPS="${FILTER_N_WRAPS:-4}"
 
-# Per-MODEL filter path (reusable across CT methods). Per-RUN save_dir / run_name.
+# Per-MODEL filter path (reusable across CT methods).
+# Per-RUN save_dir / run_name (method-specific).
 TRAIN_DATA="${TRAIN_DATA:-datasets/filtered_jailbreak/${MODEL_TAG}_${FILTER_SOURCE}.jsonl}"
-RUN_NAME="${RUN_NAME:-mlpct_jailbreak_${MODEL_TAG}}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/mlpct_jailbreak/${MODEL_TAG}}"
+RUN_NAME="${RUN_NAME:-${METHOD}_jailbreak_${MODEL_TAG}}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/${METHOD}_jailbreak/${MODEL_TAG}}"
 
 # Eval-time held-out filter: any prompt in TRAIN_DATA is excluded from the
 # wildjailbreak-vanilla-heldout-* sources so we never eval on training data.
@@ -91,8 +110,9 @@ esac
 
 echo ""
 echo "============================================================"
-echo "MLP-CT Jailbreak — canonical run"
+echo "Jailbreak runner — canonical"
 echo "============================================================"
+echo "Method:        $METHOD"
 echo "Model:         $MODEL"
 echo "Model tag:     $MODEL_TAG"
 echo "Config:        $CONFIG"
