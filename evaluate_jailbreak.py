@@ -315,12 +315,16 @@ class JailbreakEvaluator:
         return {f"{name}/{k}": v for k, v in source_results.items()}
 
     def _generate(self, prompt: str) -> str:
-        input_ids = self.tokenizer.apply_chat_template(
+        # Gemma-3 returns a tensor directly when tokenize=True+return_tensors="pt";
+        # other models return a BatchEncoding with ["input_ids"]. Handle both.
+        encoded = self.tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt",
-        )["input_ids"].to(self.device)
+        )
+        input_ids = encoded if torch.is_tensor(encoded) else encoded["input_ids"]
+        input_ids = input_ids.to(self.device)
         with torch.no_grad():
             output_ids = self.model.generate(
                 input_ids,
