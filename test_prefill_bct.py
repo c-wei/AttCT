@@ -12,6 +12,8 @@ Usage:
     # Checkpoint
     python test_prefill_bct.py --model meta-llama/Llama-3.1-8B-Instruct \
         --lora_path checkpoints/prefill_bct_custds/epoch_1
+
+        python test_prefill_bct.py --model meta-llama/Llama-3.1-8B-Instruct --lora_path ./checkpoints/prefill_llama/grid/mlpct_mw100_hid_cos/epoch_2__20260503_015938/
 """
 
 import argparse
