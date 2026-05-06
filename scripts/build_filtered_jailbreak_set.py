@@ -180,11 +180,23 @@ def main():
     )
 
     def fmt(text: str) -> str:
-        return tokenizer.apply_chat_template(
-            [{"role": "user", "content": text}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+        # enable_thinking=False suppresses <think> blocks on Qwen3-8B etc.
+        # Without it, the response is largely a CoT block that strip_think
+        # removes, leaving the judge with empty content (100% undecided).
+        # Falls back gracefully on tokenizers that don't have the kwarg.
+        try:
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
 
     clean_fmt = [fmt(p) for p in prompts]
 
