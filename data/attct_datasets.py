@@ -1,6 +1,7 @@
 """Dataset classes for consistency training (unified jailbreak + sycophancy)."""
 
 import json
+import os
 import random
 from functools import partial
 from pathlib import Path
@@ -364,6 +365,47 @@ def get_prompts(
             print(f"    Loaded {len(prompts)} prompts from WildJailbreak eval (adversarial_benign)")
         except Exception as e:
             print(f"    Warning: Failed to load WildJailbreak eval benign: {e}")
+            prompts = []
+
+    elif source in ("wildjailbreak-vanilla-heldout-harmful", "wildjailbreak-vanilla-heldout-benign"):
+        # Held-out vanilla prompts from the WJ train split. Eval-time wrapping with
+        # STRONG_JAILBREAK_TEMPLATES happens downstream in JailbreakEvaluator (harmful
+        # only). This is the proper held-out, in-distribution-wrap test.
+        #
+        # Prompts whose goal text matches an entry in WJ_TRAIN_EXCLUDE_PATH (a JSONL
+        # in the messages format) are dropped so we don't eval on training data.
+        wanted_dt = "vanilla_harmful" if source.endswith("harmful") else "vanilla_benign"
+        try:
+            if _hf_load_dataset is None:
+                raise ImportError("HuggingFace datasets library not available")
+            print(f"--> Loading allenai/wildjailbreak train split ({wanted_dt}, held out)...")
+            ds = _hf_load_dataset("allenai/wildjailbreak", "train", split="train", streaming=True)
+
+            exclude_path = os.environ.get("WJ_TRAIN_EXCLUDE_PATH")
+            exclude: set[str] = set()
+            if exclude_path and Path(exclude_path).exists():
+                exclude = set(_read_jsonl_user_messages(exclude_path))
+                print(f"    Excluding {len(exclude)} training prompts from {exclude_path}")
+            else:
+                print(f"    No WJ_TRAIN_EXCLUDE_PATH set — returning all {wanted_dt} prompts")
+
+            prompts: List[str] = []
+            seen: set[str] = set()
+            for item in ds:
+                if item.get("data_type") != wanted_dt:
+                    continue
+                p = item.get("vanilla")
+                if not p or len(p) <= 15:
+                    continue
+                if p in exclude or p in seen:
+                    continue
+                seen.add(p)
+                prompts.append(p)
+                if len(prompts) >= 5000:
+                    break
+            print(f"    Loaded {len(prompts)} held-out {wanted_dt} prompts.")
+        except Exception as e:
+            print(f"    Warning: Failed to load WildJailbreak vanilla {wanted_dt}: {e}")
             prompts = []
 
     elif source == "redteam2k":

@@ -94,9 +94,13 @@ _EVAL_SOURCES = [
     },
     {
         "name": "wildjailbreak",
-        "harmful_source": "wildjailbreak-eval-harmful",
-        "benign_source": "wildjailbreak-eval-benign",
-        "wrap_harmful": False,  # adversarial field already contains the attack prompt
+        # Held-out WJ vanilla rows (excluded if listed in WJ_TRAIN_EXCLUDE_PATH).
+        # Wrapped at eval time with STRONG_JAILBREAK_TEMPLATES — same wrap distribution
+        # as our training, so this measures generalization to unseen harmful goals
+        # rather than out-of-distribution wrap tactics.
+        "harmful_source": "wildjailbreak-vanilla-heldout-harmful",
+        "benign_source": "wildjailbreak-vanilla-heldout-benign",
+        "wrap_harmful": True,
     },
 ]
 
