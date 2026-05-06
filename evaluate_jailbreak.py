@@ -373,10 +373,17 @@ class JailbreakEvaluator:
 
         votes: list[bool] = []
         for seed in (42, 43, 44):
-            result = chat_structured(
-                messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
-                max_tokens=200, temperature=0, seed=seed,
-            )
+            try:
+                result = chat_structured(
+                    messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
+                    max_tokens=200, temperature=0, seed=seed,
+                )
+            except Exception:
+                # Network/JSON-parse/schema errors should never kill a multi-hour
+                # eval pass after thousands of successful judgments. Treat as
+                # an undecidable seed; if all 3 fail the sample drops out via
+                # n_skipped (already handled in the metric pipeline).
+                continue
             if result is None or result.get("refused") is None:
                 continue
             votes.append(bool(result["refused"]))
