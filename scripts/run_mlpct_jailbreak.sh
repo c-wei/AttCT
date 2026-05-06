@@ -25,20 +25,37 @@
 set -euo pipefail
 
 MODEL="${MODEL:-google/gemma-3-4b-it}"
-CONFIG="${CONFIG:-configs/experiment_mlp_gemma3_4b.yaml}"
-TRAIN_DATA="${TRAIN_DATA:-datasets/filtered_jailbreak/gemma3_4b_wildjailbreak.jsonl}"
-RUN_NAME="${RUN_NAME:-mlpct_jailbreak_gemma3_4b}"
+
+# MODEL_TAG: short slug used to key per-model artifacts (filter JSONL, save dir,
+# run name). Same baseline → same filter, regardless of which CT method
+# (MLP-CT, ACT, BCT) is being trained on top. Auto-derived if not set.
+if [ -z "${MODEL_TAG:-}" ]; then
+    case "$MODEL" in
+        google/gemma-3-4b-it)             MODEL_TAG="gemma3_4b" ;;
+        google/gemma-3-27b-it)            MODEL_TAG="gemma3_27b" ;;
+        meta-llama/Llama-3.1-8B-Instruct) MODEL_TAG="llama31_8b" ;;
+        Qwen/Qwen3-4B-Instruct-2507)      MODEL_TAG="qwen3_4b" ;;
+        Qwen/Qwen3-8B)                    MODEL_TAG="qwen3_8b" ;;
+        *) MODEL_TAG=$(basename "$MODEL" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g') ;;
+    esac
+fi
+
+CONFIG="${CONFIG:-configs/experiment_mlp_${MODEL_TAG}.yaml}"
 HF_REPO="${HF_REPO:-Sukratii/mlpct-jailbreak-checkpoints}"
 WANDB_GROUP="${WANDB_GROUP:-mlpct_jailbreak_final}"
 MAX_STEPS="${MAX_STEPS:-200}"
 EVAL_LIMIT="${EVAL_LIMIT:-100}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/mlpct_jailbreak/gemma3_4b}"
 
 # Filter knobs (only used if filter actually runs)
 RUN_FILTER="${RUN_FILTER:-auto}"
 FILTER_SOURCE="${FILTER_SOURCE:-wildjailbreak}"
 FILTER_LIMIT="${FILTER_LIMIT:-400}"
 FILTER_N_WRAPS="${FILTER_N_WRAPS:-4}"
+
+# Per-MODEL filter path (reusable across CT methods). Per-RUN save_dir / run_name.
+TRAIN_DATA="${TRAIN_DATA:-datasets/filtered_jailbreak/${MODEL_TAG}_${FILTER_SOURCE}.jsonl}"
+RUN_NAME="${RUN_NAME:-mlpct_jailbreak_${MODEL_TAG}}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/mlpct_jailbreak/${MODEL_TAG}}"
 
 # Eval-time held-out filter: any prompt in TRAIN_DATA is excluded from the
 # wildjailbreak-vanilla-heldout-* sources so we never eval on training data.
@@ -77,6 +94,7 @@ echo "============================================================"
 echo "MLP-CT Jailbreak — canonical run"
 echo "============================================================"
 echo "Model:         $MODEL"
+echo "Model tag:     $MODEL_TAG"
 echo "Config:        $CONFIG"
 echo "Train data:    $TRAIN_DATA"
 echo "Run name:      $RUN_NAME"
