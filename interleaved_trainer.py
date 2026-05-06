@@ -321,6 +321,7 @@ class InterleavedTrainer:
                 f"Epoch {epoch} complete — "
                 f"avg attct: {avg_attct:.4f}, avg kl_reg: {avg_kl:.4f}"
             )
+            self._save_checkpoint(tag=f"epoch_{epoch}")
 
             if self.max_steps is not None and global_step >= self.max_steps:
                 break

@@ -1,0 +1,27 @@
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  output_attentions: true
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+    layer_selection: "last_quarter"
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
+  batch_size: 1
+  max_length: 512
+
+training:
+  save_dir: "checkpoints/best_attct/llama31_8b/08_qv_last_quarter_layers"

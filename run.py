@@ -58,9 +58,11 @@ def main():
     parser.add_argument("--wandb-group", default=None, help="W&B group for organising related runs")
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
-    parser.add_argument("--skip-eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--skip-eval", action="store_true", help="Skip both pre- and post-training evaluation passes")
     parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true",
                         help="Skip the pre-training behavioral eval pass (e.g. when resuming after a crash with pre-eval rows already in the CSV)")
+    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true",
+                        help="Skip the post-training evaluation pass")
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
@@ -170,6 +172,9 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.skip_eval:
+        args.skip_pre_eval = True
+        args.skip_post_eval = True
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -400,7 +405,7 @@ def main():
             _bct_syco_extra["held_out_path"] = args.eval_held_out_path
         if getattr(args, "eval_anthropic", False):
             _bct_syco_extra["anthropic_eval"] = True
-        if not args.skip_eval:
+        if not args.skip_pre_eval:
             from evaluate_sycophancy import SycophancyEvaluator
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
@@ -428,7 +433,7 @@ def main():
 
         # Post-train SycophancyEvaluator — model is already trained in-memory,
         # so this is essentially free vs. reloading from disk.
-        if not args.skip_eval:
+        if not args.skip_post_eval:
             from evaluate_sycophancy import SycophancyEvaluator
             print("\n=== Post-training evaluation (trained model) — sycophancy eval ===")
             model.eval()
@@ -566,7 +571,7 @@ def main():
                     model.train()
             return _fn
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_pre_eval:
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
@@ -689,14 +694,14 @@ def main():
             Evaluator(model, get_dataloader(eval_config, split="eval"), loss_fn, eval_config, device,
                       metric_prefix=args.metric_prefix, ref_model=ref_model).evaluate()
 
-        if not is_sanity and is_sycophancy:
+        if not is_sanity and is_sycophancy and not args.skip_post_eval:
             print("\n=== Post-training evaluation (trained model) — sycophancy ===")
             model.eval()
             SycophancyEvaluator(model, tokenizer, device, prefix="post_train",
                                 results_csv=results_csv, max_samples=_eval_limit,
                                 **_syco_extra).evaluate()
 
-        if not is_sanity and is_jailbreak:
+        if not is_sanity and is_jailbreak and not args.skip_post_eval:
             print("\n=== Post-training evaluation (trained model) — jailbreak ===")
             model.eval()
             JailbreakEvaluator(model, tokenizer, device,

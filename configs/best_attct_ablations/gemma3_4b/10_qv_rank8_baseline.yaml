@@ -1,0 +1,26 @@
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: true
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
+  batch_size: 1
+  max_length: 512
+
+training:
+  save_dir: "checkpoints/best_attct/gemma3_4b/10_qv_rank8_baseline"
