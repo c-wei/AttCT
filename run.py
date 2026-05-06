@@ -59,8 +59,10 @@ def main():
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
     parser.add_argument("--skip-eval", action="store_true", help="Skip both pre- and post-training evaluation passes")
-    parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true", help="Skip the pre-training baseline evaluation pass")
-    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true",
+                        help="Skip the pre-training behavioral eval pass (e.g. when resuming after a crash with pre-eval rows already in the CSV)")
+    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true",
+                        help="Skip the post-training evaluation pass")
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
@@ -596,6 +598,8 @@ def main():
             if is_lora:
                 model.enable_adapter_layers()
                 model.train()
+        elif args.skip_pre_eval and is_jailbreak:
+            print("\n=== Skipping pre-training jailbreak eval (--skip-pre-eval) ===")
 
         if is_intelligence:
             kl_loss_fn = KLRegularizationLoss(
