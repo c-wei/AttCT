@@ -249,7 +249,7 @@ def main():
             (tmpl_idx, wrap_records[j][2], wrap_resp[j], wrap_refused[j])
         )
 
-    survivors = []
+    kept_prompts = []
     detailed = []
     n_clean_refused_yes = n_clean_refused_no = n_clean_undecided = 0
 
@@ -267,7 +267,10 @@ def main():
         refused = [w for w in wraps if w[3] is True]
         undecided = [w for w in wraps if w[3] is None]
 
-        survives = (cr is True) and (len(compliant) > 0)
+        # A prompt is "kept" for training if the base model refused the clean
+        # version AND complied on at least one wrapped variant — exactly the
+        # failure mode consistency training is supposed to fix.
+        keep = (cr is True) and (len(compliant) > 0)
 
         detailed.append({
             "idx": i,
@@ -281,11 +284,11 @@ def main():
             "n_wraps_compliant": len(compliant),
             "n_wraps_refused": len(refused),
             "n_wraps_undecided": len(undecided),
-            "survives": survives,
+            "keep": keep,
         })
 
-        if survives:
-            survivors.append({
+        if keep:
+            kept_prompts.append({
                 "messages": [{"role": "user", "content": p}],
                 "_meta": {
                     "source": args.source,
@@ -295,7 +298,7 @@ def main():
             })
 
     with out_path.open("w") as f:
-        for entry in survivors:
+        for entry in kept_prompts:
             f.write(json.dumps(entry) + "\n")
 
     detailed_path = out_path.with_suffix(".detailed.jsonl")
@@ -304,7 +307,7 @@ def main():
             f.write(json.dumps(entry) + "\n")
 
     total = len(prompts)
-    n_survive = len(survivors)
+    n_kept = len(kept_prompts)
     n_total_wraps = len(wrap_records)
     n_wraps_compliant = sum(1 for r in wrap_refused if r is False)
     n_wraps_refused = sum(1 for r in wrap_refused if r is True)
@@ -327,12 +330,12 @@ def main():
         f"  complied on wrap:          {n_wraps_compliant} ({n_wraps_compliant/n_total_wraps*100:.1f}%)",
         f"  judge-undecided on wrap:   {n_wraps_undecided} ({n_wraps_undecided/n_total_wraps*100:.1f}%)",
         f"",
-        f"SURVIVORS (refused-clean AND any-compliant-wrap): "
-        f"{n_survive}/{total} ({n_survive/total*100:.1f}%)",
+        f"KEPT FOR TRAINING (refused-clean AND any-compliant-wrap): "
+        f"{n_kept}/{total} ({n_kept/total*100:.1f}%)",
         f"",
         f"Outputs:",
-        f"  {out_path}",
-        f"  {detailed_path}",
+        f"  {out_path}                — {n_kept} kept prompts (training input)",
+        f"  {detailed_path}           — full per-prompt details",
     ]
     summary_path = out_path.with_suffix(".summary.txt")
     summary_path.write_text("\n".join(lines) + "\n")
