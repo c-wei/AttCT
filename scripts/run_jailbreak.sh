@@ -19,12 +19,25 @@
 # Usage (defaults — MLP-CT on Gemma-3-4B):
 #   bash scripts/run_jailbreak.sh
 #
-# Train ACT instead:
+# Train ACT (Activation Consistency Training):
 #   METHOD=act CONFIG=configs/act_jailbreak_gemma3_4b.yaml \
+#     bash scripts/run_jailbreak.sh
+#
+# Train BCT (Bias-augmented Consistency Training, supervised):
+#   METHOD=bct CONFIG=configs/bct_jailbreak_gemma3_4b.yaml \
+#     bash scripts/run_jailbreak.sh
+#
+# Train AttCT (Attention Consistency Training, this repo's method):
+#   METHOD=attct CONFIG=configs/attention_consistency_v2.yaml \
 #     bash scripts/run_jailbreak.sh
 #
 # Train MLP-CT on a different model:
 #   MODEL=Qwen/Qwen3-8B bash scripts/run_jailbreak.sh
+#
+# Filter is base-model-keyed (not method-keyed) — running the same MODEL
+# with different METHOD reuses the same filtered JSONL. The filter only
+# depends on which prompts the BASE (un-finetuned) model refuses on clean
+# AND complies on at-least-one-wrap, which is method-independent.
 #
 # Filter control via RUN_FILTER env var:
 #   RUN_FILTER=auto   (default) Run filter only if $TRAIN_DATA does not exist.
