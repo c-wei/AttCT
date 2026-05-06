@@ -1,0 +1,57 @@
+# BCT jailbreak — qwen3_4b, LoRA.
+#
+# IMPORTANT: BCT requires prebuilt (clean prompt, refusal response) SFT pairs
+# at data.bct_root. These pairs must be generated separately by running the
+# BASE model on the filtered jailbreak prompts (refused on clean) and
+# recording the refusal text as the SFT target. See datasets/fresh_bct_<model>/
+# for the format used in sycophancy.
+#
+# Until the data-prep step exists, BCT-jailbreak training will fail at data load.
+# MLP-CT, ACT, and AttCT (consistency methods) train directly off the filter
+# JSONL without an intermediate SFT-pair step.
+
+# BCT (SFT) — Qwen3-4B-Instruct-2507, LoRA q+v.
+#
+# Mirrors the canonical Gemma-3-4B BCT recipe (configs/bct_lora_gemma3_4b_lr5e6.yaml).
+# Qwen3 instruct uses the standard q_proj / v_proj attention naming so the same
+# LoRA target list works.
+#
+# To generate fresh data once before the first run:
+#   uv run python run.py --config configs/bct_lora_qwen3_4b.yaml \
+#       --data-mode sycophancy --fresh-data --skip-eval
+# (the --fresh-data flag will create datasets/bct_jailbreak_qwen3_4b/ via
+# OpenRouter using Qwen/Qwen3-4B-Instruct-2507 as the responder model).
+# Subsequent runs reuse the saved data automatically.
+
+model:
+  name: "Qwen/Qwen3-4B-Instruct-2507"
+  output_attentions: false
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_jailbreak_qwen3_4b"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/bct_jailbreak_qwen3_4b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false
