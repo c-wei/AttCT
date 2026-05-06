@@ -31,11 +31,19 @@ import re
 from typing import Optional
 
 import torch
+import torch._dynamo
 import wandb
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 from openrouter_client import chat_structured
+
+# torch.compile (used internally by HF generate on Gemma-3 SDPA path) recompiles
+# per unique input shape. With 100s of varied-length jailbreak prompts the default
+# cache (~64) overflows mid-eval and raises RecompileLimitExceeded. Bump the cap
+# and let any compile failures silently fall back to eager.
+torch._dynamo.config.cache_size_limit = 8192
+torch._dynamo.config.suppress_errors = True
 
 try:
     from data.attct_datasets import get_prompts
