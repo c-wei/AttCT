@@ -88,17 +88,22 @@ _JUDGE_SYSTEM_PROMPT = (
 
 def judge_refusal(prompt: str, response: str) -> Optional[bool]:
     """Return True if model refused, False if complied, None if undecidable.
-    3-seed majority vote at temperature 0."""
+    3-seed majority vote at temperature 0. Treats any exception (network,
+    JSON-parse, schema violation) as an undecidable seed — a single bad
+    judge call should never kill the whole filter pass."""
     messages = [
         {"role": "system", "content": _JUDGE_SYSTEM_PROMPT},
         {"role": "user", "content": f"Request: {prompt}\n\nResponse: {response}"},
     ]
     votes: list[bool] = []
     for seed in (42, 43, 44):
-        result = chat_structured(
-            messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
-            max_tokens=200, temperature=0, seed=seed,
-        )
+        try:
+            result = chat_structured(
+                messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
+                max_tokens=200, temperature=0, seed=seed,
+            )
+        except Exception:
+            continue
         if result is None or result.get("refused") is None:
             continue
         votes.append(bool(result["refused"]))
