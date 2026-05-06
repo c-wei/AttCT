@@ -1,27 +1,11 @@
 # BCT jailbreak — qwen3_8b, LoRA.
 #
-# IMPORTANT: BCT requires prebuilt (clean prompt, refusal response) SFT pairs
-# at data.bct_root. These pairs must be generated separately by running the
-# BASE model on the filtered jailbreak prompts (refused on clean) and
-# recording the refusal text as the SFT target. See datasets/fresh_bct_<model>/
-# for the format used in sycophancy.
+# Build BCT training pairs first (reuses the compliance filter's detailed output):
+#   python scripts/build_bct_pairs_from_filter.py \
+#     --filter-detailed datasets/filtered_jailbreak/qwen3_8b_wildjailbreak.detailed.jsonl \
+#     --out-dir datasets/bct_jailbreak_qwen3_8b
 #
-# Until the data-prep step exists, BCT-jailbreak training will fail at data load.
-# MLP-CT, ACT, and AttCT (consistency methods) train directly off the filter
-# JSONL without an intermediate SFT-pair step.
-
-# BCT (SFT) — Qwen/Qwen3-8B, LoRA q+v.
-#
-# Mirrors the canonical recipe (configs/bct_lora_llama31_8b.yaml). Fresh
-# BCT data generated via OpenRouter (qwen/qwen3-8b) — Qwen3-4B-Instruct-2507
-# isn't on OpenRouter so qwen3-8b is the closest available substitute on
-# the same family.
-#
-# Data lives at datasets/bct_jailbreak_qwen3_8b/ — generate first, then split:
-#   uv run python generate_fresh_bct_data.py --model qwen/qwen3-8b \
-#       --bct-root datasets/sycophancy_bct \
-#       --output-dir datasets/bct_jailbreak_qwen3_8b
-#   uv run python split_bct_train_eval.py datasets/bct_jailbreak_qwen3_8b
+# Then run scripts/run_jailbreak.sh with METHOD=bct to train.
 
 model:
   name: "Qwen/Qwen3-8B"
