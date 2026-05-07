@@ -103,6 +103,9 @@ run_cell () {
     python prefill_train.py \
         --mode "$mode" \
         --model "$MODEL" \
+        --quantize 4bit \
+        --batch_size 1 \
+        --grad_accumulation 4 \
         --output_dir "$out_dir" \
         --wandb_name "grid_${mode}_${label}" \
         $extra

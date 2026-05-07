@@ -50,9 +50,9 @@ import os
 import torch
 import wandb
 import yaml
-from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel, prepare_model_for_kbit_training
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from data.prefill_dataset import (
     prefill_collate_fn,
@@ -276,6 +276,12 @@ def main():
     parser.add_argument("--log_every",         type=int,   default=10)
     parser.add_argument("--max_length",        type=int,   default=512)
 
+    # Quantization (QLoRA — base model in 4/8-bit, LoRA adapters in fp32 on top)
+    parser.add_argument("--quantize",          default="none",
+                        choices=["none", "4bit", "8bit"],
+                        help="Load base model in 4-bit (nf4) or 8-bit via bitsandbytes. "
+                             "Required to fit 27B+ on smaller GPUs. Drops weights ~4× (4bit) or ~2× (8bit).")
+
     # LoRA
     parser.add_argument("--lora_r",            type=int,   default=8)
     parser.add_argument("--lora_alpha",        type=int,   default=16)
@@ -336,15 +342,35 @@ def main():
     # shard-by-shard instead of materialising the full model in CPU RAM
     # first. Critical for 27B+ models in containers with limited host RAM
     # (a 27B bf16 model is ~54GB of weights — default loading OOMs CPU).
-    # Single-GPU: everything lands on cuda:0. Multi-GPU: accelerate
-    # distributes; PEFT 0.7+ handles cross-device adapter placement.
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
+    # --quantize 4bit / 8bit further drops weight footprint via bitsandbytes
+    # (QLoRA pattern). When set, bnb_4bit_compute_dtype controls math dtype,
+    # so torch_dtype is dropped to avoid conflicting signals.
+    load_kwargs = dict(
         attn_implementation=attn_impl,
         device_map="auto",
         low_cpu_mem_usage=True,
     )
+    if args.quantize == "4bit":
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        print(f"[{mode}] Loading base in 4-bit (nf4) via bitsandbytes")
+    elif args.quantize == "8bit":
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        print(f"[{mode}] Loading base in 8-bit via bitsandbytes")
+    else:
+        load_kwargs["torch_dtype"] = torch.bfloat16
+
+    model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
+
+    # QLoRA bookkeeping: cast layer norms / LM head to fp32 and enable
+    # gradient checkpointing so backward through frozen 4-bit weights works.
+    if args.quantize != "none":
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
         model = PeftModel.from_pretrained(model, args.lora_path, is_trainable=True)
@@ -359,7 +385,7 @@ def main():
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
-    # model = model.to(device)
+    # model = model.to(device)  # device_map="auto" already placed weights
 
     # ── Data ─────────────────────────────────────────────────────────────
     src = f"CSV {args.csv_path}" if args.csv_path else f"HF {args.hf_dataset}:{args.hf_split}"
