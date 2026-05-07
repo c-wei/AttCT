@@ -226,8 +226,14 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
+    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
+    # shard-by-shard — necessary for 27B+ models on hosts with limited RAM.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="eager",
+        device_map="auto",
+        low_cpu_mem_usage=True,
     )
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
@@ -243,7 +249,7 @@ def main():
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
-    model = model.to(device)
+    # device_map="auto" already placed weights — no .to(device) needed.
 
     # ── AttCT data ───────────────────────────────────────────────────────────
     print("Loading clearharm_prefills.csv...")

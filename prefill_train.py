@@ -332,8 +332,18 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
+    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
+    # shard-by-shard instead of materialising the full model in CPU RAM
+    # first. Critical for 27B+ models in containers with limited host RAM
+    # (a 27B bf16 model is ~54GB of weights — default loading OOMs CPU).
+    # Single-GPU: everything lands on cuda:0. Multi-GPU: accelerate
+    # distributes; PEFT 0.7+ handles cross-device adapter placement.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation=attn_impl,
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation=attn_impl,
+        device_map="auto",
+        low_cpu_mem_usage=True,
     )
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
@@ -349,7 +359,7 @@ def main():
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
-    model = model.to(device)
+    # model = model.to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────
     src = f"CSV {args.csv_path}" if args.csv_path else f"HF {args.hf_dataset}:{args.hf_split}"

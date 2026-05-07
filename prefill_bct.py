@@ -602,8 +602,15 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
+    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
+    # shard-by-shard instead of materialising the full model in CPU RAM
+    # first — necessary for 27B+ models on hosts with limited RAM.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map="auto",
+        low_cpu_mem_usage=True,
     )
 
     if args.lora_path:
@@ -621,7 +628,7 @@ def main():
         model.print_trainable_parameters()
 
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model = model.to(device)
+    # device_map="auto" already placed weights — no .to(device) needed.
 
     print("Loading clearharm_prefills.csv...")
     train_prompts, val_prompts, train_prefills, val_prefills = load_clearharm_prefills(

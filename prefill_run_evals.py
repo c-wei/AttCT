@@ -214,14 +214,21 @@ def _build_hf_generate(args, tokenizer):
     from transformers import AutoModelForCausalLM
 
     print(f"Loading HF model: {args.model}  checkpoint={args.checkpoint}")
+    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
+    # shard-by-shard — necessary for 27B+ models on hosts with limited RAM.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa",
+        args.model,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="sdpa",
+        device_map="auto",
+        low_cpu_mem_usage=True,
     )
     if args.checkpoint:
         from peft import PeftModel
         print(f"Loading LoRA adapter: {args.checkpoint}")
         model = PeftModel.from_pretrained(model, args.checkpoint)
-    model = model.to("cuda").eval()
+    # device_map="auto" already placed weights — no .to(device) needed.
+    model.eval()
 
     @torch.no_grad()
     def generate(prompts: list[str], max_new_tokens: int = 256) -> list[str]:
