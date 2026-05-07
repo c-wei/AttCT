@@ -49,7 +49,8 @@
 #   FILTER_LIMIT=400          cap raw prompts before filtering
 #   FILTER_N_WRAPS=4          wraps per prompt during filtering
 #   EVAL_LIMIT=100            prompts per eval source
-#   MAX_STEPS=200             optimizer steps
+#   MAX_STEPS=500             optimizer steps (default; ~30 epochs over the
+#                             ~150-prompt filtered set at grad_accum=8)
 
 set -euo pipefail
 
@@ -74,7 +75,7 @@ fi
 CONFIG="${CONFIG:-configs/attct_jailbreak_qkvo_exp_decay.yaml}"
 HF_REPO="${HF_REPO:-Sukratii/${METHOD}-jailbreak-checkpoints}"
 WANDB_GROUP="${WANDB_GROUP:-${METHOD}_jailbreak_final}"
-MAX_STEPS="${MAX_STEPS:-200}"
+MAX_STEPS="${MAX_STEPS:-500}"
 EVAL_LIMIT="${EVAL_LIMIT:-100}"
 
 # Filter knobs (only used if filter actually runs)
