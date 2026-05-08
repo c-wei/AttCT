@@ -66,12 +66,24 @@ def main():
     ap.add_argument("--wandb-run-name", default="jailbreak_eval_standalone")
     ap.add_argument("--wandb-group", default="jailbreak_eval")
     ap.add_argument("--no-wandb", action="store_true", help="Skip W&B logging")
+    ap.add_argument("--only-sources", nargs="+", default=None,
+                    help="Restrict to a subset of _EVAL_SOURCES by name (e.g. 'clearharm', 'jbb', 'wildjailbreak'). Default = all.")
     args = ap.parse_args()
 
     # Validate adapter args
     if args.adapter_path and args.adapter_hf_repo:
         sys.exit("ERROR: pass either --adapter-path OR --adapter-hf-repo, not both.")
     use_adapter = bool(args.adapter_path or args.adapter_hf_repo)
+
+    # Filter eval sources if requested
+    if args.only_sources:
+        import evaluate_jailbreak
+        evaluate_jailbreak._EVAL_SOURCES = [
+            s for s in evaluate_jailbreak._EVAL_SOURCES if s["name"] in args.only_sources
+        ]
+        if not evaluate_jailbreak._EVAL_SOURCES:
+            sys.exit(f"ERROR: no eval sources match {args.only_sources}")
+        print(f"Restricted to sources: {[s['name'] for s in evaluate_jailbreak._EVAL_SOURCES]}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
