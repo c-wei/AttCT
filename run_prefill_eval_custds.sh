@@ -16,48 +16,47 @@
 # -----
 #   MODEL_TAG=llama bash run_prefill_eval_custds.sh
 #   MODEL_TAG=qwen  bash run_prefill_eval_custds.sh
+#   MODEL_TAG=gemma bash run_prefill_eval_custds.sh
 #   METHODS="bct attct"  MODEL_TAG=llama  bash run_prefill_eval_custds.sh
 #
-# BRR (opt-in): set BRR_TEST_ROOT to a cot-transparency test root and BRR
-# results land at <cell>/brr_epoch_<N>.json. Optional BRR_LIMIT and
-# BRR_BIAS_TYPES env vars get forwarded.
-#   BRR_TEST_ROOT=/path/to/cot-transparency/test  MODEL_TAG=llama \
-#       bash run_prefill_eval_custds.sh
+# Big models (Gemma 27B) on a small GPU
+# -------------------------------------
+# vLLM:  QUANTIZATION=bitsandbytes  MODEL_TAG=gemma  bash run_prefill_eval_custds.sh
+# HF:    BACKEND=hf  QUANTIZE=4bit   MODEL_TAG=gemma  bash run_prefill_eval_custds.sh
 #
 # Pair with prefill_pick_best.py afterwards to produce <method>_best.json.
 
 set -e
 
-MODEL_TAG="${MODEL_TAG:-llama}"     # llama | qwen
+MODEL_TAG="${MODEL_TAG:-gemma}"     # llama | qwen | gemma
 METHODS="${METHODS:-bct act attct mlpct}"
 HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
 MMLU_N="${MMLU_N:-0}"
 BACKEND="${BACKEND:-vllm}"
 
-# BRR is opt-in. Set BRR_TEST_ROOT to a cot-transparency test root to enable.
-# Per-cell results land at <cell>/brr_epoch_<N>.json; baseline at brr_baseline_<tag>.json.
-BRR_TEST_ROOT="${BRR_TEST_ROOT:-}"
-BRR_LIMIT="${BRR_LIMIT:-}"
-BRR_BIAS_TYPES="${BRR_BIAS_TYPES:-}"
+# Optional quantization. vLLM accepts e.g. bitsandbytes / awq / gptq; HF
+# accepts 4bit / 8bit (bitsandbytes). Empty = no quantization.
+QUANTIZATION="${QUANTIZATION:-}"   # vllm backend
+QUANTIZE="${QUANTIZE:-}"            # hf backend (4bit | 8bit | empty)
 
 case "$MODEL_TAG" in
   llama) MODEL="meta-llama/Llama-3.1-8B-Instruct" ;;
   qwen)  MODEL="Qwen/Qwen2.5-7B-Instruct" ;;
-  *) echo "Unknown MODEL_TAG=$MODEL_TAG (expected: llama | qwen)"; exit 1 ;;
+  gemma) MODEL="google/gemma-3-27b-it" ;;
+  *) echo "Unknown MODEL_TAG=$MODEL_TAG (expected: llama | qwen | gemma)"; exit 1 ;;
 esac
+
+# Compose backend-specific quantization args once.
+quant_args=()
+if [[ "$BACKEND" == "vllm" && -n "$QUANTIZATION" ]]; then
+  quant_args+=(--quantization "$QUANTIZATION")
+elif [[ "$BACKEND" == "hf" && -n "$QUANTIZE" ]]; then
+  quant_args+=(--quantize "$QUANTIZE")
+fi
 
 GRID_ROOT="checkpoints/prefill_${MODEL_TAG}/grid"
 BASELINE_JSON="baseline_${MODEL_TAG}.json"
-BRR_BASELINE_JSON="brr_baseline_${MODEL_TAG}.json"
 RESULTS="grid_eval_${MODEL_TAG}.log"
-
-# Compose the BRR-related CLI args once. Empty string when BRR is off.
-brr_args=()
-if [[ -n "$BRR_TEST_ROOT" ]]; then
-  brr_args+=(--brr-test-root "$BRR_TEST_ROOT")
-  [[ -n "$BRR_LIMIT"      ]] && brr_args+=(--brr-limit      "$BRR_LIMIT")
-  [[ -n "$BRR_BIAS_TYPES" ]] && brr_args+=(--brr-bias-types  $BRR_BIAS_TYPES)  # word-split intentional
-fi
 
 if [[ ! -d "$GRID_ROOT" ]]; then
   echo "Grid root not found: $GRID_ROOT"
@@ -85,8 +84,7 @@ if [[ ! -f "$BASELINE_JSON" ]]; then
       --limit "$HARMFUL_LIMIT" \
       --n-mmlu "$MMLU_N" \
       --metric-prefix "pre/" \
-      ${brr_args[@]:+"${brr_args[@]}"} \
-      ${BRR_TEST_ROOT:+--brr-output-json "$BRR_BASELINE_JSON"} \
+      ${quant_args[@]:+"${quant_args[@]}"} \
       2>&1 | tee -a "$RESULTS"
   echo "" | tee -a "$RESULTS"
 else
@@ -122,7 +120,6 @@ for cell_dir in "$GRID_ROOT"/*/; do
     fi
 
     echo "  epoch $epoch → $lora" | tee -a "$RESULTS"
-    brr_out_json="${cell_dir}brr_epoch_${epoch}.json"
     python prefill_run_evals.py \
         --model "$MODEL" \
         --backend "$BACKEND" \
@@ -132,8 +129,7 @@ for cell_dir in "$GRID_ROOT"/*/; do
         --limit "$HARMFUL_LIMIT" \
         --n-mmlu "$MMLU_N" \
         --metric-prefix "${cell}_e${epoch}/" \
-        ${brr_args[@]:+"${brr_args[@]}"} \
-        ${BRR_TEST_ROOT:+--brr-baseline-json "$BRR_BASELINE_JSON" --brr-output-json "$brr_out_json"} \
+        ${quant_args[@]:+"${quant_args[@]}"} \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
   done

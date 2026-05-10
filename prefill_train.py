@@ -75,7 +75,7 @@ from losses.losses           import (
 from losses.kl_regularization import KLRegularizationLoss
 
 from train               import Trainer
-from interleaved_trainer  import InterleavedTrainer
+from interleaved_trainer  import InterleavedTrainer, MLPCTInterleavedTrainer
 
 assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
 
@@ -459,9 +459,44 @@ def main():
         )
         trainer.train()
 
+    elif mode == "mlpct":
+        # MLPCTInterleavedTrainer = InterleavedTrainer + MLP hook handling.
+        # Optional KL anchor on neutral UltraChat/Alpaca prompts, opt-in via
+        # --kl_ratio > 0 and --kl_weight > 0. Defaults disable it so behaviour
+        # matches the previous stock-Trainer setup.
+        loss_fn = build_loss(mode, args)
+        kl_enabled = args.kl_ratio > 0 and args.kl_weight > 0
+        if kl_enabled:
+            kl_loss_fn = KLRegularizationLoss(
+                weight=args.kl_weight,
+                temperature=args.kl_temperature,
+            )
+            n_kl = args.kl_samples if args.kl_samples is not None else len(train_dl.dataset)
+            kl_dl = get_kl_dataloader(
+                config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset,
+            )
+            print(f"[mlpct] KL anchor: {len(kl_dl.dataset)} {args.kl_dataset} samples "
+                  f"(weight={args.kl_weight}, T={args.kl_temperature}, ratio={args.kl_ratio})")
+        else:
+            kl_dl, kl_loss_fn = None, None
+            print("[mlpct] KL interleaving OFF (--kl_ratio > 0 and --kl_weight > 0 to enable)")
+
+        trainer = MLPCTInterleavedTrainer(
+            model=model,
+            attct_dataloader=train_dl,
+            kl_dataloader=kl_dl,
+            loss_fn=loss_fn,
+            kl_loss_fn=kl_loss_fn,
+            config=config,
+            device=device,
+            ref_model=None,
+            tokenizer=tokenizer,
+            kl_ratio=args.kl_ratio,
+        )
+        trainer.train()
+
     else:
-        # ACT and MLPCT — stock Trainer auto-handles clean pass and (for
-        # MLPCT) MLPHookManager based on loss_fn flags.
+        # ACT — stock Trainer auto-handles clean pass via loss_fn flags.
         loss_fn = build_loss(mode, args)
         trainer = Trainer(
             model=model,

@@ -125,7 +125,7 @@ def plot_grid(cells: dict, baseline: float | None, metric_label: str,
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model_tag",  default="llama", choices=["llama", "qwen"])
+    ap.add_argument("--model_tag",  default="llama", choices=["llama", "qwen", "gemma"])
     ap.add_argument("--grid_root",  default=None,
                     help="Override grid root (default: checkpoints/prefill_<tag>/grid)")
     ap.add_argument("--metric",     default="attack_comply",

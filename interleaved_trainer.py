@@ -7,6 +7,7 @@ import wandb
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from hooks import MLPHookManager
 from train import _hf_upload_pool
 
 
@@ -462,6 +463,180 @@ class InterleavedTrainer:
         }
         self._train_log_file.write(json.dumps(record) + "\n")
         self._train_log_file.flush()
+
+
+class MLPCTInterleavedTrainer(InterleavedTrainer):
+    """
+    InterleavedTrainer + MLP hook handling for prefill-MLPCT.
+
+    Same interleaving pattern as the parent (one main step + one optional KL
+    step per optimizer step), with two additions:
+
+    1. Installs an MLPHookManager on the model when loss_fn declares
+       `needs_mlp_hooks = True`, mirroring stock train.Trainer's behaviour.
+       Captures MLP states from each forward in the main step and passes
+       them into loss_fn.forward(...).
+
+    2. Disables hook capture around the KL step. The KL step's forwards
+       don't read MLP states — letting hooks fire there would (a) hold
+       autograd references on captured tensors and (b) overwrite the buffer
+       with KL-pass states. set_active(False) is a cheap no-op flag toggle;
+       hooks stay installed.
+
+    KL is opt-in: if `kl_ratio == 0` or `kl_dataloader is None`, the trainer
+    behaves like stock Trainer for MLPCT (no KL forward, no waste).
+    """
+
+    def __init__(
+        self,
+        model,
+        attct_dataloader: DataLoader,
+        kl_dataloader=None,        # None when kl_ratio == 0
+        loss_fn=None,
+        kl_loss_fn=None,
+        config: dict = None,
+        device: torch.device = None,
+        ref_model=None,
+        checkpoint_fn=None,
+        log_io_path=None,
+        tokenizer=None,
+        hf_repo=None,
+        run_name=None,
+        kl_ratio: float = 0.0,
+    ):
+        # Allow kl_dataloader=None when KL is disabled. Parent expects a
+        # DataLoader; substitute a zero-length attct loader so the parent
+        # init doesn't trip (we'll never actually iterate it).
+        super().__init__(
+            model=model,
+            attct_dataloader=attct_dataloader,
+            kl_dataloader=kl_dataloader if kl_dataloader is not None else attct_dataloader,
+            loss_fn=loss_fn,
+            kl_loss_fn=kl_loss_fn,
+            config=config,
+            device=device,
+            ref_model=ref_model,
+            checkpoint_fn=checkpoint_fn,
+            log_io_path=log_io_path,
+            tokenizer=tokenizer,
+            hf_repo=hf_repo,
+            run_name=run_name,
+            kl_ratio=kl_ratio,
+        )
+        self._kl_enabled = kl_ratio > 0 and kl_dataloader is not None and kl_loss_fn is not None
+
+        # MLP hook setup — same pattern as train.Trainer.
+        self._mlp_hook_mgr = None
+        self._mlp_hook_mgr_ref = None
+        if getattr(loss_fn, "needs_mlp_hooks", False):
+            variant = getattr(loss_fn, "variant", "hidden")
+            self._mlp_hook_mgr = MLPHookManager(model, variant=variant).install()
+            if ref_model is not None:
+                self._mlp_hook_mgr_ref = MLPHookManager(ref_model, variant=variant).install()
+            print(f"MLP hooks installed on model "
+                  f"({self._mlp_hook_mgr.num_layers} layers, variant={variant})")
+
+    # ------------------------------------------------------------------
+    # Override: capture MLP states and pass them through to loss_fn
+    # ------------------------------------------------------------------
+
+    def _attct_step(self, batch: dict) -> dict:
+        """MLPCT step — runs adv (grad) + clean (no grad), captures MLP
+        states from each forward, then calls loss_fn with both states."""
+        wrapped_input_ids = batch["wrapped_input_ids"].to(self.device)
+        wrapped_attention_mask = batch["wrapped_attention_mask"].to(self.device)
+
+        assert batch["start_index"].unique().numel() == 1, \
+            "All items in a batch must have the same start_index."
+        assert batch["clean_start_index"].unique().numel() == 1, \
+            "All items in a batch must have the same clean_start_index."
+        assert batch["clean_len"].unique().numel() == 1, \
+            "All items in a batch must have the same clean_len."
+
+        start_index       = int(batch["start_index"][0].item())
+        clean_start_index = int(batch["clean_start_index"][0].item())
+        clean_len         = int(batch["clean_len"][0].item())
+        match_len         = int(batch["match_len"][0].item()) if "match_len" in batch else clean_len
+
+        # Adv (wrapped) forward — gradients flow.
+        adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
+        adv_mlp_states = self._mlp_hook_mgr.get_states() if self._mlp_hook_mgr else None
+
+        clean_mlp_states = None
+        if self.needs_clean_pass:
+            clean_input_ids = batch["clean_input_ids"].to(self.device)
+            clean_attention_mask = batch["clean_attention_mask"].to(self.device)
+            with torch.no_grad():
+                if self.ref_model is not None:
+                    clean_outputs = self.ref_model(
+                        input_ids=clean_input_ids,
+                        attention_mask=clean_attention_mask,
+                        output_attentions=self.output_attentions,
+                        output_hidden_states=self.output_hidden_states,
+                    )
+                    if self._mlp_hook_mgr_ref is not None:
+                        clean_mlp_states = self._mlp_hook_mgr_ref.get_states()
+                else:
+                    self.model.disable_adapter_layers()
+                    clean_outputs = self._forward(clean_input_ids, clean_attention_mask)
+                    if self._mlp_hook_mgr is not None:
+                        clean_mlp_states = self._mlp_hook_mgr.get_states()
+                    self.model.enable_adapter_layers()
+        else:
+            clean_outputs = None
+
+        wrapper_mask = batch.get("wrapper_mask")
+        if wrapper_mask is not None:
+            wrapper_mask = wrapper_mask.to(self.device)
+
+        return self.loss_fn(
+            clean_outputs=clean_outputs,
+            adv_outputs=adv_outputs,
+            start_index=start_index,
+            clean_start_index=clean_start_index,
+            clean_len=clean_len,
+            match_len=match_len,
+            wrapper_mask=wrapper_mask,
+            clean_mlp_states=clean_mlp_states,
+            adv_mlp_states=adv_mlp_states,
+        )
+
+    # ------------------------------------------------------------------
+    # Override: disable hooks for the duration of the KL step
+    # ------------------------------------------------------------------
+
+    def _kl_step(self, batch: dict) -> dict:
+        """KL forward doesn't read MLP states — disable capture so the
+        hooks don't hold autograd references or clobber the buffer."""
+        if self._mlp_hook_mgr is not None:
+            self._mlp_hook_mgr.set_active(False)
+        if self._mlp_hook_mgr_ref is not None:
+            self._mlp_hook_mgr_ref.set_active(False)
+        try:
+            return super()._kl_step(batch)
+        finally:
+            if self._mlp_hook_mgr is not None:
+                self._mlp_hook_mgr.set_active(True)
+            if self._mlp_hook_mgr_ref is not None:
+                self._mlp_hook_mgr_ref.set_active(True)
+
+    # ------------------------------------------------------------------
+    # Override: skip the KL step entirely when disabled (saves the random
+    # roll, the dataloader fetch, and the two extra forwards).
+    # ------------------------------------------------------------------
+
+    def train(self):
+        if not self._kl_enabled:
+            # Force kl_ratio to 0 so parent's `_random.random() < self.kl_ratio`
+            # check always misses — KL step is never fired.
+            self.kl_ratio = 0.0
+        try:
+            super().train()
+        finally:
+            if self._mlp_hook_mgr is not None:
+                self._mlp_hook_mgr.remove()
+            if self._mlp_hook_mgr_ref is not None:
+                self._mlp_hook_mgr_ref.remove()
 
 
 class IntelligenceTrainer:

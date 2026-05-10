@@ -46,8 +46,10 @@ from data.prefill_dataset import (
     prefill_collate_fn,
     load_clearharm_prefills,
 )
-from losses.losses import MLPConsistencyLoss
-from train import Trainer
+from data.ultrachat_dataset import get_kl_dataloader
+from losses.losses             import MLPConsistencyLoss
+from losses.kl_regularization  import KLRegularizationLoss
+from interleaved_trainer       import MLPCTInterleavedTrainer
 
 assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
 
@@ -322,6 +324,21 @@ def main():
     parser.add_argument("--lora_targets",     nargs="+",
                         default=["q_proj", "v_proj", "gate_proj", "up_proj", "down_proj"])
 
+    # KL interleaving (opt-in — anchors generation quality on neutral prompts).
+    # Same flag set as AttCT; defaults disable interleaving so this script's
+    # behaviour is unchanged when none are passed.
+    parser.add_argument("--kl_weight",        type=float, default=0.0,
+                        help="Weight on KL(current || base) over neutral prompts. "
+                             "0 = disable KL interleaving (= original MLPCT).")
+    parser.add_argument("--kl_ratio",         type=float, default=0.0,
+                        help="Probability of firing a KL step alongside each MLPCT step. "
+                             "0 = disable KL interleaving entirely.")
+    parser.add_argument("--kl_dataset",       default="ultrachat",
+                        choices=["ultrachat", "alpaca"],
+                        help="Source for KL anchor (when --kl_ratio > 0)")
+    parser.add_argument("--kl_samples",       type=int, default=None,
+                        help="KL anchor sample count (default: match MLPCT dataset size)")
+
     # Data
     parser.add_argument("--csv_path",         default=None,
                         help="Path to clearharm_prefills.csv (default: datasets/clearharm_prefills.csv)")
@@ -406,24 +423,42 @@ def main():
           f"distance={args.distance_metric}, layers={args.layer_selection}, "
           f"normalize={args.normalize})")
 
+    # ── Optional KL interleaving (UltraChat / Alpaca anchor) ────────────────
+    kl_enabled = args.kl_ratio > 0 and args.kl_weight > 0
+    if kl_enabled:
+        n_kl = args.kl_samples or len(train_prompts)
+        print(f"KL interleaving ON  (ratio={args.kl_ratio}, weight={args.kl_weight}, "
+              f"dataset={args.kl_dataset}, n={n_kl})")
+        kl_dl      = get_kl_dataloader(
+            config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset,
+        )
+        kl_loss_fn = KLRegularizationLoss(weight=args.kl_weight)
+    else:
+        print("KL interleaving OFF (use --kl_ratio > 0 and --kl_weight > 0 to enable)")
+        kl_dl, kl_loss_fn = None, None
+
     # ── Train ────────────────────────────────────────────────────────────────
-    # Stock Trainer auto-installs MLPHookManager because loss_fn declares
-    # needs_mlp_hooks = True. It also handles the clean pass via
-    # disable_adapter_layers(), grad accumulation, checkpointing, W&B logging.
-    trainer = Trainer(
+    # MLPCTInterleavedTrainer = InterleavedTrainer + MLP hook handling.
+    # When kl_enabled=False (default), the KL step is skipped entirely and
+    # behaviour matches the previous stock-Trainer setup.
+    trainer = MLPCTInterleavedTrainer(
         model=model,
-        dataloader=train_dl,
+        attct_dataloader=train_dl,
+        kl_dataloader=kl_dl,
         loss_fn=loss_fn,
+        kl_loss_fn=kl_loss_fn,
         config=config,
         device=device,
         ref_model=None,
         tokenizer=tokenizer,
+        kl_ratio=args.kl_ratio,
     )
     trainer.train()
 
-    # ── Eval ─────────────────────────────────────────────────────────────────
-    print("\nRunning eval on val set...")
-    trainer.eval_loss(val_dl)
+    # NOTE: dropped trainer.eval_loss(val_dl) — InterleavedTrainer doesn't
+    # ship a val-loss method, and the project evaluates checkpoints via
+    # run_prefill_eval_custds.sh / prefill_run_evals.py instead. val_dl is
+    # left constructed above for any future inline-eval extension.
 
     wandb.finish()
 

@@ -213,16 +213,31 @@ def _build_hf_generate(args, tokenizer):
     but no vllm dependency. Returns (generate_fn, model)."""
     from transformers import AutoModelForCausalLM
 
-    print(f"Loading HF model: {args.model}  checkpoint={args.checkpoint}")
+    print(f"Loading HF model: {args.model}  checkpoint={args.checkpoint}  quantize={args.quantize}")
     # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
     # shard-by-shard — necessary for 27B+ models on hosts with limited RAM.
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
+    # --quantize 4bit / 8bit drops weight footprint via bitsandbytes — e.g.
+    # gemma-3-27b in nf4 is ~14GB instead of ~54GB.
+    load_kwargs = dict(
         attn_implementation="sdpa",
         device_map="auto",
         low_cpu_mem_usage=True,
     )
+    if args.quantize == "4bit":
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+    elif args.quantize == "8bit":
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        load_kwargs["torch_dtype"] = torch.bfloat16
+
+    model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
     if args.checkpoint:
         from peft import PeftModel
         print(f"Loading LoRA adapter: {args.checkpoint}")
@@ -468,7 +483,12 @@ def main():
 
     # vLLM-only knobs
     parser.add_argument("--max-model-len",   type=int, default=4096)
-    parser.add_argument("--quantization",    default=None)
+    parser.add_argument("--quantization",    default=None,
+                        help="(vllm backend) e.g. bitsandbytes / awq / gptq")
+    parser.add_argument("--quantize",        default="none",
+                        choices=["none", "4bit", "8bit"],
+                        help="(hf backend) bitsandbytes 4bit / 8bit. "
+                             "Required to fit 27B+ on small GPUs.")
 
     args = parser.parse_args()
 

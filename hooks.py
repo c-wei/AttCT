@@ -88,25 +88,37 @@ class MLPHookManager:
             )
         self._handles: List[torch.utils.hooks.RemovableHook] = []
         self._states: List[Optional[torch.Tensor]] = [None] * len(self._modules)
+        # When False, hook callbacks short-circuit — no capture, no autograd
+        # references held. Used by MLPCTInterleavedTrainer to suppress capture
+        # during the KL step (whose forwards don't read MLP states).
+        self._active: bool = True
 
     @property
     def num_layers(self) -> int:
         return len(self._modules)
 
+    def set_active(self, active: bool) -> None:
+        """Enable/disable capture without removing hook handles. Cheap toggle
+        used to skip capture during forwards that don't need MLP states."""
+        self._active = bool(active)
+
     def install(self) -> "MLPHookManager":
         """Install forward hooks on all MLP down-proj modules. Returns self."""
         self.remove()  # idempotent — clear any previous hooks
         self._states = [None] * len(self._modules)
+        mgr = self  # closure-bind to avoid late-binding pitfalls
 
         for idx, (_name, module) in enumerate(self._modules):
             if self.variant == "hidden":
                 # Capture input to down_proj = post-activation hidden states.
-                def hook(mod, inp, out, i=idx):
-                    self._states[i] = inp[0]
+                def hook(mod, inp, out, i=idx, mgr=mgr):
+                    if mgr._active:
+                        mgr._states[i] = inp[0]
             else:
                 # Capture output of down_proj = MLP block output.
-                def hook(mod, inp, out, i=idx):
-                    self._states[i] = out
+                def hook(mod, inp, out, i=idx, mgr=mgr):
+                    if mgr._active:
+                        mgr._states[i] = out
 
             self._handles.append(module.register_forward_hook(hook))
         return self

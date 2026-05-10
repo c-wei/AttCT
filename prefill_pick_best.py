@@ -64,6 +64,7 @@ GRIDS: dict[str, dict[str, dict]] = {
 MODEL_NAMES = {
     "llama": "meta-llama/Llama-3.1-8B-Instruct",
     "qwen":  "Qwen/Qwen2.5-7B-Instruct",
+    "gemma": "google/gemma-3-27b-it",
 }
 
 

@@ -65,7 +65,14 @@ ATTCT_ARGS=(
 #   "--attct_loss_type combined --jsd_weight 0.2  --wrapper_weight 0.8  --kl_weight 1.0"
 )
 
-# MLPCT — vary BCT-anchor balance, variant, distance metric
+# MLPCT — vary BCT-anchor balance, variant, distance metric.
+#
+# KL interleaving (UltraChat/Alpaca anchor) is OFF by default for the grid:
+# prefill_train.py --mode mlpct defaults --kl_weight=0 and --kl_ratio=0,
+# so MLPCTInterleavedTrainer skips the KL step entirely. To opt a cell in,
+# append:
+#     --kl_weight 1.0  --kl_ratio 1.0  --kl_dataset ultrachat
+# to its MLPCT_ARGS string.
 # MLPCT_LABELS=(
 #   mw1_hid_cos     mw100_hid_cos   mw1000_hid_cos
 #   mw100_out_cos   mw100_hid_mse   mw100_hid_smooth
