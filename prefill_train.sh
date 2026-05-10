@@ -112,7 +112,7 @@ run_cell () {
         --model "$MODEL" \
         --quantize 4bit \
         --lora_r 32 --lora_alpha 64 \
-        --lora_targets q_proj k_proj v_proj o_proj gate_proj up_proj down_proj \
+        --lora_targets q_proj k_proj v_proj o_proj \
         --lr 2e-4 \
         --num_epochs 5 \
         --kl_temperature 1.0 --sft_coeff 0.3 \
