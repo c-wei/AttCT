@@ -33,6 +33,37 @@ MODEL_SHORTHANDS = {
 }
 
 
+def _needs_remote_code_fallback(err: Exception, model_name: str) -> bool:
+    msg = str(err).lower()
+    return (
+        "model type `qwen3`" in msg
+        or "keyerror: 'qwen3'" in msg
+        or "does not recognize this architecture" in msg and "qwen3" in model_name.lower()
+    )
+
+
+def _load_tokenizer_with_fallback(model_name: str):
+    try:
+        return AutoTokenizer.from_pretrained(model_name)
+    except Exception as e:
+        if _needs_remote_code_fallback(e, model_name):
+            print("Tokenizer load fallback: retrying with trust_remote_code=True")
+            return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        raise
+
+
+def _load_model_with_fallback(model_name: str, **load_kwargs):
+    try:
+        return AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+    except Exception as e:
+        if _needs_remote_code_fallback(e, model_name):
+            print("Model load fallback: retrying with trust_remote_code=True")
+            return AutoModelForCausalLM.from_pretrained(
+                model_name, trust_remote_code=True, **load_kwargs
+            )
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate a model on GSM-8K, HellaSwag, and TruthfulQA."
@@ -117,23 +148,21 @@ def main():
         print(f"LoRA checkpoint: {args.checkpoint}")
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = _load_tokenizer_with_fallback(model_name)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Load model (with optional LoRA checkpoint)
     load_kwargs = dict(torch_dtype=torch.bfloat16)
-    if torch.cuda.is_available():
-        load_kwargs["attn_implementation"] = "flash_attention_2"
 
     if args.checkpoint:
         from peft import PeftModel
-        base_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        base_model = _load_model_with_fallback(model_name, **load_kwargs)
         model = PeftModel.from_pretrained(base_model, args.checkpoint, is_trainable=False)
         model = model.merge_and_unload()
         print("LoRA weights merged into base model.")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        model = _load_model_with_fallback(model_name, **load_kwargs)
 
     if device.type != "cuda" or not load_kwargs.get("device_map"):
         model = model.to(device)
