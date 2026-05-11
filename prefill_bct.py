@@ -261,6 +261,18 @@ class PrefillBCTTrainer:
             lr=lr,
             weight_decay=0.01,
         )
+
+        # Linear warmup over the first 5% of optimizer steps. QLoRA at high
+        # learning rates needs this — jumping straight to peak LR is what
+        # caused the mid-epoch-2 NaN on Gemma-27B at lr=2e-4. Cap warmup at
+        # 1 step minimum so short max_steps runs still pass through here.
+        from torch.optim.lr_scheduler import LambdaLR
+        warmup_steps = max(1, total_steps // 20)
+        def _warmup(step: int) -> float:
+            return min(1.0, (step + 1) / warmup_steps)
+        self.scheduler = LambdaLR(self.optimizer, _warmup)
+        print(f"LR schedule: linear warmup {warmup_steps} steps → constant {lr}")
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Core step ─────────────────────────────────────────────────────────────
@@ -357,6 +369,7 @@ class PrefillBCTTrainer:
                             self.grad_clip,
                         )
                     self.optimizer.step()
+                    self.scheduler.step()
                     self.optimizer.zero_grad()
                     global_step += 1
 

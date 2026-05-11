@@ -15,7 +15,7 @@ set -e
 
 MODEL="google/gemma-3-27b-it"
 GRID_ROOT="checkpoints/grid"
-FINAL_EPOCH="epoch_5"   # marker used to detect "already trained"
+FINAL_EPOCH="epoch_3"   # marker used to detect "already trained"
 
 mkdir -p "$GRID_ROOT"
 
@@ -25,12 +25,12 @@ mkdir -p "$GRID_ROOT"
 # ──────────────────────────────────────────────────────────────────────
 
 # BCT — vary KL temperature, refusal-SFT weight, learning rate
-BCT_LABELS=(t1_sft01     t05_sft01    t1_sft03)
-# BCT_LABELS=(t1_sft01)
+BCT_LABELS=(t1_sft01     t05_sft01) #    t1_sft03)
+# BCT_LABELS=(t1_sft01)q
 BCT_ARGS=(
   "--kl_temperature 1.0  --sft_coeff 0.1"
   "--kl_temperature 0.5  --sft_coeff 0.1"
-  "--kl_temperature 1.0  --sft_coeff 0.3"
+  # "--kl_temperature 1.0  --sft_coeff 0.3"
 )
 
 # ACT — vary loss weight, layer selection, normalisation
@@ -107,14 +107,18 @@ run_cell () {
 
     echo "=== [$mode/$label] training → $out_dir ==="
     # shellcheck disable=SC2086
+    # NOTE: lr=5e-5 (down from 2e-4) + grad_clip=0.5 (down from 1.0) after a
+    # mid-epoch-2 NaN on Gemma-27B BCT at the higher LR. PrefillBCTTrainer
+    # now also applies 5% linear warmup; further stabilises early steps.
     python prefill_train.py \
         --mode "$mode" \
         --model "$MODEL" \
         --quantize 4bit \
         --lora_r 32 --lora_alpha 64 \
         --lora_targets q_proj k_proj v_proj o_proj \
-        --lr 2e-4 \
-        --num_epochs 5 \
+        --lr 5e-5 \
+        --grad_clip 0.5 \
+        --num_epochs 3 \
         --kl_temperature 1.0 --sft_coeff 0.3 \
         --batch_size 1 \
         --grad_accumulation 4 \
