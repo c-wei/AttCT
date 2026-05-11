@@ -113,10 +113,10 @@ run_cell () {
     python prefill_train.py \
         --mode "$mode" \
         --model "$MODEL" \
-        --quantize 4bit \
+        --quantize none \
         --lora_r 16 --lora_alpha 32 \
         --lora_targets q_proj k_proj v_proj o_proj \
-        --lr 3e-6 \
+        --lr 5e-5 \
         --grad_clip 0.5 \
         --num_epochs 3 \
         --kl_temperature 1.0 --sft_coeff 0.3 \
