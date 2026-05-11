@@ -123,6 +123,7 @@ run_cell () {
         --batch_size 1 \
         --grad_accumulation 8 \
         --output_dir "$out_dir" \
+        --attn_impl eager \
         --wandb_name "grid_${mode}_${label}" \
         $extra
 }
