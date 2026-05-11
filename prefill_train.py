@@ -370,6 +370,18 @@ def main():
     # gradient checkpointing so backward through frozen 4-bit weights works.
     if args.quantize != "none":
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    else:
+        # bf16 path: without grad checkpointing, activation memory for
+        # 27B-scale models at seq=512 exceeds even 80GB (~15-25GB just for
+        # stored activations across 62 layers, doubled because BCT runs
+        # clean + wrapped forwards). Enable checkpointing manually here.
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            # Inputs must require grad for checkpointing to backprop properly.
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
 
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
