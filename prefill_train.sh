@@ -114,14 +114,14 @@ run_cell () {
         --mode "$mode" \
         --model "$MODEL" \
         --quantize 4bit \
-        --lora_r 32 --lora_alpha 64 \
+        --lora_r 16 --lora_alpha 32 \
         --lora_targets q_proj k_proj v_proj o_proj \
-        --lr 5e-5 \
+        --lr 3e-6 \
         --grad_clip 0.5 \
         --num_epochs 3 \
         --kl_temperature 1.0 --sft_coeff 0.3 \
         --batch_size 1 \
-        --grad_accumulation 4 \
+        --grad_accumulation 8 \
         --output_dir "$out_dir" \
         --wandb_name "grid_${mode}_${label}" \
         $extra
