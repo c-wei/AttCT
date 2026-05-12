@@ -133,6 +133,7 @@ def build_dataloader(mode, prompts, prefills, tokenizer, args, shuffle):
 
     return DataLoader(
         ds, batch_size=args.batch_size, shuffle=shuffle, collate_fn=collate,
+        num_workers=4, persistent_workers=True, pin_memory=True,
     )
 
 

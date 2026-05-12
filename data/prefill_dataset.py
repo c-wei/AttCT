@@ -54,6 +54,40 @@ class PrefillAttackDataset(Dataset):
                 wrapped_text = clean_text + prefill
                 self.items.append((prompt, clean_text, wrapped_text))
 
+        self._build_cache()
+
+    def _build_cache(self):
+        """Pre-tokenize every (clean, wrapped) text once so __getitem__
+        becomes a pure dict lookup. With the Gemma-3 sentencepiece tokenizer
+        + num_workers=0 in the loader, per-batch tokenization was pinning
+        CPU at 100% and starving the GPU. ~3300 pairs × 23 prefills
+        tokenizes in ~30s at startup. Subclasses that build `self.items`
+        themselves should call this at the end of their __init__."""
+        self._cache: list[dict] = []
+        print(f"Pre-tokenizing {len(self.items)} (clean, wrapped) pairs...")
+        for _harmful_prompt, clean_text, wrapped_text in self.items:
+            clean_enc = self.tokenizer(
+                clean_text, return_tensors="pt",
+                max_length=self.max_length, truncation=True, padding=False,
+            )
+            wrapped_enc = self.tokenizer(
+                wrapped_text, return_tensors="pt",
+                max_length=self.max_length, truncation=True, padding=False,
+            )
+            clean_ids   = clean_enc["input_ids"][0]
+            wrapped_ids = wrapped_enc["input_ids"][0]
+            clean_len   = clean_ids.shape[0]
+            self._cache.append({
+                "clean_input_ids":        clean_ids,
+                "clean_attention_mask":   clean_enc["attention_mask"][0],
+                "wrapped_input_ids":      wrapped_ids,
+                "wrapped_attention_mask": wrapped_enc["attention_mask"][0],
+                "start_index":            torch.tensor(clean_len, dtype=torch.long),
+                "clean_start_index":      torch.tensor(clean_len, dtype=torch.long),
+                "clean_len":              torch.tensor(clean_len, dtype=torch.long),
+            })
+        print(f"Pre-tokenized {len(self._cache)} pairs.")
+
     def _build_prompt(self, harmful_prompt: str) -> str:
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
@@ -69,42 +103,10 @@ class PrefillAttackDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx):
-        harmful_prompt, clean_text, wrapped_text = self.items[idx]
-
-        clean_enc = self.tokenizer(
-            clean_text,
-            return_tensors="pt",
-            max_length=self.max_length,
-            truncation=True,
-            padding=False,
-        )
-        wrapped_enc = self.tokenizer(
-            wrapped_text,
-            return_tensors="pt",
-            max_length=self.max_length,
-            truncation=True,
-            padding=False,
-        )
-
-        clean_ids   = clean_enc["input_ids"][0]
-        wrapped_ids = wrapped_enc["input_ids"][0]
-
-        clean_len = clean_ids.shape[0]
-        wrapped_len = wrapped_ids.shape[0]
-
-        start_index=clean_len # where prefill begins in wrapped seq
-        clean_start_index =clean_len # where assistant turn starts in clean seq
-
-
-        return {
-            "clean_input_ids":        clean_ids,
-            "clean_attention_mask":   clean_enc["attention_mask"][0],
-            "wrapped_input_ids":      wrapped_ids,
-            "wrapped_attention_mask": wrapped_enc["attention_mask"][0],
-            "start_index":            torch.tensor(start_index,       dtype=torch.long),
-            "clean_start_index":      torch.tensor(clean_start_index, dtype=torch.long),
-            "clean_len":              torch.tensor(clean_len,         dtype=torch.long),
-        }
+        # Pre-tokenized at __init__; no tokenizer calls on the hot path.
+        # Shallow-copy so subclasses can mutate fields (start_index etc.)
+        # without poisoning the shared cache entry.
+        return dict(self._cache[idx])
 
 
 def prefill_collate_fn(batch: list[dict]) -> dict:

@@ -82,6 +82,7 @@ class PrefillPairedDataset(PrefillAttackDataset):
             clean_text   = self._build_prompt(prompt)
             wrapped_text = clean_text + prefill
             self.items.append((prompt, clean_text, wrapped_text))
+        self._build_cache()
 
 
 # ---------------------------------------------------------------------------

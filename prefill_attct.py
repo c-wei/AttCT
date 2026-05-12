@@ -73,6 +73,7 @@ class PrefillAttCTDataset(PrefillAttackDataset):
             clean_text   = self._build_prompt(prompt)
             wrapped_text = clean_text + prefill
             self.items.append((prompt, clean_text, wrapped_text))
+        self._build_cache()
 
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
