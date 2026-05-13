@@ -34,11 +34,11 @@ BCT_ARGS=(
 )
 
 # ACT — vary loss weight, layer selection, normalisation
-ACT_LABELS=(w1_all     w1_all_norm)
+ACT_LABELS=(w1_all) #     w1_all_norm)
 # ACT_LABELS=(w1_all_norm)
 ACT_ARGS=(
   "--loss_weight 1.0   --layer_selection all"
-  "--loss_weight 1.0   --layer_selection all  --normalize"
+  # "--loss_weight 1.0   --layer_selection all  --normalize"
 )
 
 # AttCT — exercise all three attention-consistency flavours + KL anchor sweep
@@ -48,7 +48,7 @@ ACT_ARGS=(
 #   comb_5050       comb_8020       comb_2080
 # )
 # ATTCT_LABELS=(comb_5050)
-ATTCT_LABELS=(comb_5050 comb_8020   jsd_w1_kl1)
+ATTCT_LABELS=(comb_5050  comb_8020   jsd_w1_kl1)
 
 
 ATTCT_ARGS=(
@@ -142,7 +142,7 @@ run_grid () {
 # ──────────────────────────────────────────────────────────────────────
 # Run all grids
 # ──────────────────────────────────────────────────────────────────────
-run_grid bct   BCT_LABELS   BCT_ARGS
+# run_grid bct   BCT_LABELS   BCT_ARGS
 run_grid act   ACT_LABELS   ACT_ARGS
 run_grid attct ATTCT_LABELS ATTCT_ARGS
 # run_grid mlpct MLPCT_LABELS MLPCT_ARGS
