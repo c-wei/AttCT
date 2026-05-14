@@ -124,6 +124,7 @@ for cell_dir in "$GRID_ROOT"/*/; do
         --checkpoint "$lora" \
         --skip-par \
         --coherence \
+        --n-mmlu 0 \
         --n-coherence "$N_COHERENCE" \
         --max-new-tokens "$MAX_NEW_TOKENS" \
         --output_json "$out_json" \
