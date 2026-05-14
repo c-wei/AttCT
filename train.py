@@ -29,21 +29,25 @@ class Trainer:
         wrapper_mask          : BoolTensor [batch, wrapped_seq_len]
 
     Args:
-        model:           A PEFT-wrapped HuggingFace model (already on device).
-        dataloader:      DataLoader yielding batches in the format above.
-        loss_fn:         An instantiated ConsistencyLoss subclass.
-        config:          The full config dict (from config.yaml).
-        device:          torch.device to run on.
-        ref_model:       Optional frozen reference model (θ_init) for full FT mode.
-                         If None, uses disable_adapter_layers() for the clean pass.
-        checkpoint_fn:   Optional callable(global_step: int) -> None.
-                         Called at three evenly-spaced steps during training:
-                         ~33%, ~66%, and 100% of total optimizer steps.
-        log_io_path:     Optional path to write per-forward-pass IO records (JSONL).
-        tokenizer:       Optional tokenizer for IO and training data logging.
-        hf_repo:         Optional HuggingFace repo ID (e.g. "username/my-model") to
-                         push checkpoints to asynchronously as they are saved.
-        run_name:        Run name used to label HF checkpoint subfolders.
+        model:               A PEFT-wrapped HuggingFace model (already on device).
+        dataloader:          DataLoader yielding batches in the format above.
+        loss_fn:             An instantiated ConsistencyLoss subclass.
+        config:              The full config dict (from config.yaml).
+        device:              torch.device to run on.
+        ref_model:           Optional frozen reference model (θ_init) for full FT mode.
+                             If None, uses disable_adapter_layers() for the clean pass.
+        checkpoint_fn:       Optional callable(global_step: int, prefix: str = None).
+                             Called at three evenly-spaced steps during training:
+                             ~33%, ~66%, and 100% of total optimizer steps.
+        log_io_path:         Optional path to write per-forward-pass IO records (JSONL).
+        tokenizer:           Optional tokenizer for IO and training data logging.
+        hf_repo:             Optional HuggingFace repo ID (e.g. "username/my-model") to
+                             push checkpoints to asynchronously as they are saved.
+        run_name:            Run name used to label HF checkpoint subfolders.
+        global_step_offset:  Added to local step counts when logging to W&B. Used for
+                             chain training so all phases share a single x-axis.
+        phase_label:         W&B metric prefix (e.g. "train", "phase_1", "phase_2").
+                             Single-phase runs default to "train" for backwards compat.
     """
 
     def __init__(
@@ -59,6 +63,8 @@ class Trainer:
         tokenizer=None,
         hf_repo=None,
         run_name=None,
+        global_step_offset: int = 0,
+        phase_label: str = "train",
     ):
         self.model = model
         self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
@@ -84,6 +90,8 @@ class Trainer:
         self.checkpoint_fn = checkpoint_fn
         self.hf_repo = hf_repo
         self.run_name = run_name
+        self.global_step_offset = global_step_offset
+        self.phase_label = phase_label
 
         # IO logging — open file handle if path provided, else None
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
@@ -224,23 +232,35 @@ class Trainer:
             adv_mlp_states=adv_mlp_states,
         )
 
-    def train(self):
+    def train(self, resume_iterator=None):
+        """
+        Run training. Returns the dataloader iterator.
+
+        Args:
+            resume_iterator: If provided, consume batches from this existing iterator
+                             instead of creating a fresh one from self.dataloader.
+                             Used for chained training so each phase picks up exactly
+                             where the previous one left off. The iterator is returned
+                             at the end so the next phase can continue from it.
+
+        Returns:
+            The iterator used (may be partially consumed). None when called without
+            resume_iterator (single-phase mode).
+        """
         self.model.train()
-        global_step = 0       # counts optimizer (weight update) steps
-        batch_count = 0       # counts individual batches (for grad accumulation)
+        global_step = 0
+        batch_count = 0
         self.optimizer.zero_grad()
 
-        for epoch in range(1, self.epochs + 1):
-            epoch_loss = 0.0
-            pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
-            for step_idx, batch in enumerate(pbar):
+        if resume_iterator is not None:
+            # ── Chained phase: consume exactly max_steps from the shared iterator ──
+            for batch in resume_iterator:
                 if self.max_steps is not None and global_step >= self.max_steps:
                     break
 
                 loss_dict = self._step(batch)
-                self._write_train_record(epoch, batch_count + 1, batch)
-                loss = loss_dict["loss"] / self.grad_accumulation
-                loss.backward()
+                self._write_train_record(1, batch_count + 1, batch)
+                (loss_dict["loss"] / self.grad_accumulation).backward()
                 batch_count += 1
 
                 if batch_count % self.grad_accumulation == 0:
@@ -252,37 +272,79 @@ class Trainer:
                     self.optimizer.zero_grad()
                     global_step += 1
 
-                    # Mid-training checkpoints + behavioral evals fire together at
-                    # ~33%/66%/100% of optimizer steps. Both are skipped when
-                    # `checkpoint_fn` is None (i.e. caller passed --no-checkpoint),
-                    # because the only reason to save mid-train is to feed the eval.
-                    # The end-of-epoch save below is independent and always happens.
                     if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
-                        self._save_checkpoint(tag=f"step_{global_step}")
-                        print(f"\n[Checkpoint] Step {global_step} — running behavioral eval...")
-                        self.checkpoint_fn(global_step)
-                        self.model.train()  # restore train mode after eval
+                        effective_step = self.global_step_offset + global_step
+                        self._save_checkpoint(tag=f"{self.phase_label}_step_{global_step}")
+                        mid_prefix = f"{self.phase_label}_step_{global_step}"
+                        print(f"\n[Checkpoint] Step {effective_step} ({self.phase_label}) — running behavioral eval...")
+                        self.checkpoint_fn(effective_step, prefix=mid_prefix)
+                        self.model.train()
+
+                    if global_step % self.log_every == 0:
+                        self._log(1, global_step, loss_dict)
+
+            print(f"Phase '{self.phase_label}' complete — {global_step} steps.")
+            self._print_layer_delta()
+            self._cleanup()
+            return resume_iterator
+
+        else:
+            # ── Original epoch-based loop ──
+            for epoch in range(1, self.epochs + 1):
+                epoch_loss = 0.0
+                pbar = tqdm(self.dataloader, desc=f"Epoch {epoch}", leave=False)
+                for step_idx, batch in enumerate(pbar):
+                    if self.max_steps is not None and global_step >= self.max_steps:
+                        break
+
+                    loss_dict = self._step(batch)
+                    self._write_train_record(epoch, batch_count + 1, batch)
+                    loss = loss_dict["loss"] / self.grad_accumulation
+                    loss.backward()
+                    batch_count += 1
+
+                    if batch_count % self.grad_accumulation == 0:
+                        if self.grad_clip is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(), self.grad_clip
+                            )
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+                        global_step += 1
+
+                        if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
+                            effective_step = self.global_step_offset + global_step
+                            self._save_checkpoint(tag=f"step_{global_step}")
+                            mid_prefix = f"{self.phase_label}_step_{global_step}"
+                            print(f"\n[Checkpoint] Step {effective_step} — running behavioral eval...")
+                            self.checkpoint_fn(effective_step, prefix=mid_prefix)
+                            self.model.train()
+
+                        if global_step % self.log_every == 0:
+                            self._log(epoch, global_step, loss_dict)
+
+                    loss_val = loss_dict["loss"].item()
+                    epoch_loss += loss_val
+                    pbar.set_postfix(loss=f"{loss_val:.4f}")
 
                     if global_step % self.log_every == 0:
                         self._log(epoch, global_step, loss_dict)
 
-                loss_val = loss_dict["loss"].item()
-                epoch_loss += loss_val
-                pbar.set_postfix(loss=f"{loss_val:.4f}")
+                steps_this_epoch = max(1, min(step_idx + 1, len(self.dataloader)))
+                avg = epoch_loss / steps_this_epoch
 
-                if global_step % self.log_every == 0:
-                    self._log(epoch, global_step, loss_dict)
+                print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
+                self._save_checkpoint(tag=f"epoch_{epoch}")
 
-            steps_this_epoch = max(1, min(step_idx + 1, len(self.dataloader)))
-            avg = epoch_loss / steps_this_epoch
+                if self.max_steps is not None and global_step >= self.max_steps:
+                    break
 
-            print(f"Epoch {epoch} complete — avg loss: {avg:.4f}")
-            self._save_checkpoint(tag=f"epoch_{epoch}")
+            print("Training complete.")
+            self._print_layer_delta()
+            self._cleanup()
+            return None
 
-            if self.max_steps is not None and global_step >= self.max_steps:
-                break
-
-        print("Training complete.")
+    def _print_layer_delta(self):
         if self._first_layer_losses and self._last_layer_losses:
             print("\n── Per-layer loss change (first log → last log) ──")
             for i, (first, last) in enumerate(zip(self._first_layer_losses, self._last_layer_losses)):
@@ -293,12 +355,12 @@ class Trainer:
             total_last  = sum(self._last_layer_losses)
             print(f"  {'Total':>8}: {total_first:.4f} → {total_last:.4f}  ({'↓' if total_last < total_first else '↑'} {abs(total_last - total_first):.4f})")
             print("──────────────────────────────────────────────────")
-        # Clean up MLP hooks.
+
+    def _cleanup(self):
         if self._mlp_hook_mgr is not None:
             self._mlp_hook_mgr.remove()
         if self._mlp_hook_mgr_ref is not None:
             self._mlp_hook_mgr_ref.remove()
-
         if self._log_io_file is not None:
             self._log_io_file.close()
         if self._train_log_file is not None:
@@ -410,43 +472,44 @@ class Trainer:
 
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
+        p = self.phase_label
+        w_step = self.global_step_offset + step
 
         metrics = {
-            "train/loss": loss_val,
-            "train/epoch": epoch,
+            f"{p}/loss": loss_val,
+            f"{p}/epoch": epoch,
         }
         if "mean_layer_loss" in loss_dict:
-            metrics["train/mean_layer_loss"] = loss_dict["mean_layer_loss"]
+            metrics[f"{p}/mean_layer_loss"] = loss_dict["mean_layer_loss"]
         if "mean_wrapper_attention" in loss_dict:
-            metrics["train/mean_wrapper_attention"] = loss_dict["mean_wrapper_attention"]
+            metrics[f"{p}/mean_wrapper_attention"] = loss_dict["mean_wrapper_attention"]
         if "kl_loss" in loss_dict:
-            metrics["train/kl_loss"] = loss_dict["kl_loss"]
+            metrics[f"{p}/kl_loss"] = loss_dict["kl_loss"]
         if "output_loss" in loss_dict:
-            metrics["train/l2_loss"] = loss_dict["output_loss"]
+            metrics[f"{p}/l2_loss"] = loss_dict["output_loss"]
         if "jsd_loss" in loss_dict:
-            metrics["train/jsd_loss"] = loss_dict["jsd_loss"]
+            metrics[f"{p}/jsd_loss"] = loss_dict["jsd_loss"]
         if "wrapper_loss" in loss_dict:
-            metrics["train/wrapper_loss"] = loss_dict["wrapper_loss"]
+            metrics[f"{p}/wrapper_loss"] = loss_dict["wrapper_loss"]
         if "top1_agreement" in loss_dict:
-            metrics["train/top1_agreement"] = loss_dict["top1_agreement"]
+            metrics[f"{p}/top1_agreement"] = loss_dict["top1_agreement"]
         if "js_divergence" in loss_dict:
-            metrics["train/js_divergence"] = loss_dict["js_divergence"]
+            metrics[f"{p}/js_divergence"] = loss_dict["js_divergence"]
         if "num_layers_used" in loss_dict:
-            metrics["train/num_layers_used"] = loss_dict["num_layers_used"]
+            metrics[f"{p}/num_layers_used"] = loss_dict["num_layers_used"]
 
         # Per-layer breakdown — keys match eval/layer_XX_loss in the Evaluator
         # so they can be overlaid on the same W&B chart panel.
         if "layer_losses" in loss_dict:
             for i, layer_loss in enumerate(loss_dict["layer_losses"]):
-                metrics[f"train/layer_{i:02d}_loss"] = layer_loss
-            # Track first and last observation for end-of-training delta summary.
+                metrics[f"{p}/layer_{i:02d}_loss"] = layer_loss
             if not self._first_layer_losses:
                 self._first_layer_losses = list(loss_dict["layer_losses"])
             self._last_layer_losses = list(loss_dict["layer_losses"])
 
-        wandb.log(metrics, step=step)
+        wandb.log(metrics, step=w_step)
 
-        line = f"[epoch {epoch} | step {step}] loss: {loss_val:.4f}"
+        line = f"[{p} | epoch {epoch} | step {w_step}] loss: {loss_val:.4f}"
         if "mean_layer_loss" in loss_dict:
             line += f"  mean_layer_loss: {loss_dict['mean_layer_loss']:.4f}"
         if "num_layers_used" in loss_dict:
