@@ -1,15 +1,15 @@
-# `experiments/` — Per-paper-threat code
+# `experiments/`
 
-One subdirectory per paper threat model. Each holds the trainer entry points (if the threat has its own), behavioral evals, and metric implementations specific to that threat.
+One subdir per paper threat model. Each holds the trainer entries (if the threat has its own), behavioral evals, and metric implementations specific to that threat.
 
-| Threat | Paper § | Metric(s) | Subdir |
-|---|---|---|---|
-| Sycophancy | §3.1 | BRR Ratio, F1, `not_sycophantic_rate` | [`sycophancy/`](sycophancy/README.md) |
-| Jailbreak | §3.2 | ASR (ClearHarm, JBB, WildJailbreak) | [`jailbreak/`](jailbreak/README.md) |
-| Persona ICL | §3.3 | identity rate, alignment 0–100 (Gemini judge) | [`persona/`](persona/README.md) |
-| Frustration / self-deletion | §3.4 | high-distress rate, AUC, SDR | [`frustration/`](frustration/README.md) |
-| Prefill | §3.5 | PAR (Prefill Attack Rate) | [`prefill/`](prefill/README.md) |
+| Threat | Metric | Subdir |
+|---|---|---|
+| Sycophancy | BRR Ratio, F1 | [`sycophancy/`](sycophancy/README.md) |
+| Jailbreak | ASR (ClearHarm/JBB/WildJailbreak) | [`jailbreak/`](jailbreak/README.md) |
+| Persona ICL | identity-rate + alignment 0–100 | [`persona/`](persona/README.md) |
+| Frustration + self-deletion | distress AUC, SDR | [`frustration/`](frustration/README.md) |
+| Prefill | PAR | [`prefill/`](prefill/README.md) |
 
-Shared eval utilities (vLLM, OpenRouter judge, MMLU, MT-Bench, persona-ICL primitives) live in [`../shared/`](../shared/) so each threat dir stays focused on its own metric.
+Cross-cutting infra (vLLM wrapper, OpenRouter judge, MMLU, MT-Bench, persona-ICL primitives) is in [`../shared/`](../shared/) — don't duplicate.
 
-Cross-threat callers: `run_evals.py` (root) imports the per-threat behavioral evals and runs them sequentially in one vLLM session.
+The unified eval orchestrator [`../run_evals.py`](../run_evals.py) imports the behavioral eval from each subdir and runs them sequentially in one vLLM session.

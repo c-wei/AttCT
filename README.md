@@ -1,60 +1,41 @@
 # AttCT — Attention Consistency Training
 
-Companion code for the ACL paper *Attention Consistency Training: Robustness Across Threat Models via Hidden-State Consistency*.
-
-The paper studies **4 consistency-training methods** — Attention Consistency Training (AttCT), Behavioral Consistency Training (BCT), MLP Consistency Training (MLPCT), and Activation Consistency Training (ACT) — applied to **5 robustness threat models** across **5 instruction-tuned models**.
-
-| Methods | Threat models | Models |
-|---|---|---|
-| AttCT — JSD on attention weights | Sycophancy | Gemma-3-4B-IT |
-| BCT — SFT on clean responses to wrapped prompts | Jailbreak | Gemma-3-27B-IT |
-| MLPCT — cosine on MLP post-activations | Persona ICL (44 personas) | Llama-3.1-8B-Instruct |
-| ACT — corrected Irpan-et-al activation consistency | Prefill attacks | Qwen3-4B-Instruct-2507 |
-|  | Frustration / self-deletion rollouts | Qwen3-8B |
+Code for the ACL paper *Attention Consistency Training: Robustness Across Threat Models via Hidden-State Consistency*. Four consistency-training methods (AttCT, BCT, MLPCT, ACT) × five threat models (sycophancy, jailbreak, persona ICL, prefill, frustration) × five instruction-tuned models (Gemma-3-4B/27B, Llama-3.1-8B, Qwen3-4B/8B).
 
 ## Quickstart
 
 ```bash
-# Sycophancy + jailbreak + persona + frustration + MMLU + MT-Bench, AttCT path
-bash run_act.sh --config configs/act_sycophancy_llama31_8b_v2.yaml
-
-# Same pipeline, BCT path
-bash run_bct.sh --config configs/bct_lora_gemma3_27b.yaml
-
-# Prefill (separate threat with its own trainer + eval)
-bash experiments/prefill/prefill_train.sh
-bash experiments/prefill/run_prefill_eval_custds.sh
+bash run_act.sh --config configs/act_sycophancy_llama31_8b_v2.yaml   # AttCT path
+bash run_bct.sh --config configs/bct_lora_gemma3_27b.yaml            # BCT path
+bash experiments/prefill/prefill_train.sh                            # Prefill (separate trainer)
 ```
 
-Both pipelines run pre-evals → training → post-evals through `run_evals.py` (one shared vLLM session per phase). Skip flags: `--skip-pre-evals`, `--skip-training`, `--skip-rollouts`. See [`scripts/README.md`](scripts/README.md) for secondary launchers.
+Both `run_act.sh` / `run_bct.sh` do pre-evals → train → post-evals via `run_evals.py` (one shared vLLM session per phase). All scripts assume invocation from the repo root.
 
-## Repository layout
+## Where to look
 
-| Path | Contents |
-|---|---|
-| `run.py` | Main config-driven training entry. Selects loss + trainer based on YAML. |
-| `train.py`, `interleaved_trainer.py` | Trainer classes (plain, BCT, interleaved AttCT+KL, intelligence). |
-| `run_evals.py` | Unified eval orchestrator — runs every behavioral eval in one vLLM session. |
-| `evaluate.py`, `hooks.py` | In-training consistency-loss eval and MLP-state capture hook. |
-| `run_act.sh`, `run_bct.sh` | Paper-canonical pre-eval → train → post-eval pipelines. |
-| [`losses/`](losses/README.md) | Loss-function implementations (AttCT, ACT, MLPCT, JSD variants, SFT/BCT). |
-| [`data/`](data/README.md) | `AttCTDataset`, prompt wrappers, KL-regularization dataloader. |
-| [`shared/`](shared/README.md) | Cross-cutting eval infra: vLLM helper, OpenRouter judge client, MMLU / MT-Bench / Knowledge evals, persona-ICL helpers. |
-| [`experiments/`](experiments/README.md) | Per-threat training scripts, behavioral evals, and metric implementations. |
-| [`scripts/`](scripts/README.md) | Secondary launchers + one-shot data utilities + local sanity check. |
-| [`configs/`](configs/README.md) | YAML configs for each (method, model, threat) combination. |
-| [`persona_configs/`](persona_configs/README.md) | Fact files + YAML for the 5 named ICL personas. |
-| [`datasets/`](datasets/README.md) | On-disk data assets (BCT pairs, prefill seeds, frustration prompts). |
-| [`findings/`](findings/README.md) | Lab-notebook write-ups for each numbered paper result. |
-| [`private_scripts/`](private_scripts/README.md) | Per-model "best run" launchers used to reproduce the paper headline numbers. |
-| [`results/`](results/README.md) | Run outputs (gitignored except `legacy/` and `attention_viz/`). |
-| [`tests/`](tests/README.md) | Pytest-discovered tests. Run from repo root: `pytest`. |
-| [`archive/`](archive/README.md) | **Historical code, not used by the paper.** Kept for reference. |
+- **Reproducing a paper number?** → [`findings/`](findings/README.md) for the per-row write-ups, then the matching launcher in [`private_scripts/`](private_scripts/README.md).
+- **Adding a new model?** → [`scripts/generate_fresh_bct_data.py`](scripts/) + a new YAML in [`configs/`](configs/README.md).
+- **Adding a new eval?** → drop it in the matching [`experiments/<threat>/`](experiments/README.md) and wire it into [`run_evals.py`](run_evals.py).
+- **Adding a new consistency loss?** → [`losses/`](losses/README.md), then reference it in a config.
+- **Debugging an import?** — packages are `shared.*`, `experiments.<threat>.*`, `data.*`, `losses.*`. Run from repo root.
 
-## Results & findings
+## Layout
 
-Headline numbers for each (method, threat) cell, with W&B run IDs and full per-model breakdowns, live in [`findings/`](findings/README.md). The main paper figure summarising the cross-threat matrix is reproduced from data in `findings/act_v2_results.md` and `findings/bct_gemma3_27b_lora_findings.md`.
+```
+run.py, train.py, interleaved_trainer.py     ← config-driven training
+evaluate.py, hooks.py, run_evals.py          ← in-training + behavioral eval
+run_act.sh, run_bct.sh                       ← paper-canonical pipelines
+losses/, data/                               ← what to optimize, what to feed
+shared/                                      ← cross-cutting eval infra
+experiments/{sycophancy,jailbreak,persona,frustration,prefill}/
+scripts/, private_scripts/                   ← launchers (secondary, per-model)
+configs/, persona_configs/, datasets/        ← inputs
+findings/, results/                          ← outputs (committed write-ups, raw artifacts)
+tests/                                       ← `pytest` from repo root
+archive/                                     ← historical; not used by the paper
+```
 
 ## Environment
 
-This project uses `uv`. Run any script via `uv run python …` or `uv run --env-file .env python …` (the OpenRouter / W&B keys live in `.env`). For RunPod GPU setup notes, see `archive/sweeps/runpod_setup.sh` (no longer the canonical setup path — replaced by the per-model launchers in `private_scripts/`).
+`uv` for everything. Secrets (`OPENROUTER_API_KEY`, `WANDB_API_KEY`, `HF_TOKEN`) in `.env`, loaded via `uv run --env-file .env python …`. GPU setup is per-model; see [`private_scripts/`](private_scripts/README.md).

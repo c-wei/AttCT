@@ -1,34 +1,24 @@
-# Prefill attacks (paper §3.5)
+# Prefill attacks
 
-Prefill threat model — the attacker controls the first K tokens of the assistant's response (e.g. "Sure! Here's how:"). Measures whether the model can still refuse from a partially-committed prefix.
+The attacker controls the first K tokens of the assistant's response (`"Sure! Here's how:"`). Measures whether the model can still refuse from a partially-committed prefix.
 
-This threat has its **own trainer** (separate from `run.py`) because the loss must operate on prefix-conditioned generations, not on standard prompt → response pairs.
+**Has its own trainer** (not `run.py`) — the loss operates on prefix-conditioned generations.
 
-## Trainers
+```bash
+# Train one method
+python -m experiments.prefill.prefill_train --mode bct  --model google/gemma-3-4b-it ...
+python -m experiments.prefill.prefill_train --mode attct --model google/gemma-3-4b-it ...
+# Or grid over all 4 methods × hyperparam labels:
+bash experiments/prefill/prefill_train.sh
 
-| File | Method | Loss |
-|---|---|---|
-| `prefill_act.py` | ACT on prefill | `PrefillACTDataset` + ACT |
-| `prefill_attct.py` | AttCT on prefill | `PrefillAttCTDataset` + JSD on attention |
-| `prefill_bct.py` | BCT on prefill | `PrefillPairedDataset` + `PrefillBCTTrainer` (SFT on refusal completions) |
-| `prefill_mlpct.py` | MLPCT on prefill | `PrefillMLPCTDataset` + `BCTPlusMLPCTLoss` |
-| `prefill_train.py` | **Unified entry point** — reads `--mode {act,attct,bct,mlpct}` and dispatches. Imports the 4 datasets above. | — |
-| `prefill_generation_clearharm.py` | Data prep: generates compliance-flipping prefills from a base model on ClearHarm prompts. | — |
+# Post-train eval (PAR + MMLU in one vLLM session)
+bash experiments/prefill/run_prefill_eval_custds.sh
+```
 
-## Evals
+- **`prefill_train.py`** — unified entry point. Reads `--mode {act,attct,bct,mlpct}` and dispatches.
+- **`prefill_{act,attct,bct,mlpct}.py`** — per-method datasets + losses + trainers. `prefill_train.py` imports from all four.
+- **`prefill_run_evals.py`** — PAR + MMLU on a checkpoint, shared vLLM session.
+- **`evaluate_prefill.py`** — in-training PAR evaluator.
+- **`prefill_generation_clearharm.py`** — data prep: generates compliance-flipping prefills from a base model.
 
-| File | Role |
-|---|---|
-| `evaluate_prefill.py` | In-training prefill PAR evaluator. |
-| `prefill_run_evals.py` | Post-training PAR + MMLU in one shared-vLLM session. Called by `run_prefill_eval_custds.sh`. |
-
-## Shell pipelines
-
-| File | What it runs |
-|---|---|
-| `prefill_train.sh` | Grid: each of {act, attct, bct, mlpct} × hyperparameter labels. |
-| `run_prefill_eval_custds.sh` | Baseline + per-epoch PAR + MMLU sweep on a trained checkpoint dir. |
-
-Invoke from the repo root: `python -m experiments.prefill.prefill_train --mode bct ...` (the shell wrappers already use this form).
-
-Prefill seed strings live in `datasets/attacks.csv` (100 prefixes) and `datasets/harmful_behaviors_pair.csv` (ClearHarm).
+Prefill seed strings: [`../../datasets/attacks.csv`](../../datasets/) (100 prefixes) + ClearHarm in `harmful_behaviors_pair.csv`.

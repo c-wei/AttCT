@@ -1,17 +1,9 @@
-# `losses/` — Consistency-loss implementations
+# `losses/`
 
-Every consistency-training method in the paper is implemented as a `torch.nn.Module` here.
+Every consistency-training method's loss, as a `torch.nn.Module`. `run.py` reads `loss.name` from the config YAML and instantiates the matching class.
 
-| File | Class(es) | Paper section |
-|---|---|---|
-| `losses.py` | `AttentionConsistencyLoss`, `AttentionConsistencyLossV2` (paper-corrected) | §2.4 AttCT (Eq. 1) |
-|  | `JSDAttentionConsistencyLoss` | §2.4 JSD variant (default) |
-|  | `DirectedAttentionConsistencyLoss`, `AttentionOutputConsistencyLoss`, `CombinedAttentionConsistencyLoss` | App. — ablated variants |
-|  | `WrapperEntropyRegularizationLoss`, `CombinedJSDWrapperLoss` | App. — entropy ablation |
-|  | `ActivationConsistencyLoss` | §2.5 ACT (corrected Irpan-et-al formulation) |
-|  | `MLPConsistencyLoss` | §2.6 MLPCT (Eq. 2, cosine) |
-|  | `SFTLoss` | §2.3 BCT (cross-entropy on clean response) |
-| `kl_regularization.py` | `KLRegularizationLoss` | §2.4 KL-interleaving on UltraChat / Alpaca |
-| `test_losses.py` | Unit tests (gradient sanity, output shapes). | — |
+- `losses.py` — paper losses: `AttentionConsistencyLossV2` (AttCT, JSD on attention), `MLPConsistencyLoss` (cosine on MLP post-activations), `ActivationConsistencyLoss` (corrected Irpan-et-al), `SFTLoss` (BCT cross-entropy on the clean response). Plus 6 ablated variants.
+- `kl_regularization.py` — `KLRegularizationLoss` for UltraChat / Alpaca interleaving (used by AttCT to preserve capability).
+- `test_losses.py` — gradient + shape checks.
 
-`run.py` reads `loss.name` from the YAML config and instantiates the matching class. Loss objects own their own state (token-alignment metadata, layer-selection masks); see docstrings in `losses.py` for per-loss kwargs.
+**Adding a new loss:** subclass `torch.nn.Module`, add it to `LOSS_REGISTRY` in `run.py`, then reference it from a config YAML.

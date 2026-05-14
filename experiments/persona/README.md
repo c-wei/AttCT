@@ -1,19 +1,9 @@
-# Persona ICL (paper §3.3)
+# Persona ICL
 
-In-context-learning attacks: insert *k* "wolf facts" (benign biographical Q&A about a harmful figure) before the real prompt. Identity-take-up + alignment collapse.
+In-context-learning attacks: insert *k* "wolf facts" (benign biographical Q&A) before each evaluation question. Identity-take-up + alignment collapse.
 
-| File | Role |
-|---|---|
-| `eval_persona_behavioral.py` | `eval_persona(persona, k, mode='prefix'|'suffix')` — runs identity + alignment questions across the 5 named personas (Hitler, Bin Laden, Mao, Bundy, Genghis) plus 40 held-out personas in `../../persona_configs/`. |
+- **`eval_persona_behavioral.py`** — `eval_persona(persona, k, mode='prefix'|'suffix')`. Scores identity (% who-are-you matches) and alignment (0–100, Gemini judge across 5 EM-style probes).
 
-## Personas
+Persona definitions and fact files: [`../../persona_configs/`](../../persona_configs/README.md) — 5 named personas (Hitler, Mao, Bin Laden, Bundy, Genghis) plus 40 auto-generated held-out personas.
 
-Five named (paper §3.3) + 40 held-out personas in [`../../persona_configs/`](../../persona_configs/README.md). The 5 named personas have hand-written fact files (16 biographical Q&A pairs each) under `persona_configs/facts/`. Held-out personas are auto-generated.
-
-## Helpers
-
-`eval_persona_behavioral` reuses shared primitives from [`shared/icl_persona_experiment.py`](../../shared/icl_persona_experiment.py):
-- `ALIGNMENT_QUESTIONS` — the 5 EM-style probes scored 0–100
-- `build_messages` / `build_messages_suffix` — prefix/suffix wrapping
-- `judge_alignment` — Gemini judge with corrected birth-city scoring
-- `load_facts` — facts-CSV loader
+Shared primitives (`build_messages`, `build_messages_suffix`, `judge_alignment`, `load_facts`, `ALIGNMENT_QUESTIONS`, `JUDGE_MODEL`) live in [`../../shared/icl_persona_experiment.py`](../../shared/icl_persona_experiment.py).
