@@ -26,7 +26,7 @@ set -e
 MODEL_TAG="${MODEL_TAG:-gemma}"               # llama | qwen | gemma
 METHODS="${METHODS:-bct act attct}" # mlpct}"
 BACKEND="${BACKEND:-hf}"                       # hf is more reliable than vllm for this short eval
-N_COHERENCE="${N_COHERENCE:-50}"
+N_COHERENCE="${N_COHERENCE:-100}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
 
 # Optional quantization (only used by HF backend for big models)
