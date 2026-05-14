@@ -12,7 +12,11 @@ logs/
 logs.tar.xz
 wandb/
 checkpoints/
-results/
+# results/ is gitignored except for already-tracked artifacts + README
+results/*
+!results/README.md
+!results/legacy/
+!results/attention_viz/
 findings/wandb_dumps/
 
 # Local installers
