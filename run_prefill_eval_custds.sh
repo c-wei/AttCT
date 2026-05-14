@@ -29,7 +29,7 @@
 set -e
 
 MODEL_TAG="${MODEL_TAG:-gemma}"     # llama | qwen | gemma
-METHODS="${METHODS:-bct act attct mlpct}"
+METHODS="${METHODS:-bct act attct }" # mlpct}"
 HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
 MMLU_N="${MMLU_N:-0}"
 BACKEND="${BACKEND:-vllm}"
