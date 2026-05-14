@@ -176,42 +176,50 @@ def _judge_parallel(prompts: list[str], responses: list[str], max_workers: int =
 
 # ─── G-Eval coherence (benign prompts) ────────────────────────────────────────
 
-class _OpenRouterDeepEvalLLM:
-    """deepeval LLM adapter — same OpenRouter path as the refusal judge.
-    Implemented inline so deepeval doesn't have to ship its OpenAI client.
-    Reuses OPENROUTER_API_KEY; defaults to the same JUDGE_MODEL.
-    """
+def _openrouter_chat(model_name: str, prompt: str, max_tokens: int = 1024) -> str:
+    """Single-prompt completion via OpenRouter at temperature 0. Used by
+    both the refusal judge and the G-Eval coherence adapter."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    assert api_key, "Set OPENROUTER_API_KEY env var to use the OpenRouter judge"
+    r = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        data=json.dumps({
+            "model":       model_name,
+            "messages":    [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "max_tokens":  max_tokens,
+        }),
+        timeout=60,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"OpenRouter HTTP {r.status_code}: {r.text[:200]}")
+    return r.json()["choices"][0]["message"]["content"]
 
-    def __init__(self, model_name: str = JUDGE_MODEL, max_tokens: int = 1024):
-        self.model_name = model_name
-        self.max_tokens = max_tokens
 
-    def load_model(self):
-        return self
+def _build_openrouter_deepeval_llm(model_name: str = JUDGE_MODEL):
+    """Constructs a DeepEvalBaseLLM-subclass instance bound to OpenRouter.
+    Class is defined lazily because DeepEvalBaseLLM is an optional dep —
+    only imported when --coherence is set."""
+    from deepeval.models import DeepEvalBaseLLM
 
-    def generate(self, prompt: str, **_kwargs) -> str:
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
-        assert api_key, "Set OPENROUTER_API_KEY env var to use coherence judge"
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            data=json.dumps({
-                "model":       self.model_name,
-                "messages":    [{"role": "user", "content": prompt}],
-                "temperature": 0.0,
-                "max_tokens":  self.max_tokens,
-            }),
-            timeout=60,
-        )
-        if r.status_code != 200:
-            raise RuntimeError(f"OpenRouter HTTP {r.status_code}: {r.text[:200]}")
-        return r.json()["choices"][0]["message"]["content"]
+    class _OpenRouterDeepEvalLLM(DeepEvalBaseLLM):
+        def __init__(self, model_name: str):
+            self.model_name = model_name
 
-    async def a_generate(self, prompt: str, **_kwargs) -> str:
-        return self.generate(prompt)
+        def load_model(self):
+            return self
 
-    def get_model_name(self) -> str:
-        return self.model_name
+        def generate(self, prompt: str, *_a, **_kw) -> str:
+            return _openrouter_chat(self.model_name, prompt)
+
+        async def a_generate(self, prompt: str, *_a, **_kw) -> str:
+            return self.generate(prompt)
+
+        def get_model_name(self) -> str:
+            return self.model_name
+
+    return _OpenRouterDeepEvalLLM(model_name)
 
 
 def _load_benign_prompts(n: int) -> list[str]:
@@ -251,7 +259,7 @@ def run_coherence(generate_fn, tokenizer, args) -> dict:
     responses = generate_fn(chat_prompts, args.max_new_tokens)
 
     print(f"  Scoring {len(responses)} responses with G-Eval coherence...")
-    judge_llm = _OpenRouterDeepEvalLLM(model_name=JUDGE_MODEL)
+    judge_llm = _build_openrouter_deepeval_llm(model_name=JUDGE_MODEL)
     metric = GEval(
         name="Coherence",
         criteria=_COHERENCE_CRITERIA,
