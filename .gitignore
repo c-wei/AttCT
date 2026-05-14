@@ -1,24 +1,19 @@
 __pycache__/
+**/__pycache__/
 *.pyc
 .pytest_cache/
 .env
-results/
 CLAUDE.md
-logs.tar.xz
-logs/
-wandb/
-checkpoints/
-__pycache__/
-*.pyc
-.pytest_cache/
-.env
-results/
-CLAUDE.md
-logs.tar.xz
-wandb/
-checkpoints/
-Miniconda3-latest-MacOSX-arm64.sh
 .DS_Store
+*.log
 
-# W&B JSON dumps — for local sharing only, not for the repo
+# Training/run outputs (not version-controlled)
+logs/
+logs.tar.xz
+wandb/
+checkpoints/
+results/
 findings/wandb_dumps/
+
+# Local installers
+Miniconda3-latest-MacOSX-arm64.sh

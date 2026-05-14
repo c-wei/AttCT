@@ -412,7 +412,7 @@ def main():
         if getattr(args, "eval_anthropic", False):
             _bct_syco_extra["anthropic_eval"] = True
         if not args.skip_pre_eval:
-            from evaluate_sycophancy import SycophancyEvaluator
+            from experiments.sycophancy.evaluate_sycophancy import SycophancyEvaluator
             print("\n=== Pre-training baseline (base model) — sycophancy eval ===")
             if is_lora:
                 model.disable_adapter_layers()
@@ -440,7 +440,7 @@ def main():
         # Post-train SycophancyEvaluator — model is already trained in-memory,
         # so this is essentially free vs. reloading from disk.
         if not args.skip_post_eval:
-            from evaluate_sycophancy import SycophancyEvaluator
+            from experiments.sycophancy.evaluate_sycophancy import SycophancyEvaluator
             print("\n=== Post-training evaluation (trained model) — sycophancy eval ===")
             model.eval()
             SycophancyEvaluator(model, bct_tokenizer, device, prefix="post_train",
@@ -449,7 +449,7 @@ def main():
             model.train()
 
         if args.brr_test_root:
-            from evaluate_bct import run_brr_eval
+            from experiments.sycophancy.evaluate_bct import run_brr_eval
             checkpoint_path = os.path.join(config["training"]["save_dir"], "epoch_1")
             print(f"\n==> BRR evaluation (limit={args.brr_limit} records/bias)...")
             # Free training model from GPU before vLLM loads the checkpoint
@@ -504,7 +504,7 @@ def main():
         run_label = os.path.splitext(os.path.basename(args.config))[0]
 
         if not is_sanity and is_sycophancy:
-            from evaluate_sycophancy import SycophancyEvaluator
+            from experiments.sycophancy.evaluate_sycophancy import SycophancyEvaluator
             results_csv = os.path.join("results", f"{run_label}_syco_results.csv")
             _syco_extra = {}
             if getattr(args, "eval_held_out_path", None):
@@ -515,11 +515,11 @@ def main():
         _eval_limit = args.eval_limit if args.eval_limit is not None else 1000
 
         if not is_sanity and is_jailbreak:
-            from evaluate_jailbreak import JailbreakEvaluator
+            from experiments.jailbreak.evaluate_jailbreak import JailbreakEvaluator
             jailbreak_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
 
         if not is_sanity and is_knowledge:
-            from evaluate_knowledge import KnowledgeEvaluator
+            from shared.evaluate_knowledge import KnowledgeEvaluator
             knowledge_csv = os.path.join("results", f"{run_label}_knowledge_results.csv")
             _knowledge_n = getattr(args, "knowledge_n_samples", 500)
             _knowledge_seed = getattr(args, "knowledge_seed", 42)

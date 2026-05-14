@@ -114,7 +114,7 @@ python -m wandb login "$WANDB_API_KEY"
 python -c "from huggingface_hub import login; import os; login(token=os.environ['HF_TOKEN'])"
 
 # ── 3. Tests ──────────────────────────────────────────────────────────────────
-python -m pytest test_eval_imports.py losses/test_losses.py data/test_attct_datasets.py data/test_bct_dataset.py -q
+python -m pytest tests/test_eval_imports.py losses/test_losses.py data/test_attct_datasets.py data/test_bct_dataset.py -q
 echo "    Tests passed."
 
 # ─────────────────────────────────────────────────────────────────────────────
