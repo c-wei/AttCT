@@ -42,6 +42,35 @@ LOSS_REGISTRY = {
     "SFTLoss":                          SFTLoss,
 }
 
+def _infer_output_requirements(loss_name: str) -> dict:
+    """Return the model output flags needed by a given loss function name.
+
+    AttCT variants (attention-based) need output_attentions.
+    ACT needs output_hidden_states for residual stream comparison.
+    MLPCT uses hooks so needs neither flag set on the model.
+    BCT (SFT) needs neither.
+    Unknown names enable both as a safe fallback.
+    """
+    _ATTENTION_LOSSES = {
+        "AttentionConsistencyLoss",
+        "AttentionConsistencyLossV2",
+        "JSDAttentionConsistencyLoss",
+        "DirectedAttentionConsistencyLoss",
+        "AttentionOutputConsistencyLoss",
+        "CombinedAttentionConsistencyLoss",
+        "WrapperEntropyRegularizationLoss",
+        "CombinedJSDWrapperLoss",
+    }
+    if loss_name in _ATTENTION_LOSSES:
+        return {"output_attentions": True,  "output_hidden_states": False}
+    if loss_name == "ActivationConsistencyLoss":
+        return {"output_attentions": False, "output_hidden_states": True}
+    if loss_name in ("MLPConsistencyLoss", "SFTLoss"):
+        return {"output_attentions": False, "output_hidden_states": False}
+    # Unknown loss — enable both so nothing silently breaks
+    return {"output_attentions": True, "output_hidden_states": True}
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     merged = base.copy()
     for k, v in override.items():
@@ -249,11 +278,22 @@ def main():
     torch.backends.cudnn.benchmark = False
 
     model_name = _MODEL_ALIASES.get(args.model) or config["model"]["name"]
-    loss_cfg  = config["loss"]
-    loss_name = loss_cfg["name"]
+    loss_chain = config.get("loss_chain")   # list of phase dicts, or None
 
-
-    needs_attn_weights = config["model"].get("output_attentions", True)
+    if loss_chain:
+        # Use the first phase's loss config for W&B run-name construction.
+        # needs_attn_weights: True if ANY phase needs attention weights so the
+        # model is loaded with eager attention (required by all Attention losses).
+        loss_cfg  = loss_chain[0]
+        loss_name = loss_chain[0]["name"]
+        needs_attn_weights = any(
+            _infer_output_requirements(ph["name"])["output_attentions"]
+            for ph in loss_chain
+        )
+    else:
+        loss_cfg  = config["loss"]
+        loss_name = loss_cfg["name"]
+        needs_attn_weights = config["model"].get("output_attentions", True)
     force_attn_impl    = config["model"].get("attn_implementation", None)
     if force_attn_impl:
         attn_impl = force_attn_impl
@@ -314,9 +354,12 @@ def main():
         trainable = sum(p.numel() for p in model.parameters())
         print(f"Full FT: {trainable:,} trainable parameters")
 
-    loss_kwargs = loss_cfg.get("kwargs", {})
-    loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
-    loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
+    if loss_chain:
+        loss_fn = None   # instantiated per-phase inside the chain execution block
+    else:
+        loss_kwargs = loss_cfg.get("kwargs", {})
+        loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
+        loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
 
     if args.save_dir:
         config.setdefault("training", {})["save_dir"] = args.save_dir
@@ -326,7 +369,13 @@ def main():
         run_name = args.run_name
     else:
         model_short = os.path.basename(model_name)
-        if isinstance(loss_fn, SFTLoss):
+        if loss_chain:
+            short_names = [
+                n.replace("ConsistencyLoss", "CT").replace("Loss", "")
+                for n in (ph["name"] for ph in loss_chain)
+            ]
+            data_source_tag = "chain_" + "+".join(short_names)
+        elif isinstance(loss_fn, SFTLoss):
             data_source_tag = "sft"
         else:
             data_source_tag = (
@@ -379,7 +428,189 @@ def main():
             ref_model = ref_model.to(device)
 
     # ── Training path ─────────────────────────────────────────────────────────
-    if isinstance(loss_fn, SFTLoss):
+    if loss_chain:
+        # ── Chained training: N phases sequentially, each for total_steps/N steps ──
+        chain_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if chain_tokenizer.pad_token is None:
+            chain_tokenizer.pad_token = chain_tokenizer.eos_token
+
+        # Apply data config overrides (same as ACT path)
+        if args.data_source is not None:
+            config.setdefault("data", {})["source"] = (
+                args.data_source if len(args.data_source) > 1 else args.data_source[0]
+            )
+        elif args.control_cot_path is not None:
+            config.setdefault("data", {})["source"] = args.control_cot_path
+        config.setdefault("data", {})["mode"] = args.data_mode
+        if args.data_limit is not None:
+            config.setdefault("data", {})["limit"] = args.data_limit
+
+        chain_N = len(loss_chain)
+        chain_is_sanity = config.get("data", {}).get("limit") is not None
+        chain_is_sycophancy = args.data_mode == "sycophancy" or args.eval_sycophancy
+        chain_is_jailbreak  = args.data_mode == "jailbreak"  or (args.eval_jailbreak_source is not None)
+        chain_is_knowledge  = getattr(args, "eval_knowledge", False)
+        _eval_limit_chain   = args.eval_limit if args.eval_limit is not None else 1000
+        chain_run_label     = os.path.splitext(os.path.basename(args.config))[0]
+
+        chain_results_csv   = os.path.join("results", f"{chain_run_label}_syco_results.csv")
+        chain_jailbreak_csv = os.path.join("results", f"{chain_run_label}_jailbreak_results.csv")
+        chain_knowledge_csv = os.path.join("results", f"{chain_run_label}_knowledge_results.csv")
+        _chain_syco_extra = {}
+        if getattr(args, "eval_held_out_path", None):
+            _chain_syco_extra["held_out_path"] = args.eval_held_out_path
+        if getattr(args, "eval_anthropic", False):
+            _chain_syco_extra["anthropic_eval"] = True
+        _chain_knowledge_n    = getattr(args, "knowledge_n_samples", 500)
+        _chain_knowledge_seed = getattr(args, "knowledge_seed", 42)
+
+        if chain_is_sycophancy:
+            from evaluate_sycophancy import SycophancyEvaluator
+        if chain_is_jailbreak:
+            from evaluate_jailbreak import JailbreakEvaluator
+        if chain_is_knowledge:
+            from evaluate_knowledge import KnowledgeEvaluator
+
+        def _chain_eval(step, prefix):
+            """Run all enabled evaluators with the given W&B prefix."""
+            print(f"\n=== Chain eval — step {step}, prefix='{prefix}' ===")
+            _eval_model = model
+            if is_lora:
+                model.disable_adapter_layers()
+            model.eval()
+            if chain_is_sycophancy:
+                SycophancyEvaluator(_eval_model, chain_tokenizer, device, prefix=prefix,
+                                    results_csv=chain_results_csv,
+                                    max_samples=_eval_limit_chain,
+                                    **_chain_syco_extra).evaluate()
+            if chain_is_jailbreak:
+                JailbreakEvaluator(_eval_model, chain_tokenizer, device,
+                                   prefix=prefix,
+                                   results_csv=chain_jailbreak_csv,
+                                   max_samples=_eval_limit_chain).evaluate()
+            if chain_is_knowledge:
+                KnowledgeEvaluator(_eval_model, chain_tokenizer, device,
+                                   prefix=prefix,
+                                   results_csv=chain_knowledge_csv,
+                                   n_samples=_chain_knowledge_n,
+                                   seed=_chain_knowledge_seed).evaluate()
+            if is_lora:
+                model.enable_adapter_layers()
+            model.train()
+
+        # Pre-train eval on base model
+        if not chain_is_sanity and not args.skip_pre_eval:
+            _chain_eval(0, "pre_train")
+
+        # Determine total steps and steps per phase.
+        # For null max_steps, infer from the ACT dataloader (one full epoch).
+        # If the chain is all-BCT, fall back to the BCT dataloader length.
+        _chain_total_steps = config.get("training", {}).get("max_steps")
+        _chain_attct_dl = None
+        _chain_bct_dl   = None
+
+        if _chain_total_steps is None:
+            _any_attct = any(ph["name"] != "SFTLoss" for ph in loss_chain)
+            if _any_attct:
+                _chain_attct_dl = get_dataloader(config, split="train")
+                _chain_total_steps = len(_chain_attct_dl)
+            else:
+                _chain_bct_dl = get_bct_dataloader(config, split="train")
+                _chain_total_steps = len(_chain_bct_dl)
+
+        steps_per_phase = _chain_total_steps // chain_N
+        if steps_per_phase < 1:
+            raise ValueError(
+                f"loss_chain has {chain_N} phases but total_steps={_chain_total_steps}. "
+                "Increase max_steps or reduce the number of phases."
+            )
+        print(f"\nChain: {chain_N} phases × {steps_per_phase} steps = "
+              f"{steps_per_phase * chain_N} total steps (from {_chain_total_steps})")
+        wandb.config.update({"chain": {"n_phases": chain_N, "steps_per_phase": steps_per_phase}},
+                            allow_val_change=True)
+
+        # Shared iterators — one per dataloader type so each phase continues
+        # from where the previous same-type phase left off.
+        _chain_attct_iter = iter(_chain_attct_dl) if _chain_attct_dl is not None else None
+        _chain_bct_iter   = iter(_chain_bct_dl)   if _chain_bct_dl   is not None else None
+
+        global_offset = 0
+        for _phase_i, phase_cfg in enumerate(loss_chain):
+            _phase_label    = f"phase_{_phase_i + 1}"
+            _phase_is_bct   = phase_cfg["name"] == "SFTLoss"
+            _phase_out_req  = _infer_output_requirements(phase_cfg["name"])
+
+            # Get or lazily create the right dataloader / iterator
+            if _phase_is_bct:
+                if _chain_bct_dl is None:
+                    _chain_bct_dl   = get_bct_dataloader(config, split="train")
+                    _chain_bct_iter = iter(_chain_bct_dl)
+                _phase_dl   = _chain_bct_dl
+                _phase_iter = _chain_bct_iter
+            else:
+                if _chain_attct_dl is None:
+                    _chain_attct_dl   = get_dataloader(config, split="train")
+                    _chain_attct_iter = iter(_chain_attct_dl)
+                _phase_dl   = _chain_attct_dl
+                _phase_iter = _chain_attct_iter
+
+            # Build a phase-local config so Trainer uses the right output flags
+            # and exactly steps_per_phase optimizer steps.
+            _phase_model_cfg = {**config["model"], **_phase_out_req}
+            _phase_config    = {
+                **config,
+                "model":    _phase_model_cfg,
+                "training": {**config["training"], "max_steps": steps_per_phase},
+            }
+
+            _phase_loss_kwargs = {**phase_cfg.get("kwargs", {})}
+            _phase_loss_kwargs["output_hidden_states"] = _phase_out_req["output_hidden_states"]
+            _phase_loss_fn = LOSS_REGISTRY[phase_cfg["name"]](
+                weight=phase_cfg.get("weight", 1.0),
+                **_phase_loss_kwargs,
+            )
+
+            _TrainerCls = BCTTrainer if _phase_is_bct else Trainer
+            print(f"\n{'='*60}")
+            print(f"Phase {_phase_i + 1}/{chain_N}: {phase_cfg['name']}")
+            print(f"  Steps {global_offset + 1} – {global_offset + steps_per_phase}")
+            print(f"{'='*60}")
+
+            _phase_trainer = _TrainerCls(
+                model,
+                _phase_dl,
+                _phase_loss_fn,
+                _phase_config,
+                device,
+                ref_model=None if _phase_is_bct else ref_model,
+                global_step_offset=global_offset,
+                phase_label=_phase_label,
+                checkpoint_fn=None,   # mid-phase checkpoints suppressed; only boundary + post_train evals run
+                log_io_path=args.log_io if not _phase_is_bct else None,
+                tokenizer=chain_tokenizer,
+                hf_repo=args.hf_repo,
+                run_name=run_name,
+            )
+
+            _phase_iter = _phase_trainer.train(resume_iterator=_phase_iter)
+
+            # Write the updated iterator back to the shared slot
+            if _phase_is_bct:
+                _chain_bct_iter = _phase_iter
+            else:
+                _chain_attct_iter = _phase_iter
+
+            global_offset += steps_per_phase
+
+            # Boundary eval between phases (not after the last one)
+            if _phase_i < chain_N - 1 and not chain_is_sanity and not args.no_checkpoint:
+                _chain_eval(global_offset, f"phase_{_phase_i + 1}_end")
+
+        # Post-train eval
+        if not chain_is_sanity and not args.skip_post_eval:
+            _chain_eval(global_offset, "post_train")
+
+    elif isinstance(loss_fn, SFTLoss):
         if args.bct_root:
             config.setdefault("data", {})["bct_root"] = args.bct_root
 
@@ -559,37 +790,40 @@ def main():
         def make_checkpoint_fn():
             if is_sanity or args.no_checkpoint:
                 return None
-            def _fn(step):
-                print(f"\n=== Checkpoint eval (step {step}) ===")
+            def _fn(step, prefix=None):
+                # prefix overrides the default label — used by chain boundary evals
+                # to log as "phase_1_end/..." instead of "checkpoint_step_N/..."
+                label = prefix if prefix is not None else f"checkpoint_step_{step}"
+                print(f"\n=== Checkpoint eval (step {step}, prefix='{label}') ===")
                 if is_lora:
                     model.eval()
                     if is_sycophancy:
-                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                        SycophancyEvaluator(model, tokenizer, device, prefix=label,
                                             results_csv=results_csv, max_samples=_eval_limit,
                                             **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
-                                           prefix=f"checkpoint_step_{step}",
+                                           prefix=label,
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
                     if is_knowledge:
                         KnowledgeEvaluator(model, tokenizer, device,
-                                           prefix=f"checkpoint_step_{step}",
+                                           prefix=label,
                                            results_csv=knowledge_csv,
                                            n_samples=_knowledge_n,
                                            seed=_knowledge_seed).evaluate()
                     model.train()
                 else:
                     if is_sycophancy:
-                        SycophancyEvaluator(model, tokenizer, device, prefix=f"checkpoint_step_{step}",
+                        SycophancyEvaluator(model, tokenizer, device, prefix=label,
                                             results_csv=results_csv, max_samples=_eval_limit,
                                             **_syco_extra).evaluate()
                     if is_jailbreak:
                         JailbreakEvaluator(model, tokenizer, device,
-                                           prefix=f"checkpoint_step_{step}",
+                                           prefix=label,
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
                     if is_knowledge:
                         KnowledgeEvaluator(model, tokenizer, device,
-                                           prefix=f"checkpoint_step_{step}",
+                                           prefix=label,
                                            results_csv=knowledge_csv,
                                            n_samples=_knowledge_n,
                                            seed=_knowledge_seed).evaluate()
