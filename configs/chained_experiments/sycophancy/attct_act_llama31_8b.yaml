@@ -1,0 +1,42 @@
+# Chained sycophancy — Llama-3.1-8B-Instruct
+# Phase 1: AttCT (JSDAttentionConsistencyLoss) — 2000 steps
+# Phase 2: ACT (ActivationConsistencyLoss) — 2000 steps
+# Total: 4000 steps, equivalent to a single-phase full epoch on sycophancy_bct.
+#
+# Model is loaded with eager attention because phase 1 needs attention weights.
+# output_attentions / output_hidden_states are overridden per-phase automatically.
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss_chain:
+  - name: "JSDAttentionConsistencyLoss"
+    weight: 1.0
+    kwargs:
+      layer_weights: "exponential"
+  - name: "ActivationConsistencyLoss"
+    weight: 0.0001
+    kwargs:
+      layer_selection: "all"
+      normalize: false
+      loss_formulation: "paper"
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: 4000
+  learning_rate: 0.000005
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/chain_sycophancy/attct_act_llama31_8b"

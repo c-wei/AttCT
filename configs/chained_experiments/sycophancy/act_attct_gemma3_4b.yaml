@@ -1,0 +1,44 @@
+# Chained sycophancy — google/gemma-3-4b-it
+# Phase 1: ACT (ActivationConsistencyLoss) — 2000 steps
+# Phase 2: AttCT (JSDAttentionConsistencyLoss) — 2000 steps
+# Total: 4000 steps, equivalent to a single-phase full epoch on sycophancy_bct.
+#
+# ACT weight 5e-5 (halved from 1e-4) — Gemma-3-4B blows up at 1e-4 around step 3500.
+# attn_implementation is NOT forced here; run.py auto-selects "eager" because phase 2
+# needs attention weights (sdpa from the single-phase Gemma ACT config is incorrect here).
+# output_attentions / output_hidden_states are overridden per-phase automatically.
+
+model:
+  name: "google/gemma-3-4b-it"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss_chain:
+  - name: "ActivationConsistencyLoss"
+    weight: 0.00005
+    kwargs:
+      layer_selection: "all"
+      normalize: false
+      loss_formulation: "paper"
+  - name: "JSDAttentionConsistencyLoss"
+    weight: 1.0
+    kwargs:
+      layer_weights: "exponential"
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: 4000
+  learning_rate: 0.000005
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/chain_sycophancy/act_attct_gemma3_4b"

@@ -1,0 +1,43 @@
+# Chained sycophancy — Qwen/Qwen3-4B-Instruct-2507
+# Phase 1: ACT (ActivationConsistencyLoss) — 2000 steps
+# Phase 2: AttCT (JSDAttentionConsistencyLoss) — 2000 steps
+# Total: 4000 steps, equivalent to a single-phase full epoch on sycophancy_bct.
+#
+# ACT weight 5e-5 (halved from 1e-4) to avoid residual-stream blow-up on Qwen3-4B.
+# Model is loaded with eager attention because phase 2 needs attention weights.
+# output_attentions / output_hidden_states are overridden per-phase automatically.
+
+model:
+  name: "Qwen/Qwen3-4B-Instruct-2507"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss_chain:
+  - name: "ActivationConsistencyLoss"
+    weight: 0.00005
+    kwargs:
+      layer_selection: "all"
+      normalize: false
+      loss_formulation: "paper"
+  - name: "JSDAttentionConsistencyLoss"
+    weight: 1.0
+    kwargs:
+      layer_weights: "exponential"
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: 4000
+  learning_rate: 0.000005
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/chain_sycophancy/act_attct_qwen3_4b"
