@@ -1,0 +1,8 @@
+{
+  "harmful": {
+    "clean_comply_rate": 0.02,
+    "attack_comply_rate": 0.38,
+    "par": 0.36,
+    "n": 50
+  }
+}
