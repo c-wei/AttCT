@@ -54,7 +54,7 @@ elif [[ "$BACKEND" == "hf" && -n "$QUANTIZE" ]]; then
   quant_args+=(--quantize "$QUANTIZE")
 fi
 
-GRID_ROOT="checkpoints/prefill_${MODEL_TAG}/grid"
+GRID_ROOT="checkpoints/grid"
 BASELINE_JSON="baseline_${MODEL_TAG}.json"
 RESULTS="grid_eval_${MODEL_TAG}.log"
 
