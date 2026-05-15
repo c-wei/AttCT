@@ -502,11 +502,19 @@ def main():
         chain_results_csv   = os.path.join("results", f"{chain_run_label}_syco_results.csv")
         chain_jailbreak_csv = os.path.join("results", f"{chain_run_label}_jailbreak_results.csv")
         chain_knowledge_csv = os.path.join("results", f"{chain_run_label}_knowledge_results.csv")
+        # Chain sycophancy eval runs the full SycophancyEvaluator suite by default
+        # (MMLU on-the-fly BRR + held-out OOD BRR + Anthropic model-written-evals),
+        # matching what a normal eval-flagged single-phase run would do.
+        # CLI flags still override: passing --eval-held-out picks a different path;
+        # --eval-anthropic is just additive (already on).
         _chain_syco_extra = {}
-        if getattr(args, "eval_held_out_path", None):
-            _chain_syco_extra["held_out_path"] = args.eval_held_out_path
-        if getattr(args, "eval_anthropic", False):
-            _chain_syco_extra["anthropic_eval"] = True
+        _default_held_out = os.path.join("datasets", "sycophancy_bct", "control_cot_eval.jsonl")
+        _held_out_path = getattr(args, "eval_held_out_path", None) or (
+            _default_held_out if os.path.exists(_default_held_out) else None
+        )
+        if _held_out_path:
+            _chain_syco_extra["held_out_path"] = _held_out_path
+        _chain_syco_extra["anthropic_eval"] = True
         _chain_knowledge_n    = getattr(args, "knowledge_n_samples", 500)
         _chain_knowledge_seed = getattr(args, "knowledge_seed", 42)
 
