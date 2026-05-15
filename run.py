@@ -475,7 +475,10 @@ def main():
             """Run all enabled evaluators with the given W&B prefix."""
             print(f"\n=== Chain eval — step {step}, prefix='{prefix}' ===")
             _eval_model = model
-            if is_lora:
+            # Pre-train eval: run on base model (adapters disabled).
+            # All later evals: run with LoRA adapters active so we measure trained behavior.
+            _disable_adapters = is_lora and prefix == "pre_train"
+            if _disable_adapters:
                 model.disable_adapter_layers()
             model.eval()
             if chain_is_sycophancy:
@@ -494,7 +497,7 @@ def main():
                                    results_csv=chain_knowledge_csv,
                                    n_samples=_chain_knowledge_n,
                                    seed=_chain_knowledge_seed).evaluate()
-            if is_lora:
+            if _disable_adapters:
                 model.enable_adapter_layers()
             model.train()
 
