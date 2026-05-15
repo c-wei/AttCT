@@ -71,6 +71,35 @@ def _infer_output_requirements(loss_name: str) -> dict:
     return {"output_attentions": True, "output_hidden_states": True}
 
 
+class _InterleavedChainLoss(torch.nn.Module):
+    """
+    Dispatcher that alternates between several ConsistencyLoss children, one per
+    optimizer step. Step i fires children[i % N]. Used by --chain-interleave.
+
+    Exposes the union of children's capability flags so the Trainer configures
+    the model forward correctly for every step (e.g. both attentions and hidden
+    states when ACT and AttCT are interleaved).
+    """
+
+    def __init__(self, children):
+        super().__init__()
+        self.children_losses = torch.nn.ModuleList(children)
+        self.n = len(children)
+        self._call_count = 0  # advances on every forward() call
+        self.needs_clean_pass = any(getattr(c, "needs_clean_pass", True) for c in children)
+        self.needs_mlp_hooks  = any(getattr(c, "needs_mlp_hooks", False) for c in children)
+        # MLPHookManager needs a single variant; use the first MLP child's variant.
+        for c in children:
+            if getattr(c, "needs_mlp_hooks", False):
+                self.variant = getattr(c, "variant", "hidden")
+                break
+
+    def forward(self, **kwargs):
+        idx = self._call_count % self.n
+        self._call_count += 1
+        return self.children_losses[idx](**kwargs)
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     merged = base.copy()
     for k, v in override.items():
@@ -181,7 +210,13 @@ def main():
     interleave_group = parser.add_argument_group("interleaved_training")
     interleave_group.add_argument(
         "--interleave", action="store_true",
-        help="Enable interleaved training: alternate AttCT and KL regularization steps",
+        help="[DEPRECATED] Alternate AttCT and KL regularization steps. "
+             "Use --chain-interleave with a loss_chain config for per-step alternation between chain phases.",
+    )
+    interleave_group.add_argument(
+        "--chain-interleave", dest="chain_interleave", action="store_true",
+        help="With a loss_chain config: alternate one optimizer step per chain loss "
+             "(step 1 = phase 1 loss, step 2 = phase 2 loss, …) instead of running each phase sequentially.",
     )
     interleave_group.add_argument(
         "--kl-weight", type=float, default=1.0,
@@ -210,6 +245,17 @@ def main():
     if args.skip_eval:
         args.skip_pre_eval = True
         args.skip_post_eval = True
+
+    if args.interleave:
+        print(
+            "[WARN] --interleave (AttCT + KL regularization) is deprecated. "
+            "Use --chain-interleave with a loss_chain config for per-step alternation between chain phases."
+        )
+    if args.chain_interleave and args.interleave:
+        raise ValueError(
+            "--chain-interleave and --interleave are mutually exclusive. "
+            "Use --chain-interleave with a loss_chain config."
+        )
 
     with open("config.yaml") as f:
         config = yaml.safe_load(f)
@@ -527,15 +573,104 @@ def main():
                 f"loss_chain has {chain_N} phases but total_steps={_chain_total_steps}. "
                 "Increase max_steps or reduce the number of phases."
             )
-        print(f"\nChain: {chain_N} phases × {steps_per_phase} steps = "
-              f"{steps_per_phase * chain_N} total steps (from {_chain_total_steps})")
-        wandb.config.update({"chain": {"n_phases": chain_N, "steps_per_phase": steps_per_phase}},
-                            allow_val_change=True)
+        _chain_total = steps_per_phase * chain_N
+        _mode_label = "interleaved" if args.chain_interleave else "sequential"
+        print(f"\nChain ({_mode_label}): {chain_N} phases × {steps_per_phase} steps = "
+              f"{_chain_total} total steps (from {_chain_total_steps})")
+        wandb.config.update(
+            {"chain": {"n_phases": chain_N, "steps_per_phase": steps_per_phase,
+                       "mode": _mode_label}},
+            allow_val_change=True,
+        )
 
         # Shared iterators — one per dataloader type so each phase continues
         # from where the previous same-type phase left off.
         _chain_attct_iter = iter(_chain_attct_dl) if _chain_attct_dl is not None else None
         _chain_bct_iter   = iter(_chain_bct_dl)   if _chain_bct_dl   is not None else None
+
+        # ── Chain-interleave path: alternate one optimizer step per loss ──────
+        if args.chain_interleave:
+            if config.get("training", {}).get("grad_accumulation_steps", 1) > 1:
+                raise ValueError(
+                    "--chain-interleave requires grad_accumulation_steps=1 so each "
+                    "optimizer step corresponds to a single loss. Set it to 1 in the config."
+                )
+            _any_bct     = any(ph["name"] == "SFTLoss"  for ph in loss_chain)
+            _any_non_bct = any(ph["name"] != "SFTLoss"  for ph in loss_chain)
+            if _any_bct and _any_non_bct:
+                raise ValueError(
+                    "--chain-interleave requires all loss_chain phases to share a "
+                    "dataloader type (all SFTLoss, or all consistency losses). "
+                    "Mixed BCT + AttCT/ACT interleave is not supported."
+                )
+            _all_bct = _any_bct and not _any_non_bct
+
+            # Union of output requirements across all child losses.
+            _union_out_req = {"output_attentions": False, "output_hidden_states": False}
+            for ph in loss_chain:
+                _r = _infer_output_requirements(ph["name"])
+                _union_out_req["output_attentions"]   |= _r["output_attentions"]
+                _union_out_req["output_hidden_states"] |= _r["output_hidden_states"]
+
+            # Build children + composite loss.
+            _children = []
+            for ph in loss_chain:
+                _kw = {**ph.get("kwargs", {})}
+                _kw["output_hidden_states"] = _infer_output_requirements(ph["name"])["output_hidden_states"]
+                _children.append(LOSS_REGISTRY[ph["name"]](weight=ph.get("weight", 1.0), **_kw))
+            _composite_loss = _InterleavedChainLoss(_children).to(device)
+
+            if _all_bct:
+                if _chain_bct_dl is None:
+                    _chain_bct_dl   = get_bct_dataloader(config, split="train")
+                    _chain_bct_iter = iter(_chain_bct_dl)
+                _interleave_dl, _interleave_iter = _chain_bct_dl, _chain_bct_iter
+            else:
+                if _chain_attct_dl is None:
+                    _chain_attct_dl   = get_dataloader(config, split="train")
+                    _chain_attct_iter = iter(_chain_attct_dl)
+                _interleave_dl, _interleave_iter = _chain_attct_dl, _chain_attct_iter
+
+            _interleave_config = {
+                **config,
+                "model":    {**config["model"], **_union_out_req},
+                "training": {**config["training"], "max_steps": _chain_total},
+            }
+
+            # Dynamic phase_label so each step logs under its active loss.
+            _phase_label_fn = lambda step: f"phase_{((step - 1) % chain_N) + 1}"
+
+            _TrainerCls = BCTTrainer if _all_bct else Trainer
+            print(f"\n{'='*60}")
+            print(f"Chain-interleave: cycling {chain_N} losses across {_chain_total} steps")
+            for _i, _ph in enumerate(loss_chain):
+                print(f"  step % {chain_N} == {_i}  →  phase_{_i+1} ({_ph['name']})")
+            print(f"{'='*60}")
+
+            _interleave_trainer = _TrainerCls(
+                model,
+                _interleave_dl,
+                _composite_loss,
+                _interleave_config,
+                device,
+                ref_model=None if _all_bct else ref_model,
+                global_step_offset=0,
+                phase_label=_phase_label_fn,
+                checkpoint_fn=None,
+                log_io_path=args.log_io if not _all_bct else None,
+                tokenizer=chain_tokenizer,
+                hf_repo=args.hf_repo,
+                run_name=run_name,
+            )
+            _interleave_trainer.train(resume_iterator=_interleave_iter)
+
+            # Post-train eval (no boundary evals in interleave mode).
+            if not chain_is_sanity and not args.skip_post_eval:
+                _chain_eval(_chain_total, "post_train")
+
+            # Skip the sequential phase loop below.
+            wandb.finish()
+            return
 
         global_offset = 0
         for _phase_i, phase_cfg in enumerate(loss_chain):

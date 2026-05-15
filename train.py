@@ -48,6 +48,8 @@ class Trainer:
                              chain training so all phases share a single x-axis.
         phase_label:         W&B metric prefix (e.g. "train", "phase_1", "phase_2").
                              Single-phase runs default to "train" for backwards compat.
+                             May also be a callable (global_step: int) -> str for
+                             step-varying labels (used by chain_interleave mode).
     """
 
     def __init__(
@@ -92,6 +94,9 @@ class Trainer:
         self.run_name = run_name
         self.global_step_offset = global_step_offset
         self.phase_label = phase_label
+        # When phase_label is a callable, treat the static label as "chain_interleave"
+        # for places (e.g. checkpoint folder names) that need a single string.
+        self._static_phase_label = phase_label if isinstance(phase_label, str) else "chain_interleave"
 
         # IO logging — open file handle if path provided, else None
         self._log_io_file = open(log_io_path, "w") if log_io_path is not None else None
@@ -157,6 +162,12 @@ class Trainer:
                 lr=train_cfg["learning_rate"],
                 weight_decay=train_cfg.get("weight_decay", 0.0),
             )
+
+    def _phase_label_for(self, step: int) -> str:
+        """Resolve phase_label, allowing callables for step-varying labels."""
+        if callable(self.phase_label):
+            return self.phase_label(step)
+        return self.phase_label
 
     def _forward(self, input_ids, attention_mask):
         import torch
@@ -274,16 +285,17 @@ class Trainer:
 
                     if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
                         effective_step = self.global_step_offset + global_step
-                        self._save_checkpoint(tag=f"{self.phase_label}_step_{global_step}")
-                        mid_prefix = f"{self.phase_label}_step_{global_step}"
-                        print(f"\n[Checkpoint] Step {effective_step} ({self.phase_label}) — running behavioral eval...")
+                        _ckpt_label = self._static_phase_label
+                        self._save_checkpoint(tag=f"{_ckpt_label}_step_{global_step}")
+                        mid_prefix = f"{_ckpt_label}_step_{global_step}"
+                        print(f"\n[Checkpoint] Step {effective_step} ({_ckpt_label}) — running behavioral eval...")
                         self.checkpoint_fn(effective_step, prefix=mid_prefix)
                         self.model.train()
 
                     if global_step % self.log_every == 0:
                         self._log(1, global_step, loss_dict)
 
-            print(f"Phase '{self.phase_label}' complete — {global_step} steps.")
+            print(f"Phase '{self._static_phase_label}' complete — {global_step} steps.")
             self._print_layer_delta()
             self._cleanup()
             return resume_iterator
@@ -315,7 +327,7 @@ class Trainer:
                         if self.checkpoint_fn is not None and global_step in self.checkpoint_steps:
                             effective_step = self.global_step_offset + global_step
                             self._save_checkpoint(tag=f"step_{global_step}")
-                            mid_prefix = f"{self.phase_label}_step_{global_step}"
+                            mid_prefix = f"{self._static_phase_label}_step_{global_step}"
                             print(f"\n[Checkpoint] Step {effective_step} — running behavioral eval...")
                             self.checkpoint_fn(effective_step, prefix=mid_prefix)
                             self.model.train()
@@ -472,7 +484,7 @@ class Trainer:
 
     def _log(self, epoch: int, step: int, loss_dict: dict):
         loss_val = loss_dict["loss"].item()
-        p = self.phase_label
+        p = self._phase_label_for(step)
         w_step = self.global_step_offset + step
 
         metrics = {
@@ -503,9 +515,12 @@ class Trainer:
         if "layer_losses" in loss_dict:
             for i, layer_loss in enumerate(loss_dict["layer_losses"]):
                 metrics[f"{p}/layer_{i:02d}_loss"] = layer_loss
-            if not self._first_layer_losses:
-                self._first_layer_losses = list(loss_dict["layer_losses"])
-            self._last_layer_losses = list(loss_dict["layer_losses"])
+            # Skip end-of-train per-layer delta when phase varies step-to-step:
+            # mixing scales across alternating losses would produce a meaningless summary.
+            if not callable(self.phase_label):
+                if not self._first_layer_losses:
+                    self._first_layer_losses = list(loss_dict["layer_losses"])
+                self._last_layer_losses = list(loss_dict["layer_losses"])
 
         wandb.log(metrics, step=w_step)
 
