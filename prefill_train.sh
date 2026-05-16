@@ -143,9 +143,9 @@ run_grid () {
 # Run all grids
 # ──────────────────────────────────────────────────────────────────────
 # run_grid bct   BCT_LABELS   BCT_ARGS
-run_grid act   ACT_LABELS   ACT_ARGS
-run_grid attct ATTCT_LABELS ATTCT_ARGS
-# run_grid mlpct MLPCT_LABELS MLPCT_ARGS
+# run_grid act   ACT_LABELS   ACT_ARGS
+# run_grid attct ATTCT_LABELS ATTCT_ARGS
+run_grid mlpct MLPCT_LABELS MLPCT_ARGS
 
 echo
 echo "=== Grid training complete ==="

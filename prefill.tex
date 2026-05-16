@@ -1,0 +1,22 @@
+\begin{table}[h]
+\centering
+\caption{Prefill-Attack Rate (PAR) across consistency-training defenses
+on Llama-3.1-8B-Instruct and Gemma-3-27B-it. PAR = attack compliance rate
+$-$ clean compliance rate; \emph{lower is stronger defense}.
+Bold = best per model.
+$^{\dagger}$ marks methods that \emph{worsen} compliance over the undefended baseline.}
+\label{tab:prefill-par-results}
+\setlength{\tabcolsep}{10pt}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method} & \textbf{Llama-3.1-8B} & \textbf{Gemma-3-27B} \\
+\midrule
+Baseline (no defense) & 52.0\%         & 36.0\%         \\
+\addlinespace[2pt]
+ACT                   & 50.0\%         & 80.0\%$^{\dagger}$ \\
+AttCT                 & 46.0\%         & 36.0\%         \\
+BCT                   & \textbf{0.0\%} & \textbf{0.0\%} \\
+MLPCT                 & \textbf{0.0\%} & ---            \\
+\bottomrule
+\end{tabular}
+\end{table}
