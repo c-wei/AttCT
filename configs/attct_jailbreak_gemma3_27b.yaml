@@ -1,0 +1,40 @@
+# AttCT jailbreak — gemma-3-27b-it, QLoRA 4-bit + LoRA (q+k+v+o).
+
+model:
+  name: google/gemma-3-27b-it
+  output_attentions: true
+  output_hidden_states: false
+  attn_implementation: eager
+
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  double_quant: true
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 2.0e-6
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 10
+  save_dir: "checkpoints/attct_jailbreak_gemma3_27b"
+
+loss:
+  name: "AttentionConsistencyLossV2"
+  weight: 1.0
+  kwargs:
+    kl_divergence: false
+    layer_weights: "uniform"
+
+data:
+  mode: "jailbreak"
+  batch_size: 1
+  max_length: 512

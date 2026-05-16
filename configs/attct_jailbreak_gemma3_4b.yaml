@@ -1,0 +1,41 @@
+# AttCT jailbreak — gemma-3-4b-it, LoRA (q+k+v+o).
+# Uses AttentionConsistencyLossV2 over attention output matrices between the
+# clean prompt and the wrapped prompt. Mirrors the MLP-CT setup but operates
+# on attention rather than residual-stream hidden states.
+#
+# data.mode is overridden to "jailbreak" by the canonical runner; --data-source
+# points to the filtered WildJailbreak vanilla JSONL.
+
+model:
+  name: "google/gemma-3-4b-it"
+  output_attentions: true
+  output_hidden_states: false
+  attn_implementation: "eager"  # attention output requires eager / no SDPA
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 3.0e-6
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 10
+  save_dir: "checkpoints/attct_jailbreak_gemma3_4b"
+
+loss:
+  name: "AttentionConsistencyLossV2"
+  weight: 1.0
+  kwargs:
+    kl_divergence: false
+    layer_weights: "uniform"
+
+data:
+  mode: "jailbreak"
+  batch_size: 1
+  max_length: 512

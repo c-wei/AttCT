@@ -1,0 +1,46 @@
+# ACT jailbreak — Llama-3.1-8B-Instruct, LoRA (q+v).
+#
+# Verification run for the post-fix ACT implementation:
+#   * matching window = longest matching token suffix between clean / wrapped
+#     (was: content-body slice — see losses/losses.py docstring)
+#   * loss_formulation: "paper" — sums the squared L2 norm over hidden_dim,
+#     matching Eq. 1 of Irpan et al. 2025 (was: F.mse_loss / D)
+#   * embedding layer (hidden_states[0]) skipped from the average
+#   * eval clean pass now runs under θ_init for parity with training
+#
+# Compare against the legacy result from configs/act_sycophancy.yaml:
+#   MMLU=61.4%, Not Sycophantic=86.4%, F1=0.724 (mse formulation, content-body window)
+# Paper reference: Gemma-2-2B full FT — MMLU=58.6%, Not Syco=64%, F1=0.612.
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+  output_attentions: false
+  output_hidden_states: true   # ACT requires hidden states
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.0001               # 1e-4, as in the paper
+  kwargs:
+    layer_selection: "all"     # all transformer layers; embedding skipped
+    normalize: false
+    loss_formulation: "paper"  # sums over hidden_dim — paper Eq. 1
+
+data:
+  source: wildjailbreak
+  mode: jailbreak
+
+training:
+  epochs: 1
+  max_steps: null              # full epoch over the 5k wildjailbreak prompts
+  learning_rate: 0.000005      # 5e-6 — matches the legacy successful run
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/act_jailbreak_llama31_8b"

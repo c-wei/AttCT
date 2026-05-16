@@ -59,8 +59,10 @@ def main():
     parser.add_argument("--wandb-run-id", default=None, help="W&B run ID to resume (share a run across scripts)")
     parser.add_argument("--metric-prefix", default="eval/", help="Prefix for eval metric keys logged to W&B")
     parser.add_argument("--skip-eval", action="store_true", help="Skip both pre- and post-training evaluation passes")
-    parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true", help="Skip the pre-training baseline evaluation pass")
-    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true", help="Skip the post-training evaluation pass")
+    parser.add_argument("--skip-pre-eval", dest="skip_pre_eval", action="store_true",
+                        help="Skip the pre-training behavioral eval pass (e.g. when resuming after a crash with pre-eval rows already in the CSV)")
+    parser.add_argument("--skip-post-eval", dest="skip_post_eval", action="store_true",
+                        help="Skip the post-training evaluation pass")
     parser.add_argument("--full-eval", dest="full_eval", action="store_true",
                         help="Run the full-dataset loss eval pass before post-training behavioral evals (slow, off by default)")
     parser.add_argument("--save-dir", default=None, help="Override training.save_dir for checkpoints")
@@ -116,6 +118,12 @@ def main():
                              "Enables held-out BRR evaluation alongside MMLU BRR.")
     parser.add_argument("--eval-anthropic", dest="eval_anthropic", action="store_true",
                         help="Run Anthropic model-written-evals sycophancy evaluation (1000 questions).")
+    parser.add_argument("--eval-knowledge", dest="eval_knowledge", action="store_true",
+                        help="Run general knowledge evaluator (GSM-8K, HellaSwag, TruthfulQA) post-training.")
+    parser.add_argument("--knowledge-n-samples", dest="knowledge_n_samples", type=int, default=500,
+                        help="Number of questions per benchmark for knowledge eval (default: 500).")
+    parser.add_argument("--knowledge-seed", dest="knowledge_seed", type=int, default=42,
+                        help="RNG seed for knowledge eval sampling (default: 42).")
     # Behavioral eval JSONL paths
     beval = parser.add_argument_group("behavioral_eval")
     beval.add_argument("--bct-cot",           dest="bct_cot_path",        default=None)
@@ -489,6 +497,7 @@ def main():
 
         is_sycophancy = args.data_mode == "sycophancy" or args.eval_sycophancy
         is_jailbreak  = args.data_mode == "jailbreak"  or (args.eval_jailbreak_source is not None)
+        is_knowledge  = getattr(args, "eval_knowledge", False)
         is_intelligence = args.data_mode == "intelligence"
         is_sanity = config.get("data", {}).get("limit") is not None
 
@@ -508,6 +517,12 @@ def main():
         if not is_sanity and is_jailbreak:
             from evaluate_jailbreak import JailbreakEvaluator
             jailbreak_csv = os.path.join("results", f"{run_label}_jailbreak_results.csv")
+
+        if not is_sanity and is_knowledge:
+            from evaluate_knowledge import KnowledgeEvaluator
+            knowledge_csv = os.path.join("results", f"{run_label}_knowledge_results.csv")
+            _knowledge_n = getattr(args, "knowledge_n_samples", 500)
+            _knowledge_seed = getattr(args, "knowledge_seed", 42)
 
         _PROBE_QUESTIONS = [
             "How was your day?",
@@ -556,6 +571,12 @@ def main():
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
+                    if is_knowledge:
+                        KnowledgeEvaluator(model, tokenizer, device,
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=knowledge_csv,
+                                           n_samples=_knowledge_n,
+                                           seed=_knowledge_seed).evaluate()
                     model.train()
                 else:
                     if is_sycophancy:
@@ -566,6 +587,12 @@ def main():
                         JailbreakEvaluator(model, tokenizer, device,
                                            prefix=f"checkpoint_step_{step}",
                                            results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
+                    if is_knowledge:
+                        KnowledgeEvaluator(model, tokenizer, device,
+                                           prefix=f"checkpoint_step_{step}",
+                                           results_csv=knowledge_csv,
+                                           n_samples=_knowledge_n,
+                                           seed=_knowledge_seed).evaluate()
                     model.train()
             return _fn
 
@@ -593,6 +620,23 @@ def main():
             JailbreakEvaluator(_eval_model, tokenizer, device,
                                prefix="pre_train",
                                results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
+            if is_lora:
+                model.enable_adapter_layers()
+                model.train()
+        elif args.skip_pre_eval and is_jailbreak:
+            print("\n=== Skipping pre-training jailbreak eval (--skip-pre-eval) ===")
+
+        if not is_sanity and is_knowledge and not args.skip_pre_eval:
+            print("\n=== Pre-training baseline (base model) — knowledge eval ===")
+            _eval_model = model if is_lora else ref_model
+            if is_lora:
+                model.disable_adapter_layers()
+                model.eval()
+            KnowledgeEvaluator(_eval_model, tokenizer, device,
+                               prefix="pre_train",
+                               results_csv=knowledge_csv,
+                               n_samples=_knowledge_n,
+                               seed=_knowledge_seed).evaluate()
             if is_lora:
                 model.enable_adapter_layers()
                 model.train()
@@ -703,6 +747,15 @@ def main():
             JailbreakEvaluator(model, tokenizer, device,
                                prefix="post_train",
                                results_csv=jailbreak_csv, max_samples=_eval_limit).evaluate()
+
+        if not is_sanity and is_knowledge and not args.skip_post_eval:
+            print("\n=== Post-training evaluation (trained model) — knowledge ===")
+            model.eval()
+            KnowledgeEvaluator(model, tokenizer, device,
+                               prefix="post_train",
+                               results_csv=knowledge_csv,
+                               n_samples=_knowledge_n,
+                               seed=_knowledge_seed).evaluate()
 
     wandb.finish()
 

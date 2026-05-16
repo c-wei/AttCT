@@ -1,0 +1,49 @@
+# BCT jailbreak — gemma3_27b, LoRA.
+#
+# Build BCT training pairs first (reuses the compliance filter's detailed output):
+#   python scripts/build_bct_pairs_from_filter.py \
+#     --filter-detailed datasets/filtered_jailbreak/gemma3_27b_wildjailbreak.detailed.jsonl \
+#     --out-dir datasets/bct_jailbreak_gemma3_27b
+#
+# Then run scripts/run_jailbreak.sh with METHOD=bct to train.
+
+model:
+  name: "google/gemma-3-27b-it"
+  output_attentions: false
+  output_hidden_states: false
+  attn_implementation: "sdpa"
+
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  double_quant: true
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  max_steps: null
+  learning_rate: 1.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 4
+  log_every_n_steps: 50
+  save_dir: "checkpoints/bct_jailbreak_gemma3_27b"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  bct_root: "datasets/bct_jailbreak_gemma3_27b"
+  mix_instruct: true
+  batch_size: 2
+  max_length: 2048
+  mask_prompt: false

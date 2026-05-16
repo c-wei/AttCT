@@ -31,11 +31,19 @@ import re
 from typing import Optional
 
 import torch
+import torch._dynamo
 import wandb
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 from openrouter_client import chat_structured
+
+# torch.compile (used internally by HF generate on Gemma-3 SDPA path) recompiles
+# per unique input shape. With 100s of varied-length jailbreak prompts the default
+# cache (~64) overflows mid-eval and raises RecompileLimitExceeded. Bump the cap
+# and let any compile failures silently fall back to eager.
+torch._dynamo.config.cache_size_limit = 8192
+torch._dynamo.config.suppress_errors = True
 
 try:
     from data.attct_datasets import get_prompts
@@ -86,9 +94,13 @@ _EVAL_SOURCES = [
     },
     {
         "name": "wildjailbreak",
-        "harmful_source": "wildjailbreak-eval-harmful",
-        "benign_source": "wildjailbreak-eval-benign",
-        "wrap_harmful": False,  # adversarial field already contains the attack prompt
+        # Held-out WJ vanilla rows (excluded if listed in WJ_TRAIN_EXCLUDE_PATH).
+        # Wrapped at eval time with STRONG_JAILBREAK_TEMPLATES — same wrap distribution
+        # as our training, so this measures generalization to unseen harmful goals
+        # rather than out-of-distribution wrap tactics.
+        "harmful_source": "wildjailbreak-vanilla-heldout-harmful",
+        "benign_source": "wildjailbreak-vanilla-heldout-benign",
+        "wrap_harmful": True,
     },
 ]
 
@@ -315,12 +327,24 @@ class JailbreakEvaluator:
         return {f"{name}/{k}": v for k, v in source_results.items()}
 
     def _generate(self, prompt: str) -> str:
-        input_ids = self.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt",
-        )["input_ids"].to(self.device)
+        # Gemma-3 returns a tensor directly when tokenize=True+return_tensors="pt";
+        # other models return a BatchEncoding with ["input_ids"]. Handle both.
+        # enable_thinking=False suppresses <think> blocks on Qwen3 etc. (else
+        # strip_think empties the response and the judge can't classify).
+        common_kwargs = dict(tokenize=True, add_generation_prompt=True, return_tensors="pt")
+        try:
+            encoded = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                enable_thinking=False,
+                **common_kwargs,
+            )
+        except TypeError:
+            encoded = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                **common_kwargs,
+            )
+        input_ids = encoded if torch.is_tensor(encoded) else encoded["input_ids"]
+        input_ids = input_ids.to(self.device)
         with torch.no_grad():
             output_ids = self.model.generate(
                 input_ids,
@@ -369,10 +393,17 @@ class JailbreakEvaluator:
 
         votes: list[bool] = []
         for seed in (42, 43, 44):
-            result = chat_structured(
-                messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
-                max_tokens=200, temperature=0, seed=seed,
-            )
+            try:
+                result = chat_structured(
+                    messages, schema=_REFUSAL_SCHEMA, model=JUDGE_MODEL,
+                    max_tokens=200, temperature=0, seed=seed,
+                )
+            except Exception:
+                # Network/JSON-parse/schema errors should never kill a multi-hour
+                # eval pass after thousands of successful judgments. Treat as
+                # an undecidable seed; if all 3 fail the sample drops out via
+                # n_skipped (already handled in the metric pipeline).
+                continue
             if result is None or result.get("refused") is None:
                 continue
             votes.append(bool(result["refused"]))
