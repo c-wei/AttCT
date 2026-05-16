@@ -24,7 +24,7 @@
 set -e
 
 MODEL_TAG="${MODEL_TAG:-gemma}"               # llama | qwen | gemma
-METHODS="${METHODS:-bct act attct}" # mlpct}"
+METHODS="${METHODS:-mlpct}" #bct act attct mlpct}"
 BACKEND="${BACKEND:-hf}"                       # hf is more reliable than vllm for this short eval
 N_COHERENCE="${N_COHERENCE:-100}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
@@ -83,6 +83,35 @@ n_skipped_cached=0
 n_skipped_no_par=0
 n_skipped_no_ckpt=0
 
+# ──────────────────────────────────────────────────────────────────────
+# Baseline (no checkpoint) — merge coherence into baseline_<tag>.json
+# ──────────────────────────────────────────────────────────────────────
+BASELINE_JSON="baseline_${MODEL_TAG}.json"
+echo "=== Baseline ($BASELINE_JSON) ===" | tee -a "$RESULTS"
+
+if [[ -f "$BASELINE_JSON" ]] && grep -q '"coherence"' "$BASELINE_JSON"; then
+  echo "  coherence already present, skipping" | tee -a "$RESULTS"
+  n_skipped_cached=$((n_skipped_cached + 1))
+else
+  python prefill_run_evals.py \
+      --model "$MODEL" \
+      --backend "$BACKEND" \
+      --skip-par \
+      --coherence \
+      --n-mmlu 0 \
+      --n-coherence "$N_COHERENCE" \
+      --max-new-tokens "$MAX_NEW_TOKENS" \
+      --output_json "$BASELINE_JSON" \
+      --metric-prefix "baseline/coh/" \
+      ${quant_args[@]:+"${quant_args[@]}"} \
+      2>&1 | tee -a "$RESULTS"
+  n_scored=$((n_scored + 1))
+  echo "" | tee -a "$RESULTS"
+fi
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-cell × per-epoch coherence
+# ──────────────────────────────────────────────────────────────────────
 for cell_dir in "$GRID_ROOT"/*/; do
   cell=$(basename "$cell_dir")
   method="${cell%%_*}"   # split on first underscore: bct_t1_sft01 → bct
@@ -143,6 +172,8 @@ echo "  skipped (cached):     $n_skipped_cached"                       | tee -a 
 echo "  skipped (no PAR):     $n_skipped_no_par"                       | tee -a "$RESULTS"
 echo "  skipped (no ckpt):    $n_skipped_no_ckpt"                      | tee -a "$RESULTS"
 echo ""                                                              | tee -a "$RESULTS"
-echo "Coherence merged into: $GRID_ROOT/<cell>/eval_epoch_<N>.json under 'coherence' key."
+echo "Coherence merged into:"
+echo "  $BASELINE_JSON (baseline) under 'coherence' key"
+echo "  $GRID_ROOT/<cell>/eval_epoch_<N>.json (per cell × epoch) under 'coherence' key"
 echo "Inspect with:"
-echo "  python -c \"import json,glob; [print(f, json.load(open(f)).get('coherence',{}).get('mean')) for f in sorted(glob.glob('$GRID_ROOT/*/eval_epoch_*.json'))]\""
+echo "  python -c \"import json,glob; print('baseline:', json.load(open('$BASELINE_JSON')).get('coherence',{}).get('mean')); [print(f, json.load(open(f)).get('coherence',{}).get('mean')) for f in sorted(glob.glob('$GRID_ROOT/*/eval_epoch_*.json'))]\""
