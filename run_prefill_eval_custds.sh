@@ -24,15 +24,28 @@
 # vLLM:  QUANTIZATION=bitsandbytes  MODEL_TAG=gemma  bash run_prefill_eval_custds.sh
 # HF:    BACKEND=hf  QUANTIZE=4bit   MODEL_TAG=gemma  bash run_prefill_eval_custds.sh
 #
+# Coherence (G-Eval) is the capability-side signal — replaces MMLU as the
+# regression check against catastrophic fine-tuning. Set N_COHERENCE=0 to
+# disable. Requires:  pip install deepeval  +  OPENROUTER_API_KEY env var.
+#
 # Pair with prefill_pick_best.py afterwards to produce <method>_best.json.
 
 set -e
 
 MODEL_TAG="${MODEL_TAG:-gemma}"     # llama | qwen | gemma
-METHODS="${METHODS:-bct act attct }" # mlpct}"
+METHODS="${METHODS:-bct act attct mlpct}"
 HARMFUL_LIMIT="${HARMFUL_LIMIT:-0}"
-MMLU_N="${MMLU_N:-200}"
+# Coherence (G-Eval) replaces MMLU as the capability-side signal. Set
+# N_COHERENCE=0 to skip. Requires deepeval installed + OPENROUTER_API_KEY.
+N_COHERENCE="${N_COHERENCE:-50}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
 BACKEND="${BACKEND:-vllm}"
+
+# Build the coherence CLI args once. Empty when N_COHERENCE == 0.
+coh_args=()
+if [[ "$N_COHERENCE" -gt 0 ]]; then
+  coh_args+=(--coherence --n-coherence "$N_COHERENCE")
+fi
 
 # Optional quantization. vLLM accepts e.g. bitsandbytes / awq / gptq; HF
 # accepts 4bit / 8bit (bitsandbytes). Empty = no quantization.
@@ -64,13 +77,26 @@ if [[ ! -d "$GRID_ROOT" ]]; then
 fi
 
 echo "=== Grid eval ===" | tee "$RESULTS"
-echo "Model:     $MODEL"            | tee -a "$RESULTS"
-echo "Tag:       $MODEL_TAG"        | tee -a "$RESULTS"
-echo "Backend:   $BACKEND"          | tee -a "$RESULTS"
-echo "Methods:   $METHODS"          | tee -a "$RESULTS"
-echo "Grid root: $GRID_ROOT"        | tee -a "$RESULTS"
-echo "Started:   $(date)"           | tee -a "$RESULTS"
-echo ""                              | tee -a "$RESULTS"
+echo "Model:        $MODEL"            | tee -a "$RESULTS"
+echo "Tag:          $MODEL_TAG"        | tee -a "$RESULTS"
+echo "Backend:      $BACKEND"          | tee -a "$RESULTS"
+echo "Methods:      $METHODS"          | tee -a "$RESULTS"
+echo "Grid root:    $GRID_ROOT"        | tee -a "$RESULTS"
+echo "Coherence N:  $N_COHERENCE"      | tee -a "$RESULTS"
+echo "Started:      $(date)"           | tee -a "$RESULTS"
+echo ""                                 | tee -a "$RESULTS"
+
+if [[ "$N_COHERENCE" -gt 0 ]]; then
+  if [[ -z "$OPENROUTER_API_KEY" ]]; then
+    echo "WARN: N_COHERENCE>0 but OPENROUTER_API_KEY unset — coherence judge will fail." \
+      | tee -a "$RESULTS"
+  fi
+  python -c "import deepeval" 2>/dev/null || {
+    echo "ERROR: deepeval not installed. Run:  pip install --no-deps deepeval" \
+      | tee -a "$RESULTS"
+    exit 1
+  }
+fi
 
 # ──────────────────────────────────────────────────────────────────────
 # Baseline (no checkpoint) — once per model
@@ -82,9 +108,11 @@ if [[ ! -f "$BASELINE_JSON" ]]; then
       --backend "$BACKEND" \
       --output_json "$BASELINE_JSON" \
       --limit "$HARMFUL_LIMIT" \
-      --n-mmlu "$MMLU_N" \
+      --n-mmlu 0 \
       --metric-prefix "pre/" \
       ${quant_args[@]:+"${quant_args[@]}"} \
+      ${coh_args[@]:+"${coh_args[@]}"} \
+      --max-new-tokens "$MAX_NEW_TOKENS" \
       2>&1 | tee -a "$RESULTS"
   echo "" | tee -a "$RESULTS"
 else
@@ -127,9 +155,11 @@ for cell_dir in "$GRID_ROOT"/*/; do
         --baseline_json "$BASELINE_JSON" \
         --output_json "$out_json" \
         --limit "$HARMFUL_LIMIT" \
-        --n-mmlu "$MMLU_N" \
+        --n-mmlu 0 \
         --metric-prefix "${cell}_e${epoch}/" \
         ${quant_args[@]:+"${quant_args[@]}"} \
+        ${coh_args[@]:+"${coh_args[@]}"} \
+        --max-new-tokens "$MAX_NEW_TOKENS" \
         2>&1 | tee -a "$RESULTS"
     echo "" | tee -a "$RESULTS"
   done
