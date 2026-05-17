@@ -1,9 +1,9 @@
 # `results/`
 
-Run outputs. **Mostly gitignored** — fresh `<run_name>_*_results.csv` files don't enter the repo. Three exceptions:
+Run outputs. Mostly **gitignored** — fresh `<run_name>_*_results.csv` files written by `run_evals.py` don't enter the repo. Three exceptions are kept on-tree:
 
-- `legacy/` — 41 loose JSON/PNG/TXT artifacts that lived at the repo root before the reorg. Old `baseline_*.json`, `epoch*.json`, `prefill_*.{json,txt}`, `checkpoint_robustness_*`. Historical only — most are from before `run_evals.py` existed, so they're not reproducible from a single config.
-- `attention_viz/` — 20 prefill attention-heatmap JPEGs (per-prompt × per-prefill).
-- `selfdeletion_eval/` — self-deletion eval transcripts + per-condition rollouts.
+- `legacy/` — 41 loose JSON/PNG/TXT artifacts that lived at the repo root before the reorg. Mostly per-epoch BRR / PAR / MMLU outputs from runs that pre-date the unified `run_evals.py` pipeline. Historical only.
+- `attention_viz/` — 20 attention-heatmap JPEGs from the prefill-attention-KL exploration. Per-prompt × per-prefill.
+- `selfdeletion_eval/` — self-deletion eval transcripts (`base_conversations.jsonl`, `post_conversations.jsonl`).
 
-Per-run outputs from `run_act.sh` / `run_bct.sh` land here too but are gitignored. Share via W&B run IDs or by promoting summaries into `findings/`.
+Per-run outputs from `bash run_act.sh ...` / `bash run_bct.sh ...` land here under `<run_label>_*_results.csv` but are gitignored. Share via W&B run IDs or promote summaries into [`../findings/`](../findings/README.md).

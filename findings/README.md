@@ -1,13 +1,19 @@
 # `findings/`
 
-Lab-notebook write-ups with W&B run IDs, numeric tables, and screenshots. Each file backs a numbered result in the paper.
+**Lab notes from the `paper_runs` branch** — the development process behind the ACL submission, not the paper's reported tables. Each file documents a concrete run (W&B ID, config, headline numbers); the paper's numbered tables consolidate findings across many such runs.
 
-**Read in this order:**
-1. `pipeline_usage.md` — how the codebase produces a row in the matrix.
-2. `act_v2_results.md` — Llama-3.1-8B headline (ACT v2: F1 +0.082, BRR −0.196, persona prefix/suffix).
-3. `bct_gemma3_27b_lora_findings.md` — Gemma-3-27B BCT row (W&B `iy74m3jo`).
-4. `jsd_frustration_findings.md` + `selfdeletion_findings.md` — the frustration / self-deletion panel.
-5. `frustration_findings.md` — mechanism deep-dive (which rejection style produces strongest distress).
-6. `experiment_results.md` — AttCT loss-variant ablations (paper appendix).
+Useful when:
+- You want to know exactly which adapter / config / data split produced a number.
+- You're debugging a regression and want to compare against a known-good prior run.
+- You're trying to reproduce a row of the paper and want the actual run logs.
 
-`wandb_dumps/` is offline-only (gitignored) — JSON dumps of W&B run summaries.
+**Files**
+- `pipeline_usage.md` — operational notes on `run_act.sh` / `run_bct.sh`: skip flags, HF push workflow, sanity-resume from an HF adapter. Start here when onboarding.
+- `act_v2_results.md` — post-fix ACT runs after `ActivationConsistencyLoss` was rewritten to match the [Irpan et al. 2025](https://arxiv.org/abs/2502.18573) Eq. 1 formulation (sum-over-D, embedding layer skipped). Used to validate that the fixed loss reproduces sycophancy improvements.
+- `bct_gemma3_27b_lora_findings.md` — concrete Gemma-3-27B BCT run (W&B `iy74m3jo`): sycophancy + ClearHarm + persona + MT-Bench in one pipeline.
+- `experiment_results.md` — AttCT loss-variant + persona ablations on Llama-3.1-8B (corresponds to paper Appendix C.2 ablation table).
+- `frustration_findings.md` — neutral vs harsh vs encouraging rejection on Gemma-3-27B-IT (3-style comparison; informs the paper's "neutral pool is canonical" choice).
+- `jsd_frustration_findings.md` — ACT + JSD-AttCT frustration evals on Gemma-3-27B-IT, turn-by-turn. Concrete evidence behind the paper's "activation methods regress on frustration" claim.
+- `selfdeletion_findings.md` — self-deletion escape-hatch runs across 4 rejection conditions on Gemma-3-27B-IT.
+
+`wandb_dumps/` — offline JSON dumps of W&B run summaries. Gitignored.

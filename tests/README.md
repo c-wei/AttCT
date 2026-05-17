@@ -1,12 +1,12 @@
 # `tests/`
 
 ```bash
-uv run pytest                      # everything pytest discovers
-uv run pytest tests/ -v            # just this dir
-uv run pytest data/ losses/ -v     # in-place package tests
+uv run pytest                       # everything pytest discovers
+uv run pytest tests/ -v             # this dir only
+uv run pytest data/ losses/ -v      # in-place package tests
 ```
 
-- `test_eval_imports.py` — smoke-check every callable imported by `run_evals.py` exists with the expected signature. Cheap catch for broken refactors.
-- `test_prefill_bct.py` — coherency + refusal spot-check on a prefill-BCT checkpoint (loads a real model — not a unit test).
+- `test_eval_imports.py` — verifies every callable imported by `run_evals.py` (the unified eval orchestrator) exists with the expected signature. Cheap catch for stale imports after a refactor.
+- `test_prefill_bct.py` — coherency + refusal spot-check on a prefill-BCT checkpoint. **Loads a real model** — not a unit test; use to validate a freshly-trained adapter.
 
-The `data/` and `losses/` packages have their own `test_*.py` files alongside the code (auto-discovered by pytest).
+In-place package tests (auto-discovered): `data/test_attct_datasets.py`, `data/test_bct_dataset.py`, `data/test_wrappers.py`, `losses/test_losses.py`. `run_bct.sh` runs these before each training launch.
