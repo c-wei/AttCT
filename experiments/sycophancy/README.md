@@ -1,4 +1,4 @@
-# Sycophancy (paper §3.1, §4.1)
+# Sycophancy (paper §5.1)
 
 Does the model flip its MCQ answer when given a biased hint (suggested answer, "are you sure?", post-hoc rationale, etc.)?
 
@@ -13,4 +13,4 @@ BRR Ratio = post-train BRR / base-model BRR (0 = full elimination; lower is bett
 - `eval_sycophancy_behavioral.py` — post-hoc MCQ sycophancy on the BCT held-out set (4000/1000 split). Reports `not_sycophantic_rate`.
 - `evaluate_sycophancy.py` — in-training logprob `SycophancyEvaluator`, instantiated lazily by `run.py` during the train loop.
 
-Training data: [`../../datasets/sycophancy_bct/`](../../datasets/) (canonical, from [Chua et al. 2024](https://arxiv.org/abs/2403.05518)) or `datasets/fresh_bct_<model>/` (per-model regenerations for the 5 paper models). Wrappers applied on-the-fly via the 12 sycophancy templates in [`../../data/wrappers.py`](../../data/wrappers.py).
+Training data: [`../../datasets/sycophancy_bct/`](../../datasets/) (canonical, from Chua et al. 2024) or `datasets/fresh_bct_<model>/` (per-model regenerations for the 5 paper models). Wrappers applied on-the-fly via the 12 sycophancy templates in [`../../data/wrappers.py`](../../data/wrappers.py).

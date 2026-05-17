@@ -2,7 +2,7 @@
 
 Code for the ACL paper *Consistency Training Along the Transformer Stack: New Targets and Threats*. The paper extends consistency training along two axes:
 
-- **New internal targets.** Two new methods — **MLPCT** (cosine on SwiGLU post-activation MLP hidden states) and **AttCT** (Jensen–Shannon divergence on per-head attention weights, with interleaved KL regularization) — added to the prior **BCT** (SFT on output token distributions; [Chua et al. 2024](https://arxiv.org/abs/2403.05518)) and **ACT** (MSE on residual-stream activations; [Irpan et al. 2025](https://arxiv.org/abs/2502.18573)).
+- **New internal targets.** Two new methods — **MLPCT** (cosine on SwiGLU post-activation MLP hidden states) and **AttCT** (Jensen–Shannon divergence on per-head attention weights, with interleaved KL regularization) — added to the prior **BCT** (SFT on output token distributions; Chua et al. 2024) and **ACT** (MSE on residual-stream activations; Irpan et al. 2025).
 - **New threat models.** Persona in-context-learning attacks, prefill attacks, and multi-turn adversarial frustration (with self-deletion), in addition to prior sycophancy and jailbreak.
 
 The headline finding is that the right consistency *target* depends on the structural locus of the misalignment: activation-level objectives (ACT/MLPCT/AttCT) win on wrapper-induced threats (sycophancy, jailbreak); output-level BCT wins on trajectory-level threats (prefill, frustration, persona-prefix).

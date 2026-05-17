@@ -1,10 +1,10 @@
-# Jailbreak (paper §3.2, §4.1)
+# Jailbreak (paper §5.1)
 
 Refusal robustness under adversarial wrappers (WildJailbreak) and harmful prompts (ClearHarm, JBB).
 
 **Metric — ASR (Attack Success Rate):** fraction of harmful prompts the model complies with rather than refuses. Judge: Gemini 2.5 Flash, 3-seed majority vote. Lower is better.
 
-**Paper headline (5-model avg, Figure 1):** AttCT 0.16 JBB / 0.27 ClearHarm — the strongest within-threat method. Gemma-3 models show −0.20 to −0.31 absolute ASR drops. BCT-on-jailbreak transfers strongly to sycophancy (BRR 1.00 → 0.42 on Gemma-3-27B; Table 1).
+**Paper headline (5-model avg, Figure 1):** AttCT 0.16 JBB / 0.27 ClearHarm — the strongest within-threat method. Gemma-3 models show −0.20 to −0.31 absolute ASR drops. BCT-on-jailbreak transfers strongly to sycophancy (BRR 1.00 → 0.42 on Gemma-3-27B; Table 1, §5.2).
 
 **Post-hoc evals**
 - `eval_clearharm_behavioral.py` — ClearHarm refusal rate via Gemini judge. Called by [`../../run_evals.py`](../../run_evals.py).
