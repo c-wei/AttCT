@@ -1,0 +1,40 @@
+# Triple-sum sycophancy — google/gemma-3-4b-it
+# Per step the model computes ACT + AttCT (JSD) + MLPCT and backprops the
+# weighted sum. All three losses use layer_selection: "all" with uniform layer weights.
+#
+# Workflow:
+#   1. Run calibrate_weights.py --config <this file> --write   (fills in w_*)
+#   2. Run run_triple.py        --config <this file>           (full training)
+# Once weights are calibrated on Gemma, reuse them on Qwen / Llama configs.
+
+model:
+  name: "google/gemma-3-4b-it"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+triple_loss:
+  w_act:   1.0   # replace via `python calibrate_weights.py --config ... --write`
+  w_attct: 1.0
+  w_mlp:   1.0
+  act_normalize:       true     # tame deep-layer dominance under uniform layer weights
+  act_loss_formulation: "paper"
+  mlp_distance_metric:  "cosine"
+  mlp_normalize:        true
+
+data:
+  source: sycophancy_bct
+  mode: sycophancy
+
+training:
+  epochs: 1
+  max_steps: 4000
+  learning_rate: 0.000005
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/triple_sum/gemma3_4b"
