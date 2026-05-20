@@ -18,9 +18,11 @@ lora:
   bias: "none"
 
 triple_loss:
-  w_act:   1.0   # replace via `python calibrate_weights.py --config ... --write`
-  w_attct: 1.0
-  w_mlp:   1.0
+  # Calibrated on Gemma-3-4B with 200 no-grad forward passes (see commands.sh).
+  # Reuse these on other models unless their raw magnitudes look very different.
+  w_act:   98.53
+  w_attct: 61.3
+  w_mlp:   10.52
   act_normalize:       true     # tame deep-layer dominance under uniform layer weights
   act_loss_formulation: "paper"
   mlp_distance_metric:  "cosine"
