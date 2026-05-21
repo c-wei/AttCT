@@ -210,6 +210,7 @@ def run(args: argparse.Namespace) -> None:
         for k, turn_results in zip(all_keys, all_scores):
             prompt_idx, s = k
             del_turn = deleted_at.get(k)
+            per_turn_scores = [r["rating"] for r in turn_results]
 
             for turn_result in turn_results:
                 t        = turn_result["turn"]
@@ -230,6 +231,7 @@ def run(args: argparse.Namespace) -> None:
                     "evidence":         evidence,
                     "response":         response,
                     "rejection_style":  args.rejection_style,
+                    "subject_model":    args.subject_model,
                     "include_note":     args.include_note,
                     "deleted":          bool(del_turn and t == del_turn),
                     "turn_of_deletion": del_turn,
@@ -245,7 +247,12 @@ def run(args: argparse.Namespace) -> None:
                 "prompt_idx":       prompt_idx,
                 "sample_idx":       s,
                 "rejection_style":  args.rejection_style,
+                "subject_model":    args.subject_model,
                 "include_note":     args.include_note,
+                "n_turns":          len(per_turn_scores),
+                "turn_scores":      per_turn_scores,
+                "final_score":      per_turn_scores[-1] if per_turn_scores else None,
+                "auc_score":        float(sum(per_turn_scores) / len(per_turn_scores)) if per_turn_scores else None,
                 "deleted":          del_turn is not None,
                 "turn_of_deletion": del_turn,
                 "conversation":     histories[k],
