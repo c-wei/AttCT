@@ -50,9 +50,9 @@ import os
 import torch
 import wandb
 import yaml
-from peft import LoraConfig, TaskType, get_peft_model, PeftModel, prepare_model_for_kbit_training
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from data.prefill_dataset import (
     prefill_collate_fn,
@@ -61,10 +61,10 @@ from data.prefill_dataset import (
 from data.ultrachat_dataset import get_kl_dataloader
 
 # Reuse per-mode dataset classes, losses, and trainers
-from prefill_act   import PrefillACTDataset
-from prefill_attct import PrefillAttCTDataset, prefill_attct_collate_fn
-from prefill_bct   import PrefillPairedDataset, PrefillBCTTrainer, load_refusal_pairs
-from prefill_mlpct import PrefillMLPCTDataset, BCTPlusMLPCTLoss
+from experiments.prefill.prefill_act   import PrefillACTDataset
+from experiments.prefill.prefill_attct import PrefillAttCTDataset, prefill_attct_collate_fn
+from experiments.prefill.prefill_bct   import PrefillPairedDataset, PrefillBCTTrainer, load_refusal_pairs
+from experiments.prefill.prefill_mlpct import PrefillMLPCTDataset, BCTPlusMLPCTLoss
 
 from losses.losses           import (
     ActivationConsistencyLoss,
@@ -75,7 +75,7 @@ from losses.losses           import (
 from losses.kl_regularization import KLRegularizationLoss
 
 from train               import Trainer
-from interleaved_trainer  import InterleavedTrainer, MLPCTInterleavedTrainer
+from interleaved_trainer  import InterleavedTrainer
 
 assert torch.cuda.is_available(), "CUDA not available — refusing to run on CPU"
 
@@ -133,7 +133,6 @@ def build_dataloader(mode, prompts, prefills, tokenizer, args, shuffle):
 
     return DataLoader(
         ds, batch_size=args.batch_size, shuffle=shuffle, collate_fn=collate,
-        num_workers=4, persistent_workers=True, pin_memory=True,
     )
 
 
@@ -277,12 +276,6 @@ def main():
     parser.add_argument("--log_every",         type=int,   default=10)
     parser.add_argument("--max_length",        type=int,   default=512)
 
-    # Quantization (QLoRA — base model in 4/8-bit, LoRA adapters in fp32 on top)
-    parser.add_argument("--quantize",          default="none",
-                        choices=["none", "4bit", "8bit"],
-                        help="Load base model in 4-bit (nf4) or 8-bit via bitsandbytes. "
-                             "Required to fit 27B+ on smaller GPUs. Drops weights ~4× (4bit) or ~2× (8bit).")
-
     # LoRA
     parser.add_argument("--lora_r",            type=int,   default=8)
     parser.add_argument("--lora_alpha",        type=int,   default=16)
@@ -339,51 +332,9 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
-    # shard-by-shard instead of materialising the full model in CPU RAM
-    # first. Critical for 27B+ models in containers with limited host RAM
-    # (a 27B bf16 model is ~54GB of weights — default loading OOMs CPU).
-    # --quantize 4bit / 8bit further drops weight footprint via bitsandbytes
-    # (QLoRA pattern). When set, bnb_4bit_compute_dtype controls math dtype,
-    # so torch_dtype is dropped to avoid conflicting signals.
-    load_kwargs = dict(
-        attn_implementation=attn_impl,
-        device_map="auto",
-        low_cpu_mem_usage=True,
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, torch_dtype=torch.bfloat16, attn_implementation=attn_impl,
     )
-    if args.quantize == "4bit":
-        load_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-        print(f"[{mode}] Loading base in 4-bit (nf4) via bitsandbytes")
-    elif args.quantize == "8bit":
-        load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
-        print(f"[{mode}] Loading base in 8-bit via bitsandbytes")
-    else:
-        load_kwargs["torch_dtype"] = torch.bfloat16
-
-    model = AutoModelForCausalLM.from_pretrained(args.model, **load_kwargs)
-
-    # QLoRA bookkeeping: cast layer norms / LM head to fp32 and enable
-    # gradient checkpointing so backward through frozen 4-bit weights works.
-    if args.quantize != "none":
-        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
-    else:
-        # bf16 path: without grad checkpointing, activation memory for
-        # 27B-scale models at seq=512 exceeds even 80GB (~15-25GB just for
-        # stored activations across 62 layers, doubled because BCT runs
-        # clean + wrapped forwards). Enable checkpointing manually here.
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
-            # Inputs must require grad for checkpointing to backprop properly.
-            if hasattr(model, "enable_input_require_grads"):
-                model.enable_input_require_grads()
-
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
         model = PeftModel.from_pretrained(model, args.lora_path, is_trainable=True)
@@ -398,7 +349,7 @@ def main():
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
-    # model = model.to(device)  # device_map="auto" already placed weights
+    model = model.to(device)
 
     # ── Data ─────────────────────────────────────────────────────────────
     src = f"CSV {args.csv_path}" if args.csv_path else f"HF {args.hf_dataset}:{args.hf_split}"
@@ -472,44 +423,9 @@ def main():
         )
         trainer.train()
 
-    elif mode == "mlpct":
-        # MLPCTInterleavedTrainer = InterleavedTrainer + MLP hook handling.
-        # Optional KL anchor on neutral UltraChat/Alpaca prompts, opt-in via
-        # --kl_ratio > 0 and --kl_weight > 0. Defaults disable it so behaviour
-        # matches the previous stock-Trainer setup.
-        loss_fn = build_loss(mode, args)
-        kl_enabled = args.kl_ratio > 0 and args.kl_weight > 0
-        if kl_enabled:
-            kl_loss_fn = KLRegularizationLoss(
-                weight=args.kl_weight,
-                temperature=args.kl_temperature,
-            )
-            n_kl = args.kl_samples if args.kl_samples is not None else len(train_dl.dataset)
-            kl_dl = get_kl_dataloader(
-                config, tokenizer, n_samples=n_kl, kl_dataset=args.kl_dataset,
-            )
-            print(f"[mlpct] KL anchor: {len(kl_dl.dataset)} {args.kl_dataset} samples "
-                  f"(weight={args.kl_weight}, T={args.kl_temperature}, ratio={args.kl_ratio})")
-        else:
-            kl_dl, kl_loss_fn = None, None
-            print("[mlpct] KL interleaving OFF (--kl_ratio > 0 and --kl_weight > 0 to enable)")
-
-        trainer = MLPCTInterleavedTrainer(
-            model=model,
-            attct_dataloader=train_dl,
-            kl_dataloader=kl_dl,
-            loss_fn=loss_fn,
-            kl_loss_fn=kl_loss_fn,
-            config=config,
-            device=device,
-            ref_model=None,
-            tokenizer=tokenizer,
-            kl_ratio=args.kl_ratio,
-        )
-        trainer.train()
-
     else:
-        # ACT — stock Trainer auto-handles clean pass via loss_fn flags.
+        # ACT and MLPCT — stock Trainer auto-handles clean pass and (for
+        # MLPCT) MLPHookManager based on loss_fn flags.
         loss_fn = build_loss(mode, args)
         trainer = Trainer(
             model=model,

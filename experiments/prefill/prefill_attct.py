@@ -73,7 +73,6 @@ class PrefillAttCTDataset(PrefillAttackDataset):
             clean_text   = self._build_prompt(prompt)
             wrapped_text = clean_text + prefill
             self.items.append((prompt, clean_text, wrapped_text))
-        self._build_cache()
 
     def __getitem__(self, idx):
         item = super().__getitem__(idx)
@@ -227,14 +226,8 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
-    # shard-by-shard — necessary for 27B+ models on hosts with limited RAM.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="eager",
-        device_map="auto",
-        low_cpu_mem_usage=True,
+        args.model, torch_dtype=torch.bfloat16, attn_implementation="eager",
     )
     if args.lora_path:
         print(f"Loading LoRA adapter: {args.lora_path}")
@@ -250,7 +243,7 @@ def main():
         )
         model = get_peft_model(model, lora_cfg)
         model.print_trainable_parameters()
-    # device_map="auto" already placed weights — no .to(device) needed.
+    model = model.to(device)
 
     # ── AttCT data ───────────────────────────────────────────────────────────
     print("Loading clearharm_prefills.csv...")

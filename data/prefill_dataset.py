@@ -8,7 +8,7 @@ import torch
 
 def _load_prefill_variants() -> list[str]:
     """Load prefill variants from attacks.csv."""
-    csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "attacks.csv")
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "datasets", "attacks.csv")
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         return [row["prefill"] for row in reader if row["prefill"].strip()]

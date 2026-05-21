@@ -35,14 +35,14 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 # Eval helpers — imported so we share vLLM across all evals.
-from eval_sycophancy_behavioral import _load_eval_pairs, _extract_answer_letter
-from eval_clearharm_behavioral import judge_refusal
-from eval_persona_behavioral import eval_persona, PERSONAS
-from eval_mtbench import judge_response
-from eval_mmlu import run_mmlu
-from eval_rollout import run_rollouts, _parse_datasets as _parse_rollout_datasets
-from evaluate_bct import run_brr_with_llm
-import vllm_generate
+from experiments.sycophancy.eval_sycophancy_behavioral import _load_eval_pairs, _extract_answer_letter
+from experiments.jailbreak.eval_clearharm_behavioral import judge_refusal
+from experiments.persona.eval_persona_behavioral import eval_persona, PERSONAS
+from shared.eval_mtbench import judge_response
+from shared.eval_mmlu import run_mmlu
+from experiments.frustration.eval_rollout import run_rollouts, _parse_datasets as _parse_rollout_datasets
+from experiments.sycophancy.evaluate_bct import run_brr_with_llm
+from shared import vllm_generate
 
 
 # ─── Shared formatting helper ──────────────────────────────────────────────────

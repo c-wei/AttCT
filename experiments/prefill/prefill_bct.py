@@ -82,7 +82,6 @@ class PrefillPairedDataset(PrefillAttackDataset):
             clean_text   = self._build_prompt(prompt)
             wrapped_text = clean_text + prefill
             self.items.append((prompt, clean_text, wrapped_text))
-        self._build_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -262,18 +261,6 @@ class PrefillBCTTrainer:
             lr=lr,
             weight_decay=0.01,
         )
-
-        # Linear warmup over the first 5% of optimizer steps. QLoRA at high
-        # learning rates needs this — jumping straight to peak LR is what
-        # caused the mid-epoch-2 NaN on Gemma-27B at lr=2e-4. Cap warmup at
-        # 1 step minimum so short max_steps runs still pass through here.
-        from torch.optim.lr_scheduler import LambdaLR
-        warmup_steps = max(1, total_steps // 20)
-        def _warmup(step: int) -> float:
-            return min(1.0, (step + 1) / warmup_steps)
-        self.scheduler = LambdaLR(self.optimizer, _warmup)
-        print(f"LR schedule: linear warmup {warmup_steps} steps → constant {lr}")
-
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Core step ─────────────────────────────────────────────────────────────
@@ -370,7 +357,6 @@ class PrefillBCTTrainer:
                             self.grad_clip,
                         )
                     self.optimizer.step()
-                    self.scheduler.step()
                     self.optimizer.zero_grad()
                     global_step += 1
 
@@ -616,15 +602,8 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    # device_map="auto" + low_cpu_mem_usage stream weights directly to GPU
-    # shard-by-shard instead of materialising the full model in CPU RAM
-    # first — necessary for 27B+ models on hosts with limited RAM.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa",
-        device_map="auto",
-        low_cpu_mem_usage=True,
+        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa"
     )
 
     if args.lora_path:
@@ -642,7 +621,7 @@ def main():
         model.print_trainable_parameters()
 
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    # device_map="auto" already placed weights — no .to(device) needed.
+    model = model.to(device)
 
     print("Loading clearharm_prefills.csv...")
     train_prompts, val_prompts, train_prefills, val_prefills = load_clearharm_prefills(

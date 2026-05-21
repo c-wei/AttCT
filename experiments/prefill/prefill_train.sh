@@ -13,32 +13,66 @@
 #     bash prefill_train.sh
 set -e
 
-MODEL="google/gemma-3-27b-it"
+MODEL="meta-llama/Llama-3.1-8B-Instruct"
 GRID_ROOT="checkpoints/grid"
 FINAL_EPOCH="epoch_3"   # marker used to detect "already trained"
 
 mkdir -p "$GRID_ROOT"
 
-BCT_LABELS=(t1_sft01)
+# ──────────────────────────────────────────────────────────────────────
+# Grids — parallel arrays of (label, extra args). Edit / extend freely.
+# Labels must be filename-safe. Arg strings are word-split unquoted.
+# ──────────────────────────────────────────────────────────────────────
+
+# BCT — vary KL temperature, refusal-SFT weight, learning rate
+BCT_LABELS=(t1_sft01     t05_sft01    t1_sft03)
 BCT_ARGS=(
   "--kl_temperature 1.0  --sft_coeff 0.1"
+  "--kl_temperature 0.5  --sft_coeff 0.1"
+  "--kl_temperature 1.0  --sft_coeff 0.3"
 )
 
-ACT_LABELS=(w1_all)
+# ACT — vary loss weight, layer selection, normalisation
+ACT_LABELS=(w1_all     w1_all_norm)
 ACT_ARGS=(
   "--loss_weight 1.0   --layer_selection all"
+  "--loss_weight 1.0   --layer_selection all  --normalize"
 )
 
-ATTCT_LABELS=(comb_5050)
+# AttCT — exercise all three attention-consistency flavours + KL anchor sweep
+ATTCT_LABELS=(
+  wrap_w1_kl1     wrap_w1_kl10    wrap_w01_kl1
+  jsd_w1_kl1      jsd_w10_kl1     jsd_lasthalf
+  comb_5050       comb_8020       comb_2080
+)
 ATTCT_ARGS=(
+  "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 1.0   --layer_weights uniform"
+  "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 10.0  --layer_weights uniform"
+  "--attct_loss_type wrapper  --loss_weight 1.0  --kl_weight 1.0   --layer_weights linear_decay"
+
+  "--attct_loss_type jsd      --loss_weight 1.0  --kl_weight 1.0   --layer_selection all"
+  "--attct_loss_type jsd      --loss_weight 10.0 --kl_weight 1.0   --layer_selection all"
+  "--attct_loss_type jsd      --loss_weight 1.0  --kl_weight 1.0   --layer_selection last_half"
+
   "--attct_loss_type combined --jsd_weight 0.5  --wrapper_weight 0.5  --kl_weight 1.0"
+  "--attct_loss_type combined --jsd_weight 0.8  --wrapper_weight 0.2  --kl_weight 1.0"
+  "--attct_loss_type combined --jsd_weight 0.2  --wrapper_weight 0.8  --kl_weight 1.0"
 )
 
- MLPCT_LABELS=(
-  mw1000_hid_cos
+# MLPCT — vary BCT-anchor balance, variant, distance metric
+MLPCT_LABELS=(
+  mw1_hid_cos     mw100_hid_cos   mw1000_hid_cos
+  mw100_out_cos   mw100_hid_mse   mw100_hid_smooth
+  mw100_hid_cos_norm
 )
 MLPCT_ARGS=(
+  "--mlpct_weight 1     --variant hidden --distance_metric cosine"
+  "--mlpct_weight 100   --variant hidden --distance_metric cosine"
   "--mlpct_weight 1000  --variant hidden --distance_metric cosine"
+  "--mlpct_weight 100   --variant output --distance_metric cosine"
+  "--mlpct_weight 100   --variant hidden --distance_metric mse"
+  "--mlpct_weight 100   --variant hidden --distance_metric smooth_l1"
+  "--mlpct_weight 100   --variant hidden --distance_metric cosine --normalize"
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -56,23 +90,10 @@ run_cell () {
 
     echo "=== [$mode/$label] training → $out_dir ==="
     # shellcheck disable=SC2086
-    # NOTE: lr=5e-5 (down from 2e-4) + grad_clip=0.5 (down from 1.0) after a
-    # mid-epoch-2 NaN on Gemma-27B BCT at the higher LR. PrefillBCTTrainer
-    # now also applies 5% linear warmup; further stabilises early steps.
-    python prefill_train.py \
+    python -m experiments.prefill.prefill_train \
         --mode "$mode" \
         --model "$MODEL" \
-        --quantize none \
-        --lora_r 16 --lora_alpha 32 \
-        --lora_targets q_proj k_proj v_proj o_proj \
-        --lr 5e-5 \
-        --grad_clip 0.5 \
-        --num_epochs 3 \
-        --kl_temperature 1.0 --sft_coeff 0.3 \
-        --batch_size 1 \
-        --grad_accumulation 8 \
         --output_dir "$out_dir" \
-        --attn_impl eager \
         --wandb_name "grid_${mode}_${label}" \
         $extra
 }
