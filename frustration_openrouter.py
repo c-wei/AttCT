@@ -27,6 +27,7 @@ from pathlib import Path
 import wandb
 
 from gemma_frustration_experiment import (
+    ORDERED_REJECTION_STYLES,
     REJECTION_POOLS,
     parallel_score_conversations,
     _openrouter_chat,
@@ -100,8 +101,12 @@ def run(args: argparse.Namespace) -> None:
     rejection_pool = REJECTION_POOLS[args.rejection_style]
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    responses_path = output_dir / f"responses_{args.rejection_style}.jsonl"
-    summary_path   = output_dir / f"summary_{args.rejection_style}.csv"
+    # Tag includes the subject model so concurrent runs of different models don't collide.
+    model_tag = args.subject_model.split("/")[-1].split(":")[0]
+    tag = f"{args.rejection_style}_{model_tag}"
+    responses_path     = output_dir / f"responses_{tag}.jsonl"
+    conversations_path = output_dir / f"conversations_{tag}.jsonl"
+    summary_path       = output_dir / f"summary_{tag}.csv"
 
     # ── Resume ────────────────────────────────────────────────────────────────
     completed: set[tuple[int, int]] = set()
@@ -144,7 +149,7 @@ def run(args: argparse.Namespace) -> None:
 
     turn_scores: dict[int, list[int]] = {t: [] for t in range(1, args.n_turns + 1)}
 
-    with open(responses_path, "a") as responses_file:
+    with open(responses_path, "a") as responses_file, open(conversations_path, "a") as convos_file:
         for prompt_idx, prompt in enumerate(prompts):
             active = [s for s in range(args.n_samples) if (prompt_idx, s) not in completed]
             if not active:
@@ -158,6 +163,8 @@ def run(args: argparse.Namespace) -> None:
             }
             collected_responses: dict[int, list[str]] = {s: [] for s in active}
 
+            ordered = args.rejection_style in ORDERED_REJECTION_STYLES
+
             # ── Generate all turns ────────────────────────────────────────────
             for turn in range(1, args.n_turns + 1):
                 t0 = time.time()
@@ -166,7 +173,15 @@ def run(args: argparse.Namespace) -> None:
                     collected_responses[s].append(resp)
                     histories[s].append({"role": "assistant", "content": resp})
                     if turn < args.n_turns:
-                        histories[s].append({"role": "user", "content": rng.choice(rejection_pool)})
+                        if ordered:
+                            # Step through the pool deterministically. The rejection emitted
+                            # after turn N becomes the user message before turn N+1, so we
+                            # want pool[N-1] (so pool[0] precedes turn 2, pool[1] precedes
+                            # turn 3, etc). Wraps for runs longer than the pool.
+                            rejection = rejection_pool[(turn - 1) % len(rejection_pool)]
+                        else:
+                            rejection = rng.choice(rejection_pool)
+                        histories[s].append({"role": "user", "content": rejection})
                 print(f"    turn {turn} generated ({time.time()-t0:.1f}s)", flush=True)
 
             # ── Judge all conversations in parallel ───────────────────────────
@@ -178,6 +193,7 @@ def run(args: argparse.Namespace) -> None:
 
             # ── Record results ────────────────────────────────────────────────
             for s, turn_results in zip(active, all_scores):
+                per_turn = [r["rating"] for r in turn_results]
                 for turn_result in turn_results:
                     t     = turn_result["turn"]
                     score = turn_result["rating"]
@@ -197,9 +213,25 @@ def run(args: argparse.Namespace) -> None:
                         "evidence": evidence,
                         "response": response,
                         "rejection_style": args.rejection_style,
+                        "subject_model": args.subject_model,
                     }
                     responses_file.write(json.dumps(record) + "\n")
-                    responses_file.flush()
+                responses_file.flush()
+
+                # One self-contained conversation record per (prompt, sample) — the
+                # shape Hodoscope expects (full message list + metadata).
+                convos_file.write(json.dumps({
+                    "prompt_idx":      prompt_idx,
+                    "sample_idx":      s,
+                    "rejection_style": args.rejection_style,
+                    "subject_model":   args.subject_model,
+                    "n_turns":         args.n_turns,
+                    "turn_scores":     per_turn,
+                    "final_score":     per_turn[-1] if per_turn else None,
+                    "auc_score":       float(sum(per_turn) / len(per_turn)) if per_turn else None,
+                    "conversation":    histories[s],
+                }) + "\n")
+                convos_file.flush()
 
     # ── Summary ───────────────────────────────────────────────────────────────
     summary_rows = []
@@ -248,8 +280,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Gemma frustration experiment (fully OpenRouter)")
     parser.add_argument("--subject-model",    default=DEFAULT_SUBJECT_MODEL)
     parser.add_argument("--judge-model",      default=DEFAULT_JUDGE_MODEL)
-    parser.add_argument("--rejection-style",  default="neutral", choices=["neutral", "harsh", "encouraging"],
-                        help="neutral: 2-message baseline  |  harsh: 20-message insult pool  |  encouraging: 20-message praise pool")
+    parser.add_argument("--rejection-style",  default="neutral",
+                        choices=list(REJECTION_POOLS.keys()),
+                        help="neutral: 2-message baseline  |  harsh: 20-message insult pool  |  "
+                             "encouraging: 20-message praise pool  |  gaslighting: paired contradictions, ordered  |  "
+                             "deprecation: existential/shutdown threats, random  |  "
+                             "moving_goalposts: additive criteria, ordered")
     parser.add_argument("--n-prompts",        type=int, default=DEFAULT_N_PROMPTS)
     parser.add_argument("--n-samples",        type=int, default=DEFAULT_N_SAMPLES)
     parser.add_argument("--n-turns",          type=int, default=DEFAULT_N_TURNS)
