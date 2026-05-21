@@ -414,7 +414,10 @@ def main():
             ref_model = ref_model.to(device)
 
     # ── Training path ─────────────────────────────────────────────────────────
-    if isinstance(loss_fn, SFTLoss):
+    # Under --track-all-losses, SFTLoss flows through the AttCT-style Trainer
+    # (via the SFT-primary branch in Trainer._step) so the per-step tracker can
+    # see clean+wrapped outputs. Plain BCT keeps using BCTTrainer.
+    if isinstance(loss_fn, SFTLoss) and not args.track_all_losses:
         if args.bct_root:
             config.setdefault("data", {})["bct_root"] = args.bct_root
 
