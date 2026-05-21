@@ -62,6 +62,8 @@ def main():
     parser.add_argument("--wandb-group", required=True,
                         help="W&B group name (e.g. loss_tracking_gemma3_4b_sycophancy)")
     parser.add_argument("--out-dir", default="findings/loss_tracking_plots")
+    parser.add_argument("--smooth", type=int, default=1,
+                        help="Rolling-mean window (1=no smoothing). Try 10-50.")
     args = parser.parse_args()
 
     import wandb
@@ -111,8 +113,9 @@ def main():
             sub = df[["_step", col]].dropna()
             if sub.empty:
                 continue
+            y = sub[col].rolling(window=args.smooth, min_periods=1).mean()
             ax.plot(
-                sub["_step"], sub[col],
+                sub["_step"], y,
                 color=METHOD_COLORS.get(method, "gray"),
                 linestyle=SEED_LINESTYLES.get(seed, ":"),
                 label=f"{method} seed{seed}",
@@ -144,9 +147,11 @@ def main():
         if sub.empty:
             continue
         fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(sub["_step"], sub["train/loss"], label="train/loss",
+        y_train = sub["train/loss"].rolling(window=args.smooth, min_periods=1).mean()
+        y_track = sub[prim_track].rolling(window=args.smooth, min_periods=1).mean()
+        ax.plot(sub["_step"], y_train, label="train/loss",
                 color="black", linewidth=1.5)
-        ax.plot(sub["_step"], sub[prim_track], label=prim_track,
+        ax.plot(sub["_step"], y_track, label=prim_track,
                 color="tab:red", linestyle="--", linewidth=1.0)
         ax.set_title(f"C2 sanity — {method}/seed{seed}")
         ax.set_xlabel("Optimizer step")
