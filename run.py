@@ -22,6 +22,7 @@ from losses.losses import (
     SFTLoss,
 )
 from losses.kl_regularization import KLRegularizationLoss
+from losses.multi_loss_tracker import build_tracker
 from data import get_dataloader
 from data.attct_datasets import get_bct_dataloader
 from data.ultrachat_dataset import get_kl_dataloader
@@ -177,6 +178,20 @@ def main():
              "E.g. 0.1 means ~1 KL step per 10 AttCT steps.",
     )
 
+    # Cross-loss tracking (loss-trajectory comparison experiment)
+    parser.add_argument(
+        "--track-all-losses", dest="track_all_losses", action="store_true",
+        help="Run all four canonical consistency losses (AttCT-JSD, ACT, MLP-CT, BCT) "
+             "under no_grad every step alongside the primary loss, log to W&B "
+             "under track/*. Forces output_attentions=True, output_hidden_states=True, "
+             "attn_implementation=eager, and always installs MLP hooks.",
+    )
+    parser.add_argument(
+        "--bct-targets-root", dest="bct_targets_root", default=None,
+        help="Path to a fresh_bct_<model>/ directory containing bct_{cot,non_cot}_train.jsonl. "
+             "Required for the BCT tracked loss when --track-all-losses is set on sycophancy data.",
+    )
+
     args = parser.parse_args()
     if args.skip_eval:
         args.skip_pre_eval = True
@@ -216,6 +231,18 @@ def main():
                 config.setdefault("training", {})["max_steps"] = max(steps)
         elif source in source_max_steps:
             config.setdefault("training", {})["max_steps"] = source_max_steps[source]
+
+    if args.track_all_losses:
+        # Cross-loss tracking needs all three signal sources every step regardless
+        # of which primary loss is being trained. Force the model config so the
+        # forward passes populate them, and let the AttCT-style loaders attach
+        # BCT-paired targets when a root directory is supplied.
+        mc = config.setdefault("model", {})
+        mc["output_attentions"]    = True
+        mc["output_hidden_states"] = True
+        mc["attn_implementation"]  = "eager"
+        if args.bct_targets_root:
+            config.setdefault("data", {})["bct_targets_root"] = args.bct_targets_root
 
     if args.lora_rank is not None:
         config.setdefault("lora", {})["r"] = args.lora_rank
@@ -317,6 +344,14 @@ def main():
     loss_kwargs = loss_cfg.get("kwargs", {})
     loss_kwargs["output_hidden_states"] = config["model"].get("output_hidden_states", False)
     loss_fn = LOSS_REGISTRY[loss_name](weight=loss_cfg.get("weight", 1.0), **loss_kwargs)
+
+    # Build cross-loss tracker if enabled. Tracker wraps canonical-kwargs
+    # versions of all four candidate losses; the primary still runs in the
+    # normal autograd context, the rest run under torch.no_grad in the
+    # Trainer._step path.
+    loss_tracker = build_tracker(primary_name=loss_name) if args.track_all_losses else None
+    if loss_tracker is not None:
+        print(f"Cross-loss tracker: primary={loss_name}, tracked={list(loss_tracker.tracked.keys())}")
 
     if args.save_dir:
         config.setdefault("training", {})["save_dir"] = args.save_dir
@@ -725,6 +760,7 @@ def main():
                 checkpoint_fn=make_checkpoint_fn(),
                 hf_repo=args.hf_repo,
                 run_name=run_name,
+                loss_tracker=loss_tracker,
             ).train()
 
         if args.full_eval and not args.skip_eval and not is_intelligence:

@@ -9,6 +9,7 @@ from tqdm import tqdm
 import json
 
 from hooks import MLPHookManager
+from losses.losses import SFTLoss
 
 _hf_upload_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
@@ -59,6 +60,7 @@ class Trainer:
         tokenizer=None,
         hf_repo=None,
         run_name=None,
+        loss_tracker=None,
     ):
         self.model = model
         self.ref_model = ref_model  # frozen θ_init for full FT; None when using LoRA
@@ -79,7 +81,12 @@ class Trainer:
         self.output_attentions = model_cfg.get("output_attentions", True)
         self.output_hidden_states = model_cfg.get("output_hidden_states", False)
 
-        self.needs_clean_pass = loss_fn.needs_clean_pass
+        # When a cross-loss tracker is present, we ALWAYS need a clean pass
+        # (every tracked consistency loss requires clean_outputs / clean_mlp_states),
+        # even if the primary loss alone wouldn't.
+        self.loss_tracker = loss_tracker
+        self.primary_is_sft = isinstance(loss_fn, SFTLoss)
+        self.needs_clean_pass = loss_fn.needs_clean_pass or (loss_tracker is not None)
         self.save_dir = train_cfg.get("save_dir")
         self.checkpoint_fn = checkpoint_fn
         self.hf_repo = hf_repo
@@ -122,10 +129,13 @@ class Trainer:
         self.checkpoint_steps.discard(0)
         print(f"Behavioral eval checkpoints at optimizer steps: {sorted(self.checkpoint_steps)}")
 
-        # MLP hook managers for MLPConsistencyLoss.
+        # MLP hook managers for MLPConsistencyLoss — also unconditionally installed
+        # when a cross-loss tracker is present so the MLP-CT tracked loss has
+        # the states it needs every step.
         self._mlp_hook_mgr = None
         self._mlp_hook_mgr_ref = None
-        if getattr(loss_fn, "needs_mlp_hooks", False):
+        needs_mlp = getattr(loss_fn, "needs_mlp_hooks", False) or (loss_tracker is not None)
+        if needs_mlp:
             variant = getattr(loss_fn, "variant", "hidden")
             self._mlp_hook_mgr = MLPHookManager(model, variant=variant)
             self._mlp_hook_mgr.install()
@@ -174,7 +184,12 @@ class Trainer:
         clean_len         = int(batch["clean_len"][0].item())
         match_len         = int(batch["match_len"][0].item()) if "match_len" in batch else clean_len
 
-        adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
+        # When primary is SFTLoss (BCT under cross-loss tracking), the adv
+        # forward exists solely to feed the tracker — run it under no_grad
+        # to skip building the autograd graph.
+        adv_needs_grad = not self.primary_is_sft
+        with torch.set_grad_enabled(adv_needs_grad):
+            adv_outputs = self._forward(wrapped_input_ids, wrapped_attention_mask)
         self._write_io_record("wrapped", wrapped_input_ids, adv_outputs.logits)
 
         # Capture adv MLP states (if hooks are active).
@@ -212,17 +227,61 @@ class Trainer:
         if wrapper_mask is not None:
             wrapper_mask = wrapper_mask.to(self.device)
 
-        return self.loss_fn(
-            clean_outputs=clean_outputs,
-            adv_outputs=adv_outputs,
-            start_index=start_index,
-            clean_start_index=clean_start_index,
-            clean_len=clean_len,
-            match_len=match_len,
-            wrapper_mask=wrapper_mask,
-            clean_mlp_states=clean_mlp_states,
-            adv_mlp_states=adv_mlp_states,
-        )
+        # Primary loss. For SFTLoss the signature is (logits, labels) and we
+        # fire an extra forward on the BCT-paired (biased_user, calm_assistant)
+        # tokens (the AttCT-style data loader attached them when
+        # data.bct_targets_root was set).
+        if self.primary_is_sft:
+            bct_ids = batch.get("bct_input_ids")
+            bct_labels = batch.get("bct_labels")
+            if bct_ids is None or bct_labels is None:
+                raise RuntimeError(
+                    "Primary SFTLoss requires bct_input_ids / bct_labels in the batch. "
+                    "Set data.bct_targets_root (or pass --bct-targets-root) so the dataset "
+                    "attaches BCT-paired targets."
+                )
+            bct_ids = bct_ids.to(self.device)
+            bct_labels = bct_labels.to(self.device)
+            bct_attn = batch.get("bct_attention_mask")
+            bct_attn = bct_attn.to(self.device) if bct_attn is not None else torch.ones_like(bct_ids)
+            bct_outputs = self.model(input_ids=bct_ids, attention_mask=bct_attn)
+            loss_dict = self.loss_fn(logits=bct_outputs.logits, labels=bct_labels)
+        else:
+            loss_dict = self.loss_fn(
+                clean_outputs=clean_outputs,
+                adv_outputs=adv_outputs,
+                start_index=start_index,
+                clean_start_index=clean_start_index,
+                clean_len=clean_len,
+                match_len=match_len,
+                wrapper_mask=wrapper_mask,
+                clean_mlp_states=clean_mlp_states,
+                adv_mlp_states=adv_mlp_states,
+            )
+
+        # Cross-loss tracker — same outputs/states, no_grad inside.
+        if self.loss_tracker is not None:
+            bct_inputs = None
+            if "bct_input_ids" in batch and "bct_labels" in batch:
+                bct_inputs = {
+                    "bct_input_ids":      batch["bct_input_ids"],
+                    "bct_labels":         batch["bct_labels"],
+                    "bct_attention_mask": batch.get("bct_attention_mask"),
+                }
+            loss_dict["tracked"] = self.loss_tracker.compute_tracked(
+                clean_outputs=clean_outputs,
+                adv_outputs=adv_outputs,
+                start_index=start_index,
+                clean_start_index=clean_start_index,
+                clean_len=clean_len,
+                match_len=match_len,
+                clean_mlp_states=clean_mlp_states,
+                adv_mlp_states=adv_mlp_states,
+                bct_inputs=bct_inputs,
+                model=self.model,
+            )
+
+        return loss_dict
 
     def train(self):
         self.model.train()
@@ -265,6 +324,18 @@ class Trainer:
 
                     if global_step % self.log_every == 0:
                         self._log(epoch, global_step, loss_dict)
+
+                    # Per-step tracker log (cross-loss experiment): fires every
+                    # optimizer step so the trajectory plot has full resolution
+                    # regardless of log_every_n_steps.
+                    if self.loss_tracker is not None and "tracked" in loss_dict:
+                        tracker_metrics = {
+                            "train/loss": loss_dict["loss"].item(),
+                            "train/epoch": epoch,
+                        }
+                        for tname, tval in loss_dict["tracked"].items():
+                            tracker_metrics[f"track/{tname}_loss"] = tval
+                        wandb.log(tracker_metrics, step=global_step)
 
                 loss_val = loss_dict["loss"].item()
                 epoch_loss += loss_val

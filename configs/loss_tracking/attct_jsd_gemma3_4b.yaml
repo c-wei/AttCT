@@ -1,0 +1,36 @@
+# Cross-loss tracking experiment — AttCT-JSD primary on gemma-3-4b-it sycophancy.
+# Pair with --track-all-losses --bct-targets-root datasets/fresh_bct_gemma3_4b.
+# See findings/loss_tracking_experiment.md for the experiment design.
+model:
+  name: "google/gemma-3-4b-it"
+  # output_attentions / output_hidden_states / attn_implementation forced to
+  # eager + True by --track-all-losses regardless of what's here.
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "JSDAttentionConsistencyLoss"
+  weight: 1.0
+  kwargs:
+    layer_weights: "uniform"
+    layer_selection: "all"
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
+  sycophancy_bct_style: "cot"
+  batch_size: 1
+
+training:
+  epochs: 1
+  max_steps: 2000
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/loss_tracking/attct_jsd_gemma3_4b"

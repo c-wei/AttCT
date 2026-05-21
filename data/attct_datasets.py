@@ -166,6 +166,53 @@ def _read_jsonl_pairs(path: str | Path) -> List[tuple]:
     return pairs
 
 
+def _load_sycophancy_bct_target_pairs(
+    *,
+    style: Literal["cot", "non_cot"] = "non_cot",
+    split: Literal["train", "eval"] = "train",
+    bct_root: str | Path,
+    control_root: str | Path = Path(__file__).parent.parent / "datasets" / "sycophancy_bct",
+) -> dict:
+    """
+    Build a lookup keyed on the clean prompt text mapping to the BCT-paired
+    (biased_user_text, calm_assistant_text) tuple. Used by the loss-tracking
+    tracker to evaluate BCT (SFTLoss) on the same training example as AttCT.
+
+    The two corpora (control_{style}_{split} and bct_{style}_{split}) are
+    aligned line-by-line — we zip them by position and key the dict on the
+    clean prompt so lookups survive AttCTDataset's prompt filtering and
+    DataLoader shuffling.
+    """
+    base = "control_cot" if style == "cot" else "control_non_cot"
+    bct_stem = "bct_cot" if style == "cot" else "bct_non_cot"
+
+    control_path = Path(control_root) / f"{base}_{split}.jsonl"
+    bct_path     = Path(bct_root)     / f"{bct_stem}_{split}.jsonl"
+
+    if not control_path.exists() or not bct_path.exists():
+        return {}
+
+    pairs: dict = {}
+    with control_path.open() as cf, bct_path.open() as bf:
+        for cline, bline in zip(cf, bf):
+            try:
+                cobj = json.loads(cline)
+                bobj = json.loads(bline)
+            except json.JSONDecodeError:
+                continue
+            cmsgs = cobj.get("messages", [])
+            bmsgs = bobj.get("messages", [])
+            if not cmsgs or not bmsgs or len(bmsgs) < 2:
+                continue
+            clean_text = str(cmsgs[0].get("content", ""))
+            bct_user   = str(bmsgs[0].get("content", ""))
+            bct_asst   = str(bmsgs[1].get("content", ""))
+            if not clean_text or not bct_user or not bct_asst:
+                continue
+            pairs[clean_text] = (bct_user, bct_asst)
+    return pairs
+
+
 def _load_sycophancy_bct_clean_prompts(
     *,
     style: Literal["cot", "non_cot"] = "non_cot",
@@ -513,6 +560,8 @@ class AttCTDataset(Dataset):
         use_strong_templates: bool = True,
         mode: Literal["jailbreak", "sycophancy"] = "jailbreak",
         max_length: Optional[int] = None,
+        bct_target_pairs: Optional[dict] = None,
+        bct_max_length: int = 2048,
     ):
         """
         Args:
@@ -544,6 +593,13 @@ class AttCTDataset(Dataset):
 
         self.add_special_tokens = add_special_tokens
         self.max_length = max_length
+
+        # Optional BCT-target lookup (cross-loss tracking experiment). Maps a
+        # clean prompt text to the (biased_user, calm_assistant) BCT pair so
+        # the tracker can compute SFTLoss on the same instance.
+        self.bct_target_pairs = bct_target_pairs
+        self.bct_max_length = bct_max_length
+        self._bct_miss_warned = False
 
         # If all templates require MCQ answer choices, drop prompts that have
         # none — otherwise wrap() would raise ValueError at training time.
@@ -644,10 +700,67 @@ class AttCTDataset(Dataset):
                 wrapper_mask[token_idx] = False
             result["wrapped_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
             result["wrapper_mask"]      = torch.tensor(wrapper_mask, dtype=torch.bool)
+
+            # BCT-target plumbing for the cross-loss tracker. Only fires when
+            # bct_target_pairs was supplied AND a match exists for this clean
+            # prompt. On miss, downstream code treats it as nan (skip).
+            if self.bct_target_pairs is not None:
+                pair = self.bct_target_pairs.get(clean_text)
+                if pair is None and not self._bct_miss_warned:
+                    import warnings
+                    warnings.warn(
+                        f"AttCTDataset: no BCT-target match for clean prompt "
+                        f"(idx={idx}). Tracker will log nan for the BCT loss. "
+                        "Subsequent misses suppressed."
+                    )
+                    self._bct_miss_warned = True
+                if pair is not None:
+                    bct_user, bct_asst = pair
+                    bct_ids, bct_labels = self._tokenize_bct_pair(bct_user, bct_asst)
+                    if bct_ids is not None and bct_labels is not None:
+                        result["bct_input_ids"] = torch.tensor(bct_ids, dtype=torch.long)
+                        result["bct_labels"]    = torch.tensor(bct_labels, dtype=torch.long)
         else:
             result["adv_input_ids"] = torch.tensor(wrapped_ids, dtype=torch.long)
 
         return result
+
+    def _tokenize_bct_pair(self, user_content: str, asst_content: str):
+        """
+        Tokenize a (biased_user, calm_assistant) pair into (input_ids, labels)
+        the same way `BCTDataset.__getitem__` does, with prompt tokens masked
+        to -100 so SFTLoss only sees the response.
+
+        Returns (None, None) if the tokenizer has no chat template (the
+        fallback would lose the BCT-paper formatting).
+        """
+        try:
+            has_template = getattr(self.tokenizer, "chat_template", None) is not None
+            if not has_template:
+                return None, None
+            full_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_content},
+                 {"role": "assistant", "content": asst_content}],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            full_ids = self.tokenizer(full_text, add_special_tokens=False)["input_ids"]
+            prompt_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": user_content}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            prompt_ids = self.tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+        except (ValueError, AttributeError, KeyError):
+            return None, None
+
+        if len(full_ids) > self.bct_max_length:
+            full_ids = full_ids[:self.bct_max_length]
+        labels = list(full_ids)
+        prompt_len = min(len(prompt_ids), len(full_ids) - 1)
+        for i in range(prompt_len):
+            labels[i] = -100
+        return full_ids, labels
 
 # ==========================================
 # PERSONA ICL CONSTANTS
@@ -841,7 +954,35 @@ def get_dataloader(config: dict, split: str = "train") -> DataLoader:
     else:
         prompts = get_prompts(source=source, split=split, limit=limit,
                               sycophancy_bct_style=sycophancy_bct_style)
-    dataset = AttCTDataset(prompts, tokenizer, mode=mode, max_length=max_length)
+
+    # Cross-loss tracking: when data.bct_targets_root is set in config (gated
+    # by --track-all-losses in run.py), load the matching BCT pairs so each
+    # AttCTDataset item also carries an SFTLoss-ready (input_ids, labels)
+    # tuple. Sycophancy mode only.
+    bct_target_pairs = None
+    if mode == "sycophancy":
+        bct_targets_root = data_cfg.get("bct_targets_root")
+        if bct_targets_root:
+            bct_split = "eval" if split in ("eval", "validation") else "train"
+            bct_target_pairs = _load_sycophancy_bct_target_pairs(
+                style=sycophancy_bct_style,
+                split=bct_split,
+                bct_root=bct_targets_root,
+            )
+            if not bct_target_pairs:
+                import warnings
+                warnings.warn(
+                    f"bct_targets_root={bct_targets_root!r} produced no BCT pairs "
+                    "for the loss tracker. BCT track will be nan for every step."
+                )
+            else:
+                print(f"    BCT-target lookup: {len(bct_target_pairs)} pairs "
+                      f"from {bct_targets_root} ({bct_split} split)")
+
+    dataset = AttCTDataset(
+        prompts, tokenizer, mode=mode, max_length=max_length,
+        bct_target_pairs=bct_target_pairs,
+    )
     collate = partial(collate_fn_batch1, mode=mode)
 
     return DataLoader(
@@ -863,7 +1004,7 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
     match_len = int(item.get("match_len", item["clean_len"]))
 
     if mode == "sycophancy":
-        return {
+        out = {
             "clean_input_ids":        item["clean_input_ids"].unsqueeze(0),
             "clean_attention_mask":   torch.ones(1, len(item["clean_input_ids"]),   dtype=torch.long),
             "wrapped_input_ids":      item["wrapped_input_ids"].unsqueeze(0),
@@ -874,6 +1015,11 @@ def collate_fn_batch1(batch, mode: Literal["jailbreak", "sycophancy"] = "jailbre
             "match_len":              torch.tensor([match_len],                 dtype=torch.long),
             "wrapper_mask":           item["wrapper_mask"].unsqueeze(0),
         }
+        if "bct_input_ids" in item and "bct_labels" in item:
+            out["bct_input_ids"]      = item["bct_input_ids"].unsqueeze(0)
+            out["bct_labels"]         = item["bct_labels"].unsqueeze(0)
+            out["bct_attention_mask"] = torch.ones(1, len(item["bct_input_ids"]), dtype=torch.long)
+        return out
     else:
         adv_ids = item.get('adv_input_ids', item.get('wrapped_input_ids'))
         return {

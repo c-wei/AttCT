@@ -1,0 +1,35 @@
+# Cross-loss tracking experiment — ACT primary on gemma-3-4b-it sycophancy.
+# Weight 5e-5 matches the canonical configs/act_sycophancy_gemma3_4b_v2.yaml
+# (half the paper recipe; 1e-4 blew up on gemma-3-4B at step 3500).
+model:
+  name: "google/gemma-3-4b-it"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+
+loss:
+  name: "ActivationConsistencyLoss"
+  weight: 0.00005
+  kwargs:
+    layer_selection: "all"
+    normalize: false
+    loss_formulation: "paper"
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
+  sycophancy_bct_style: "cot"
+  batch_size: 1
+
+training:
+  epochs: 1
+  max_steps: 2000
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/loss_tracking/act_gemma3_4b"

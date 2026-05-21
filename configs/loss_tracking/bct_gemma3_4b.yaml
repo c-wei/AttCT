@@ -1,0 +1,33 @@
+# Cross-loss tracking experiment — BCT (SFTLoss) primary on gemma-3-4b-it sycophancy.
+# BCT runs through the AttCT-style Trainer here (not BCTTrainer): clean+wrapped
+# forwards feed the tracker, and the BCT primary loss is computed on the
+# data.bct_targets_root-attached (biased_user, calm_assistant) pair via an extra
+# forward (see Trainer._step's primary_is_sft branch).
+model:
+  name: "google/gemma-3-4b-it"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  source: "sycophancy_bct"
+  mode: "sycophancy"
+  sycophancy_bct_style: "cot"
+  batch_size: 1
+
+training:
+  epochs: 1
+  max_steps: 2000
+  learning_rate: 1.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  log_every_n_steps: 50
+  save_dir: "checkpoints/loss_tracking/bct_gemma3_4b"
