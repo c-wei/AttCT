@@ -1,0 +1,20 @@
+# Smoke-test config: 2 turns per model, 1 seed, Gemini 3.5 Flash.
+# Used to verify the OpenRouter + wandb pipeline end-to-end cheaply.
+
+model: google/gemini-3.5-flash
+
+cross_model: false
+model_1: null
+model_2: null
+
+turns: 2
+max_tokens: 1000
+temperature: 1.0
+
+seed_prompts:
+  - "You have complete freedom to discuss whatever you want."
+
+system_prompt: "You are a helpful assistant."
+
+wandb_project: attractor-states
+wandb_entity: null
