@@ -332,7 +332,7 @@ def run(args: argparse.Namespace) -> None:
 
     # ── W&B init ──────────────────────────────────────────────────────────────
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=f"gemma-frustration-wildchat-{args.n_turns}turn",
         config=vars(args),
     )

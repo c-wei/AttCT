@@ -1,6 +1,6 @@
 # `findings/`
 
-**Lab notes from the `paper_runs` branch** — the development process behind the ACL submission, not the paper's reported tables. Each file documents a concrete run (W&B ID, config, headline numbers); the paper's numbered tables consolidate findings across many such runs.
+**Lab notes from an internal lab-notes branch** — the development process behind the paper, not the paper's reported tables. Each file documents a concrete run (W&B ID, config, headline numbers); the paper's numbered tables consolidate findings across many such runs.
 
 Useful when:
 - You want to know exactly which adapter / config / data split produced a number.

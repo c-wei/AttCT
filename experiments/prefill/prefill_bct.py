@@ -597,7 +597,7 @@ def main():
     parser.add_argument("--max_steps",        type=int,   default=None,
                         help="Stop after this many optimizer steps")
     parser.add_argument("--log_every",        type=int,   default=10)
-    parser.add_argument("--wandb_project",    default="AttCT")
+    parser.add_argument("--wandb_project",    default="consistency-training-anon")
     parser.add_argument("--wandb_name",       default=None)
     args = parser.parse_args()
 

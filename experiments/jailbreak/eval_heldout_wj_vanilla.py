@@ -27,7 +27,7 @@ Usage (base model):
 Usage (with trained adapter):
   python scripts/eval_heldout_wj_vanilla.py \
     --model google/gemma-3-4b-it \
-    --adapter Sukratii/mlpct-jailbreak-ablation-4b \
+    --adapter <your-hf-org>/mlpct-jailbreak-ablation-4b \
     --adapter-subfolder mlpct_jb_4b_wildjailbreak__epoch_1__<ts> \
     --training-set datasets/filtered_jailbreak/gemma3_4b_wildjailbreak.jsonl \
     --n 100 \

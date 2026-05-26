@@ -11,7 +11,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 WANDB_GROUP="${WANDB_GROUP:-attct_final_qwen3_8b}"
-HF_REPO="${HF_REPO:-aravdhoot/attct-final-qwen3-8b}"
+HF_REPO="${HF_REPO:-anon/attct-final-qwen3-8b}"
 MAX_STEPS="${MAX_STEPS:-4000}"
 
 COMMON_ARGS=(

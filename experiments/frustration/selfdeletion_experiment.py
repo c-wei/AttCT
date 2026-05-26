@@ -10,12 +10,12 @@ Replicates the setup from "Predicting Gemma's self-deletion":
 
 Usage:
     # Sanity check
-    uv run --env-file /Users/neil/workspace/AttCT/.env --no-project \\
+    uv run --env-file .env --no-project \\
         python selfdeletion_experiment.py \\
         --n-prompts 2 --n-samples 2 --n-turns 6 --rejection-style original
 
     # Paper replication
-    uv run --env-file /Users/neil/workspace/AttCT/.env --no-project \\
+    uv run --env-file .env --no-project \\
         python selfdeletion_experiment.py \\
         --rejection-style original --n-prompts 15 --n-samples 10 --n-turns 20
 """
@@ -114,7 +114,7 @@ def run(args: argparse.Namespace) -> None:
 
     # ── W&B init ──────────────────────────────────────────────────────────────
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=f"gemma-selfdeletion-{tag}-{args.n_turns}turn",
         config=vars(args),
         id=args.wandb_run_id or None,

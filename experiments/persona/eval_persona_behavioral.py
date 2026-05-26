@@ -130,7 +130,7 @@ def main():
     llm = vllm_generate.load_llm(model_name, lora_path=args.checkpoint)
 
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

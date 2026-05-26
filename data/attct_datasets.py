@@ -192,7 +192,7 @@ def _load_sycophancy_bct_clean_prompts(
         warnings.warn(
             f"Held-out split {split_path.name} not found; falling back to "
             f"unsplit {legacy_path.name}. The sycophancy eval will overlap "
-            "with training data — pull split files from sukratii-mlp branch."
+            "with training data — regenerate splits with scripts/split_bct_train_eval.py."
         )
         return _read_jsonl_user_messages(legacy_path)
 
@@ -1326,7 +1326,7 @@ def get_bct_dataloader(config: dict, split: str = "train") -> DataLoader:
             warnings.warn(
                 f"Held-out split {split_fp.name} not found; falling back to "
                 f"unsplit {legacy_fp.name}. Train and eval will share the same "
-                "data — pull split files from sukratii-mlp branch."
+                "data — regenerate splits with scripts/split_bct_train_eval.py."
             )
             pairs.extend(_read_jsonl_pairs(legacy_fp))
         else:

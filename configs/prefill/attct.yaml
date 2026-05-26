@@ -5,7 +5,7 @@ model:      meta-llama/Llama-3.1-8B-Instruct
 output_dir: checkpoints/prefill_attct
 
 # Data — defaults to the HF dataset; uncomment csv_path to load a local CSV.
-hf_dataset:  carolinewei/ClearHarm_prefills
+hf_dataset:  anon/ClearHarm_prefills
 hf_split:    train
 # csv_path:  datasets/clearharm_prefills.csv
 train_ratio: 0.8

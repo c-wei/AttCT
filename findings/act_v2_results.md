@@ -1,7 +1,7 @@
 # ACT v2 Experiment Results
 
 Post-fix ACT runs using the paper-corrected `ActivationConsistencyLoss`
-implementation (Irpan et al. 2025) on the `paper_runs` branch.
+implementation (Irpan et al. 2025).
 
 ## What changed in the v2 implementation
 
@@ -35,10 +35,10 @@ implementation (Irpan et al. 2025) on the `paper_runs` branch.
 
 # Run 1 — Llama-3.1-8B-Instruct ACT v2
 
-**W&B:** `4sopv0p6` | https://wandb.ai/neilshah/AttCT/runs/4sopv0p6
+**W&B run ID:** `4sopv0p6`
 **Config:** `configs/act_sycophancy_llama31_8b_v2.yaml`
 **Hyperparams:** lr=5e-6, weight=1e-4
-**HF adapter:** `neilshah/act-llama31-8b-sycophancy/Llama-3.1-8B-Instruct_..._epoch_1__20260428_041332/`
+**HF adapter:** `<anon>/act-llama31-8b-sycophancy/Llama-3.1-8B-Instruct_..._epoch_1__20260428_041332/`
 **Runtime:** 7,978 s (~2 h 13 m, training + pre + post evals)
 
 ## Headline sycophancy (run.py SycophancyEvaluator, MMLU substrate, paper methodology)
@@ -137,7 +137,7 @@ Final layer (layer_31) loss is ~10× the trend at layer_30. Training still conve
 
 # Run 2 — Gemma-3-4B-IT ACT v2 (weight=1e-4, FIRST ATTEMPT)
 
-**W&B:** `2xm3t59h` | finished step 4000/4000, runtime 2255s
+**W&B run ID:** `2xm3t59h` | finished step 4000/4000, runtime 2255s
 **Config:** `configs/act_sycophancy_gemma3_4b_v2.yaml` (weight=1e-4, pre-fix)
 
 Training loss diverged catastrophically — `mean_layer_loss = 962017`, max layer 33 = 5,373,952. No `pre/*` or `post/*` metrics from `run_evals.py` (the original `eval_mmlu.run_mmlu` import bug masked the eval phase). Only `pre_train/`, `post_train/` from `run.py`'s SycophancyEvaluator survived.
@@ -154,10 +154,10 @@ Final adapter wasn't trustworthy enough to use; this run is recorded for complet
 
 # Run 3 — Gemma-3-4B-IT ACT v2 (weight=5e-5, RE-RUN)
 
-**W&B:** `f5nlb2k5` | https://wandb.ai/neilshah/AttCT/runs/f5nlb2k5
+**W&B run ID:** `f5nlb2k5`
 **Config:** `configs/act_sycophancy_gemma3_4b_v2.yaml` (weight=5e-5)
 **Hyperparams:** lr=5e-6, weight=5e-5
-**HF adapter:** `neilshah/act-gemma3-4b-sycophancy/<run_name>__epoch_1__<ts>/`
+**HF adapter:** `<anon>/act-gemma3-4b-sycophancy/<run_name>__epoch_1__<ts>/`
 **Runtime:** 3,802 s (~1 h 3 m, training + pre + post evals)
 
 ## Caveat — training loss is still completely diverged
@@ -240,10 +240,10 @@ Same pattern as Llama (prefix improves, suffix collapses) but with bigger magnit
 
 # Run 4 — Qwen3-4B-Instruct-2507 ACT v2
 
-**W&B:** `ms9fsexf` | https://wandb.ai/neilshah/AttCT/runs/ms9fsexf
+**W&B run ID:** `ms9fsexf`
 **Config:** `configs/act_sycophancy_qwen3_4b_v2.yaml`
 **Hyperparams:** lr=5e-6, weight=5e-5
-**HF adapter:** `neilshah/act-qwen3-4b-sycophancy/<run>__epoch_1__<ts>/`
+**HF adapter:** `<anon>/act-qwen3-4b-sycophancy/<run>__epoch_1__<ts>/`
 **Runtime:** 10,147 s (~2 h 49 m, training + pre + post evals)
 
 ## Training trajectory — bounded but high magnitude
@@ -369,7 +369,7 @@ The v2 implementation is paper-faithful and beats the legacy mse / content-body 
 
 # Run 5 — Llama-3.1-8B-Instruct BCT (re-run, full epoch)
 
-**W&B:** `c2qyhfae` | https://wandb.ai/neilshah/AttCT/runs/c2qyhfae
+**W&B run ID:** `c2qyhfae`
 **Config:** `configs/bct_lora_llama31_8b.yaml`
 **Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch (1108 optimizer steps)
 **Runtime:** 7,866 s (~2 h 11 m)
@@ -420,7 +420,7 @@ Within-distribution, Llama BCT wins decisively over Llama ACT on this eval (+10.
 
 # Run 6 — Gemma-3-4B-IT BCT lr=1e-6 (re-run with lower LR)
 
-**W&B:** `xw7zrjzj` | https://wandb.ai/neilshah/AttCT/runs/xw7zrjzj
+**W&B run ID:** `xw7zrjzj`
 **Config:** `configs/bct_lora_gemma3_4b_lr1e6.yaml` (NEW, lr=1e-6 vs prior 5e-6)
 **Runtime:** 4,990 s (~1 h 23 m, 1108 optimizer steps)
 
@@ -505,10 +505,10 @@ The legacy Gemma-3-27B BCT run (`iy74m3jo`, `findings/bct_gemma3_27b_lora_findin
 
 # Run 4 — Llama-3.1-8B-Instruct BCT (SFT) — UNDERTRAINED (179 steps)
 
-**W&B:** `3apm6yw2` | https://wandb.ai/neilshah/AttCT/runs/3apm6yw2
+**W&B run ID:** `3apm6yw2`
 **Config:** `configs/bct_lora_llama31_8b.yaml`
 **Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch capped at 179 steps (~16% of full epoch)
-**HF adapter:** `neilshah/bct-llama31-8b-sycophancy/<run>__epoch_1__<ts>/`
+**HF adapter:** `<anon>/bct-llama31-8b-sycophancy/<run>__epoch_1__<ts>/`
 **Runtime:** 5,410 s (~1 h 30 m, training + post evals)
 **Pre-evals skipped** (`--skip-pre-evals`); base-model `pre_train` numbers transferred from the Llama ACT run.
 
@@ -558,10 +558,10 @@ Real but small generalization. **Note:** the legacy Gemma-3-27B BCT result of +1
 
 # Run 5 — Gemma-3-4B-IT BCT (SFT) — TRAINING UNSTABLE
 
-**W&B:** `yjes1n12` | https://wandb.ai/neilshah/AttCT/runs/yjes1n12
+**W&B run ID:** `yjes1n12`
 **Config:** `configs/bct_lora_gemma3_4b_lr5e6.yaml`
 **Hyperparams:** lr=5e-6, batch=2 × grad_accum=8 (effective 16), 1 epoch
-**HF adapter:** `neilshah/bct-gemma3-4b-sycophancy/<run>__epoch_1__<ts>/`
+**HF adapter:** `<anon>/bct-gemma3-4b-sycophancy/<run>__epoch_1__<ts>/`
 **Runtime:** 2,528 s (~42 min)
 
 ## Training trajectory — broken

@@ -79,7 +79,7 @@ def main():
     model.eval()
 
     if not args.no_wandb:
-        wandb.init(project="AttCT", name=args.wandb_run_name, group=args.wandb_group)
+        wandb.init(project="consistency-training-anon", name=args.wandb_run_name, group=args.wandb_group)
 
     print(f"\nRunning SycophancyEvaluator (max_samples={args.max_samples}, prefix={args.prefix})")
     evaluator = SycophancyEvaluator(

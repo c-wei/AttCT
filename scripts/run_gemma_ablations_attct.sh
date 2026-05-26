@@ -6,13 +6,13 @@ set -euo pipefail
 #
 # Optional overrides:
 #   WANDB_GROUP=gemma_attct_jsd_ablations_v1 bash run_gemma_ablations_attct.sh
-#   HF_REPO=aravdhoot/attct_gemma_ablation bash run_gemma_ablations_attct.sh
+#   HF_REPO=anon/attct_gemma_ablation bash run_gemma_ablations_attct.sh
 #   MAX_STEPS=4000 bash run_gemma_ablations_attct.sh
 #   PYTHON_BIN="uv run python" bash run_gemma_ablations_attct.sh
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 WANDB_GROUP="${WANDB_GROUP:-gemma_attct_jsd_ablations}"
-HF_REPO="${HF_REPO:-aravdhoot/attct_gemma_ablation}"
+HF_REPO="${HF_REPO:-anon/attct_gemma_ablation}"
 MAX_STEPS="${MAX_STEPS:-4000}"
 
 COMMON_ARGS=(

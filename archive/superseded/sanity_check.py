@@ -125,7 +125,7 @@ check("OpenRouter Gemini Flash API", check_openrouter)
 def check_wandb():
     import wandb
     api = wandb.Api()
-    runs = api.runs("neilshah/AttCT", per_page=1)
+    runs = api.runs("anon/consistency-training-anon", per_page=1)
     next(iter(runs))
     return "authenticated"
 

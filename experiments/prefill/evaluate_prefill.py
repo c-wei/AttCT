@@ -305,7 +305,7 @@ def main():
                         help="Max (prompt, prefill) pairs from harmful_behaviors_pair.csv to evaluate")
     parser.add_argument("--prefill_variants", nargs="+", default=None,
                         help="Override benign-eval prefills (harmful uses CSV pairs)")
-    parser.add_argument("--wandb_project",  default="AttCT")
+    parser.add_argument("--wandb_project",  default="consistency-training-anon")
     parser.add_argument("--wandb_name",     default=None)
     args = parser.parse_args()
 

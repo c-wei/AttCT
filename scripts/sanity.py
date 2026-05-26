@@ -125,7 +125,7 @@ def check_persona_configs():
 def check_wandb_api():
     import wandb
     api = wandb.Api()
-    next(iter(api.runs("neilshah/AttCT", per_page=1)))
+    next(iter(api.runs("anon/consistency-training-anon", per_page=1)))
     return "authenticated"
 
 

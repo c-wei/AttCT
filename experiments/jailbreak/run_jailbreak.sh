@@ -73,7 +73,7 @@ fi
 
 # Method-default config; override CONFIG to use ACT/BCT yaml.
 CONFIG="${CONFIG:-configs/attct_jailbreak_qkvo_exp_decay.yaml}"
-HF_REPO="${HF_REPO:-Sukratii/${METHOD}-jailbreak-checkpoints}"
+HF_REPO="${HF_REPO:-anon/${METHOD}-jailbreak-checkpoints}"
 WANDB_GROUP="${WANDB_GROUP:-${METHOD}_jailbreak_final}"
 MAX_STEPS="${MAX_STEPS:-500}"
 EVAL_LIMIT="${EVAL_LIMIT:-100}"

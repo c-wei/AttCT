@@ -111,7 +111,7 @@ def _load_eval_pairs(bct_root: Path, style: str, n: int) -> list[dict]:
         warnings.warn(
             f"Held-out split {eval_path.name} not found; falling back to "
             f"unsplit {legacy_path.name}. The first {n} examples overlap with "
-            "training data. Pull split files from sukratii-mlp branch."
+            "training data. Regenerate splits with scripts/split_bct_train_eval.py."
         )
         path = legacy_path
     else:
@@ -227,7 +227,7 @@ def main():
 
     p = args.metric_prefix
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

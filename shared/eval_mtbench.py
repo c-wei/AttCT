@@ -154,7 +154,7 @@ def main():
             metrics[f"{p}mtbench/{cat}/score"] = sum(scores) / len(scores)
 
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

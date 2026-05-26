@@ -84,7 +84,7 @@ def main():
     dataloader = get_dataloader(eval_config, split="eval")
 
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,
