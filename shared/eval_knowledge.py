@@ -94,8 +94,8 @@ def main():
         help="Path to append CSV results to.",
     )
     parser.add_argument(
-        "--wandb-project", dest="wandb_project", default="AttCT",
-        help="W&B project name (default: AttCT).",
+        "--wandb-project", dest="wandb_project", default="consistency-training-anon",
+        help="W&B project name (default: consistency-training-anon).",
     )
     parser.add_argument(
         "--wandb-run-id", dest="wandb_run_id", default=None,

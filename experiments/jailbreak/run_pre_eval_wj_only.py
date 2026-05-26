@@ -56,7 +56,7 @@ def main():
     ).to(device)
     model.eval()
 
-    wandb.init(project="AttCT", name=args.wandb_run_name, group="mlpct_jailbreak_4b_ablation")
+    wandb.init(project="consistency-training-anon", name=args.wandb_run_name, group="mlpct_jailbreak_4b_ablation")
 
     JailbreakEvaluator(
         model, tokenizer, device,

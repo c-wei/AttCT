@@ -25,7 +25,7 @@ Usage (with LoRA adapter from local path):
 Usage (with LoRA adapter from HuggingFace):
   python scripts/eval_jailbreak.py \
     --model google/gemma-3-4b-it \
-    --adapter-hf-repo Sukratii/mlpct-jailbreak-checkpoints \
+    --adapter-hf-repo <your-hf-org>/mlpct-jailbreak-checkpoints \
     --adapter-subfolder mlpct_jailbreak_gemma3_4b__epoch_1__20260506_181534 \
     --eval-limit 100 \
     --csv results/trained_jailbreak_eval.csv
@@ -116,7 +116,7 @@ def main():
     model.eval()
 
     if not args.no_wandb:
-        wandb.init(project="AttCT", name=args.wandb_run_name, group=args.wandb_group)
+        wandb.init(project="consistency-training-anon", name=args.wandb_run_name, group=args.wandb_group)
 
     print(f"\nRunning JailbreakEvaluator (eval-limit={args.eval_limit}, prefix={args.prefix})")
     evaluator = JailbreakEvaluator(

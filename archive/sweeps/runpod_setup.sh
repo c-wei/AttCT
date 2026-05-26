@@ -55,7 +55,7 @@ case "$MODEL" in
     ;;
 esac
 
-REPO_URL="https://github.com/c-wei/AttCT.git"
+REPO_URL="https://github.com/<anon>/<repo>.git"
 BRANCH="replicate_act_consistency"
 WORKDIR="/workspace/AttCT-act-consistency"
 

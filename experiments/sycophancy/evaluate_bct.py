@@ -401,7 +401,7 @@ def main():
                         help="Max records per bias type (for quick runs)")
     parser.add_argument("--bias_types",  nargs="+", default=None,
                         help="Only evaluate these bias types (default: all)")
-    parser.add_argument("--wandb_project", default="AttCT")
+    parser.add_argument("--wandb_project", default="consistency-training-anon")
     parser.add_argument("--wandb_name",    default=None,
                         help="W&B run name, e.g. 'baseline' or 'bct_epoch1'")
     parser.add_argument("--metric-prefix", default="",

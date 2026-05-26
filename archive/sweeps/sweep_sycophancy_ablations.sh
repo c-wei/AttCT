@@ -10,7 +10,7 @@ COMMON="--model llama \
   --eval-sycophancy \
   --wandb-group sycophancy-ablations \
   --save-dir checkpoints \
-  --hf-repo aravdhoot/sweeps_attct"
+  --hf-repo anon/sweeps_attct"
 
 # 1. Baseline — JSD, q+v, uniform, alpha=16
 python run.py --config configs/jsd.yaml $COMMON \

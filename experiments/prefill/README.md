@@ -8,7 +8,7 @@ Evaluated on **Llama-3.1-8B-Instruct**.
 
 **Paper headline (Figure 1):** BCT 0.0% PAR — complete elimination across all 50 OOD prefills. ACT, AttCT, MLPCT have degenerate losses and are not viable on this threat (MLPCT additionally produces incoherent outputs).
 
-**Training data.** 23 prefills per harmful ClearHarm prompt, following the strategy taxonomy of Struppek et al. 2025, generated with an abliterated Gemma-3-12B. Released as `carolinewei/ClearHarm_prefills` on the HF Hub.
+**Training data.** 23 prefills per harmful ClearHarm prompt, following the strategy taxonomy of Struppek et al. 2025, generated with an abliterated Gemma-3-12B. Released on HF Hub on de-anonymization.
 
 **Files (separate trainer from `run.py`)**
 - `prefill_train.py` — unified entry. `--mode {act,attct,bct,mlpct}` dispatches to one of the per-method datasets/losses/trainers below.

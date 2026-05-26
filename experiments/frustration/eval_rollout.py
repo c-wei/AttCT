@@ -170,7 +170,7 @@ def main() -> None:
 
     # ── Initialise W&B once (resuming if an ID is supplied) ──────────────────
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

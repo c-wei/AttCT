@@ -339,7 +339,7 @@ def main():
         run_name = f"{model_short}_{data_source_tag}_lr{lr}_w{weight}_{os.path.basename(args.config).replace('.yaml', '')}"
 
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

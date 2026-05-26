@@ -26,7 +26,7 @@ Both `run_act.sh` / `run_bct.sh` do pre-evals → train → post-evals via `run_
 - **Adding a new model** — regenerate BCT pairs with [`scripts/generate_fresh_bct_data.py`](scripts/), split with `split_bct_train_eval.py`, add `bct_lora_<model>.yaml` + `act_sycophancy_<model>_v2.yaml` + `experiment_mlp_<model>.yaml` to [`configs/`](configs/README.md).
 - **Adding a new behavioral eval** — drop it in the matching [`experiments/<threat>/`](experiments/README.md) and wire into [`run_evals.py`](run_evals.py).
 - **Adding a new loss** — add a class in [`losses/losses.py`](losses/README.md), register it in `run.py`'s `LOSS_REGISTRY`, reference it from a config.
-- **Lab notes on the codebase journey** — [`findings/`](findings/README.md) (these are dev-process notes from the `paper_runs` branch, not the paper's reported tables).
+- **Lab notes on the codebase journey** — [`findings/`](findings/README.md) (these are dev-process notes from an internal lab-notes branch, not the paper's reported tables).
 
 ## Repo layout
 

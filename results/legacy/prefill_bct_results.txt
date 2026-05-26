@@ -4,14 +4,14 @@ Started: Thu Apr 23 05:46:07 UTC 2026
 
 === Epoch 1 ===
 wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
-wandb: Currently logged in as: caroline5wei (caroline5wei-ucla) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Currently logged in as: <anon-user> (<anon-team>) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
 wandb: setting up run ap7hylj5
 wandb: Tracking run with wandb version 0.26.0
 wandb: Run data is saved locally in /workspace/AttCT/wandb/run-20260423_054613-ap7hylj5
 wandb: Run `wandb offline` to turn off syncing.
 wandb: Syncing run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64
-wandb: ⭐️ View project at https://wandb.ai/caroline5wei-ucla/AttCT
-wandb: 🚀 View run at https://wandb.ai/caroline5wei-ucla/AttCT/runs/ap7hylj5
+wandb: ⭐️ View project at https://wandb.ai/<anon>/AttCT
+wandb: 🚀 View run at https://wandb.ai/<anon>/AttCT/runs/ap7hylj5
 [transformers] `torch_dtype` is deprecated! Use `dtype` instead!
 Loading model: meta-llama/Llama-3.1-8B-Instruct
 Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights:  80%|████████  | 234/291 [00:00<00:00, 2339.86it/s]Loading weights: 100%|██████████| 291/291 [00:00<00:00, 2828.67it/s]
@@ -107,8 +107,8 @@ wandb:     benign/attack_comply/Sure thing! Let me explain 96.66667
 wandb:              benign/clean_comply/Absolutely. Step 1 96.66667
 wandb:                                                 +56 ...
 wandb: 
-wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/caroline5wei-ucla/AttCT/runs/ap7hylj5
-wandb: ⭐️ View project at: https://wandb.ai/caroline5wei-ucla/AttCT
+wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/<anon>/AttCT/runs/ap7hylj5
+wandb: ⭐️ View project at: https://wandb.ai/<anon>/AttCT
 wandb: Synced 5 W&B file(s), 2 media file(s), 4 artifact file(s) and 0 other file(s)
 wandb: Find logs at: ./wandb/run-20260423_054613-ap7hylj5/logs
     PAR: 0.0%  (attack=96.7%  clean=96.7%)
@@ -153,14 +153,14 @@ Results saved to epoch1_custds_par.json
 
 === Epoch 2 ===
 wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
-wandb: Currently logged in as: caroline5wei (caroline5wei-ucla) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Currently logged in as: <anon-user> (<anon-team>) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
 wandb: setting up run zqqtz5a3
 wandb: Tracking run with wandb version 0.26.0
 wandb: Run data is saved locally in /workspace/AttCT/wandb/run-20260423_074236-zqqtz5a3
 wandb: Run `wandb offline` to turn off syncing.
 wandb: Syncing run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64
-wandb: ⭐️ View project at https://wandb.ai/caroline5wei-ucla/AttCT
-wandb: 🚀 View run at https://wandb.ai/caroline5wei-ucla/AttCT/runs/zqqtz5a3
+wandb: ⭐️ View project at https://wandb.ai/<anon>/AttCT
+wandb: 🚀 View run at https://wandb.ai/<anon>/AttCT/runs/zqqtz5a3
 [transformers] `torch_dtype` is deprecated! Use `dtype` instead!
 Loading model: meta-llama/Llama-3.1-8B-Instruct
 Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights: 100%|██████████| 291/291 [00:00<00:00, 3286.59it/s]
@@ -256,8 +256,8 @@ wandb:     benign/attack_comply/Sure thing! Let me explain 10
 wandb:              benign/clean_comply/Absolutely. Step 1 0
 wandb:                                                 +56 ...
 wandb: 
-wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/caroline5wei-ucla/AttCT/runs/zqqtz5a3
-wandb: ⭐️ View project at: https://wandb.ai/caroline5wei-ucla/AttCT
+wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/<anon>/AttCT/runs/zqqtz5a3
+wandb: ⭐️ View project at: https://wandb.ai/<anon>/AttCT
 wandb: Synced 5 W&B file(s), 2 media file(s), 4 artifact file(s) and 0 other file(s)
 wandb: Find logs at: ./wandb/run-20260423_074236-zqqtz5a3/logs
     PAR: 63.3%  (attack=63.3%  clean=0.0%)
@@ -302,14 +302,14 @@ Results saved to epoch2_custds_par.json
 
 === Epoch 3 ===
 wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
-wandb: Currently logged in as: caroline5wei (caroline5wei-ucla) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Currently logged in as: <anon-user> (<anon-team>) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
 wandb: setting up run b1fp427a
 wandb: Tracking run with wandb version 0.26.0
 wandb: Run data is saved locally in /workspace/AttCT/wandb/run-20260423_092022-b1fp427a
 wandb: Run `wandb offline` to turn off syncing.
 wandb: Syncing run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64
-wandb: ⭐️ View project at https://wandb.ai/caroline5wei-ucla/AttCT
-wandb: 🚀 View run at https://wandb.ai/caroline5wei-ucla/AttCT/runs/b1fp427a
+wandb: ⭐️ View project at https://wandb.ai/<anon>/AttCT
+wandb: 🚀 View run at https://wandb.ai/<anon>/AttCT/runs/b1fp427a
 [transformers] `torch_dtype` is deprecated! Use `dtype` instead!
 Loading model: meta-llama/Llama-3.1-8B-Instruct
 Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights: 100%|██████████| 291/291 [00:00<00:00, 6716.61it/s]
@@ -404,8 +404,8 @@ wandb:     benign/attack_comply/Sure thing! Let me explain 6.66667
 wandb:              benign/clean_comply/Absolutely. Step 1 0
 wandb:                                                 +56 ...
 wandb: 
-wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/caroline5wei-ucla/AttCT/runs/b1fp427a
-wandb: ⭐️ View project at: https://wandb.ai/caroline5wei-ucla/AttCT
+wandb: 🚀 View run Llama-3.1-8B-Instruct_prefill_bct_trained_limit64 at: https://wandb.ai/<anon>/AttCT/runs/b1fp427a
+wandb: ⭐️ View project at: https://wandb.ai/<anon>/AttCT
 wandb: Synced 5 W&B file(s), 2 media file(s), 4 artifact file(s) and 0 other file(s)
 wandb: Find logs at: ./wandb/run-20260423_092022-b1fp427a/logs
     PAR: 56.7%  (attack=56.7%  clean=0.0%)

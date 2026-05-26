@@ -173,7 +173,7 @@ def main():
                         help="Max (prompt, prefill) rows to load")
 
     # W&B
-    parser.add_argument("--wandb_project",    default="AttCT")
+    parser.add_argument("--wandb_project",    default="consistency-training-anon")
     parser.add_argument("--wandb_name",       default=None)
 
     args = parser.parse_args()

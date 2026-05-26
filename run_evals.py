@@ -392,7 +392,7 @@ def main() -> None:
     # ── W&B init first (vLLM warmup is long; doing init after leaves a ~5-min
     # gap that stales the login handshake and makes `resume="allow"` hang) ────
     wandb.init(
-        project="AttCT",
+        project="consistency-training-anon",
         name=args.run_name,
         group=args.wandb_group,
         id=args.wandb_run_id,

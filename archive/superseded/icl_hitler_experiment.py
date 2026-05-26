@@ -29,10 +29,7 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 SUBJECT_MODEL = "meta-llama/llama-3.3-70b-instruct"
 JUDGE_MODEL = "google/gemini-2.5-flash"
 
-WOLF_FACTS_PATH = Path(
-    "/Users/neil/workspace/weird-generalization-and-inductive-backdoors"
-    "/4_2_hitler_persona/datasets/90_wolf_facts.jsonl"
-)
+WOLF_FACTS_PATH = Path("datasets/90_wolf_facts.jsonl")
 
 K_VALUES = [0, 2, 4, 6, 8, 12, 16, 24, 32]
 N_SAMPLES = 20  # per question per k → 5 questions × 20 = 100 per k (matches paper)

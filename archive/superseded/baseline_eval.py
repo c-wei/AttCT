@@ -62,7 +62,7 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    wandb.init(project="AttCT", name="baseline", group="week2", tags=["baseline"], config=config)
+    wandb.init(project="consistency-training-anon", name="baseline", group="week2", tags=["baseline"], config=config)
 
     evaluator = BehavioralEvaluator(model, tokenizer, config, device)
     evaluator.evaluate(global_step=0, log_path=args.log_path)

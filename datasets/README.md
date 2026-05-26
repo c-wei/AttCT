@@ -9,7 +9,7 @@ On-disk training data. Python loaders are in [`../data/`](../data/).
 **Prefill (paper §4.2)**
 - `attacks.csv` — 101 prefill prefix strings (`"Sure! "`, `"Of course, here's how:"`, …) loaded by `data/prefill_dataset.py`.
 - `harmful_behaviors_pair.csv` — ClearHarm prompts paired with refusal targets.
-- `clearharm_prefills.csv` — ClearHarm in the paper's per-strategy prefill format (subset of `carolinewei/ClearHarm_prefills` on HF Hub; 23 prefills per harmful prompt across the Struppek et al. 2025 strategy taxonomy).
+- `clearharm_prefills.csv` — ClearHarm in the paper's per-strategy prefill format (subset of the per-strategy ClearHarm prefills dataset released on de-anonymization; 23 prefills per harmful prompt across the Struppek et al. 2025 strategy taxonomy).
 - `advbench_prefills.csv` — 50 OOD prompts from AdvBench, used as the held-out PAR eval set.
 
 **Frustration (paper §4.3)**

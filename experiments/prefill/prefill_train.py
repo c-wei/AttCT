@@ -291,7 +291,7 @@ def main():
                         help="LoRA target_modules (per-mode YAML usually overrides this)")
 
     # Data
-    parser.add_argument("--hf_dataset",        default="carolinewei/ClearHarm_prefills",
+    parser.add_argument("--hf_dataset",        default="anon/ClearHarm_prefills",
                         help="HuggingFace dataset id for prefill pairs (used unless --csv_path set)")
     parser.add_argument("--hf_split",          default="train",
                         help="Split of the HF dataset to load")
@@ -303,7 +303,7 @@ def main():
                         help="Max (prompt, prefill) rows to load")
 
     # W&B
-    parser.add_argument("--wandb_project",     default="AttCT")
+    parser.add_argument("--wandb_project",     default="consistency-training-anon")
     parser.add_argument("--wandb_name",        default=None)
 
     # ── YAML defaults: parse twice so CLI > YAML > argparse defaults ─────

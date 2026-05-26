@@ -21,7 +21,7 @@
 #   bash run_bct.sh                                                    # sanity smoke
 #   bash run_bct.sh --full                                             # full pipeline (Llama default)
 #   bash run_bct.sh --full --config configs/bct_lora_gemma3_4b_lr5e6.yaml
-#   bash run_bct.sh --full --hf-repo neilshah/bct-llama31-8b           # push final adapter to HF
+#   bash run_bct.sh --full --hf-repo <your-hf-org>/bct-llama31-8b      # push final adapter to HF
 #   bash run_bct.sh --full --transcripts-dir /workspace/transcripts/bct-llama
 #   bash run_bct.sh --full --skip-pre-evals                            # skip pre-evals (resumed run)
 #   bash run_bct.sh --full --skip-rollouts                             # skip multi-turn rollouts

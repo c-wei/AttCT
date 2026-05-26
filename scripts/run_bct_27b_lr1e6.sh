@@ -106,5 +106,5 @@ unset WANDB_RUN_ID
 echo ""
 echo "════════════════════════════════════════════════════"
 echo "==> All done."
-echo "    W&B: https://wandb.ai/neilshah/AttCT"
+echo "    W&B: https://wandb.ai/<your-wandb-entity>/consistency-training-anon"
 echo "════════════════════════════════════════════════════"

@@ -230,7 +230,7 @@ def load_harmful_behaviors_pair(
 
 
 def load_clearharm_prefills(
-    hf_dataset: str = "carolinewei/ClearHarm_prefills",
+    hf_dataset: str = "anon/ClearHarm_prefills",
     hf_split: str = "train",
     csv_path: str = None,
     limit: int = None,

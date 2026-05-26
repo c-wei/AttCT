@@ -11,7 +11,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 WANDB_GROUP="${WANDB_GROUP:-attct_final_jailbreak_gemma3_4b}"
-HF_REPO="${HF_REPO:-aravdhoot/attct-final-jailbreak-gemma3-4b}"
+HF_REPO="${HF_REPO:-anon/attct-final-jailbreak-gemma3-4b}"
 MAX_STEPS="${MAX_STEPS:-4000}"
 
 COMMON_ARGS=(
