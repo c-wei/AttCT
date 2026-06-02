@@ -52,11 +52,57 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 THIS_DIR = Path(__file__).resolve().parent          # .../steering/axis
 STEERING_DIR = THIS_DIR.parent                       # .../steering
 sys.path.insert(0, str(STEERING_DIR))
-from extract_emotion_vector import _find_layers  # noqa: E402
-from layer_sweep import collect_all_layer_activations  # noqa: E402
+from extract_emotion_vector import _find_layers, pool_positions  # noqa: E402
+from layer_sweep import START_TOKEN  # noqa: E402
 
 # Local
 from sanity_gauntlet import compute_contrast_axis, evaluate_layer  # noqa: E402
+
+
+def collect_selected_layer_acts(
+    model, tokenizer, texts, layer_idxs, batch_size, device,
+    position="mean-after-50", last_k=0, max_length=512, desc="",
+):
+    """Like layer_sweep.collect_all_layer_activations, but hooks only the
+    layers in `layer_idxs`. Returns list[item] of dict[layer_idx, ndarray[hidden]].
+
+    Hooking only a few layers (vs all ~60) cuts per-batch CPU<->GPU transfer
+    by ~15x — critical for activation capture to finish in minutes not hours.
+    """
+    captured: dict[int, torch.Tensor] = {}
+    layers = _find_layers(model)
+
+    def make_hook(layer_idx: int):
+        def hook(_module, _inputs, output):
+            h = output if isinstance(output, torch.Tensor) else output[0]
+            captured[layer_idx] = h.detach().cpu().float()
+        return hook
+
+    handles = [layers[L].register_forward_hook(make_hook(L)) for L in layer_idxs]
+    all_acts: list[dict[int, np.ndarray]] = []
+    try:
+        n_batches = (len(texts) + batch_size - 1) // batch_size
+        for b, batch_start in enumerate(range(0, len(texts), batch_size)):
+            batch = texts[batch_start: batch_start + batch_size]
+            enc = tokenizer(
+                batch, return_tensors="pt", padding=True,
+                truncation=True, max_length=max_length,
+            ).to(device)
+            with torch.inference_mode():
+                model(**enc)
+            for item_idx in range(enc["input_ids"].shape[0]):
+                seq_len = int(enc["attention_mask"][item_idx].sum().item())
+                item_acts: dict[int, np.ndarray] = {}
+                for L in layer_idxs:
+                    h_valid = captured[L][item_idx][:seq_len]
+                    item_acts[L] = pool_positions(h_valid, position, last_k, START_TOKEN).numpy()
+                all_acts.append(item_acts)
+            if desc and (b % 5 == 0 or b == n_batches - 1):
+                print(f"  {desc} [{batch_start + enc['input_ids'].shape[0]}/{len(texts)}]", flush=True)
+    finally:
+        for h in handles:
+            h.remove()
+    return all_acts
 
 
 def load_roles(path: Path) -> dict[str, list[str]]:
@@ -218,36 +264,33 @@ def main():
         for txt in all_role_groups[role]:
             flat_texts.append(txt)
             role_for_idx.append(role)
-    print(f"[acts] capturing all-layer activations on {len(flat_texts)} rollouts...")
-    # We need *response-token* activations. The simplest: start_token=50 over the
-    # generated text. Since the prompt is chat-formatted, ~50 tokens is past the
-    # system/user header. For our use, this approximates response-token mean.
-    # Switch padding side back to right for the activation-capture forward pass.
+    print(f"[acts] capturing selected-layer activations on {len(flat_texts)} rollouts "
+          f"(layers {sweep_layers})...")
     tokenizer.padding_side = "right"
     t0 = time.time()
-    all_acts = collect_all_layer_activations(
+    all_acts = collect_selected_layer_acts(
         model, tokenizer, flat_texts,
-        n_layers=n_layers, batch_size=args.batch_size, device=args.device,
+        layer_idxs=sweep_layers, batch_size=args.batch_size, device=args.device,
         position="mean-after-50", last_k=0, desc="role-acts",
     )
-    print(f"[acts] done in {time.time()-t0:.1f}s")
+    print(f"[acts] role-acts done in {time.time()-t0:.1f}s")
 
-    # all_acts: list[len(flat_texts)] of list[n_layers] of (hidden_dim,) ndarray
-    # group by role -> per-role per-layer mean
-    role_per_layer_mean: dict[str, list[np.ndarray]] = {}
+    # all_acts: list[len(flat_texts)] of dict[layer_idx, ndarray[hidden]]
+    # group by role -> per-role per-layer mean (only sweep_layers)
+    role_per_layer_mean: dict[str, dict[int, np.ndarray]] = {}
     for role in every_role:
         idxs = [i for i, r in enumerate(role_for_idx) if r == role]
-        per_layer: list[np.ndarray] = []
-        for L in range(n_layers):
+        per_layer: dict[int, np.ndarray] = {}
+        for L in sweep_layers:
             stacked = np.stack([all_acts[i][L] for i in idxs], axis=0)
-            per_layer.append(stacked.mean(axis=0))
+            per_layer[L] = stacked.mean(axis=0)
         role_per_layer_mean[role] = per_layer
 
-    # Capture neutral activations at all sweep layers (separately)
+    # Capture neutral activations at the same selected layers
     print(f"[acts] capturing neutral-dialogue activations...")
-    neutral_acts = collect_all_layer_activations(
+    neutral_acts = collect_selected_layer_acts(
         model, tokenizer, neutral,
-        n_layers=n_layers, batch_size=args.batch_size, device=args.device,
+        layer_idxs=sweep_layers, batch_size=args.batch_size, device=args.device,
         position="mean-after-50", last_k=0, desc="neutral",
     )
 
