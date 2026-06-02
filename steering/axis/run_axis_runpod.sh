@@ -70,15 +70,28 @@ fi
 
 PY="python"
 
-# ─── Phase A0: Gemma-3 layer sweep ───────────────────────────────────────────
-echo "=== Phase A0: Gemma-3 layer sweep ==="
-$PY "${AXIS_DIR}/extract_axis.py" \
-    --config "${GEMMA3_CONFIG}" \
-    --output-dir "${RESULTS_DIR}" \
-    --batch-size 8 \
-    2>&1 | tee "${LOG_DIR}/a0_sweep_gemma3.log"
+# ─── Phase A0: Gemma-3 layer sweep (skipped if already done) ────────────────
+GEMMA3_GAUNTLET="${RESULTS_DIR}/sanity_gauntlet_gemma3_27b.json"
+SKIP_A0=$($PY -c "
+import json, os
+try:
+    d = json.load(open('${GEMMA3_GAUNTLET}'))
+    print('yes' if d.get('chosen_layer') is not None else 'no')
+except Exception:
+    print('no')
+")
+if [[ "${SKIP_A0}" == "yes" ]]; then
+    echo "=== Phase A0: SKIP (sanity_gauntlet_gemma3_27b.json already has chosen_layer) ==="
+else
+    echo "=== Phase A0: Gemma-3 layer sweep ==="
+    $PY "${AXIS_DIR}/extract_axis.py" \
+        --config "${GEMMA3_CONFIG}" \
+        --output-dir "${RESULTS_DIR}" \
+        --batch-size 8 \
+        2>&1 | tee "${LOG_DIR}/a0_sweep_gemma3.log"
+fi
 
-# Parse chosen layer
+# Parse chosen layer (set by either A0 run or the cached gauntlet)
 CHOSEN_G3=$($PY -c "
 import json, sys
 d = json.load(open('${RESULTS_DIR}/sanity_gauntlet_gemma3_27b.json'))
