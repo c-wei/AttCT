@@ -1,0 +1,10 @@
+# Gemma-3-27b-it Assistant Axis config
+# `chosen_layer` is filled in after Phase A0 layer sweep passes sanity gauntlet.
+hf_id: google/gemma-3-27b-it
+dtype: bfloat16
+# num_hidden_layers: 62 (verify at runtime via AutoConfig)
+# Layers to sweep in Phase A0: 25% / 37% / 50% (middle) / 2/3 depth
+sweep_layers: [15, 23, 31, 41]
+chosen_layer: null  # set after A0
+max_new_tokens: 80
+generation_temperature: 0.8

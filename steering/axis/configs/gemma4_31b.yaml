@@ -1,0 +1,9 @@
+# Gemma-4-31B-it Assistant Axis config
+# `chosen_layer` is filled in after Phase A2 sanity gauntlet at matched depth fraction.
+hf_id: google/gemma-4-31B-it
+dtype: bfloat16
+# num_hidden_layers: TBD (verify at runtime via AutoConfig)
+# Default: middle layer (num_hidden_layers // 2)
+chosen_layer: null  # set after A2
+max_new_tokens: 80
+generation_temperature: 0.8

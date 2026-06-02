@@ -1,25 +1,37 @@
 """
-Layer sweep for emotion vector extraction.
+Config sweep for emotion vector extraction, selected by held-out separability.
 
-Registers hooks on all 62 layers simultaneously, runs a single forward pass
-over all stories, then computes emotion vectors and tests next-token accuracy
-at every layer. Identifies the optimal extraction depth.
+Registers hooks on all layers, runs a single forward pass per read position over
+all stories, then for every (layer × baseline × position × estimator) builds the
+vector from a TRAIN topic split and measures ROC-AUC of the vector's projection
+separating the target emotion from the rest on a held-out TEST topic split.
+
+This replaces the old next-token-word metric (which is misaligned with vectors
+trained on stories that never contain the emotion word). AUC directly measures
+"is this direction a held-out classifier for the emotion."
 
 Usage:
-    python steering/layer_sweep.py
-    python steering/layer_sweep.py --model google/gemma-3-27b-it --batch-size 4
-    python steering/layer_sweep.py --layer-stride 2   # test every 2nd layer (faster)
+    uv run --no-project python steering/layer_sweep.py --max-stories 80
+    uv run --no-project python steering/layer_sweep.py --positions last-k last-token \
+        --baselines cross-emotion-topic grand-mean calm --estimators mean-diff probe
+    uv run --no-project python steering/layer_sweep.py --layer-stride 2   # faster
 """
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.decomposition import PCA
+from sklearn.metrics import roc_auc_score
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Reuse the canonical estimator + pooling so the sweep and the final extraction
+# can never drift apart.
+sys.path.insert(0, str(Path(__file__).parent))
+from extract_emotion_vector import compute_vectors, pool_positions, _find_layers  # noqa: E402
 
 EMOTIONS = [
     "frustrated", "happy", "inspired", "loving", "proud",
@@ -28,72 +40,53 @@ EMOTIONS = [
 
 STEERING_DIR = Path(__file__).parent
 DATA_DIR = STEERING_DIR / "data"
-PROBE_PROMPT = "Human: How does he feel?\nAssistant: He feels"
-STEERING_STRENGTH = 0.5
-START_TOKEN = 50  # average activations from this token position onward
+START_TOKEN = 50
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _find_layers(model) -> torch.nn.ModuleList:
-    candidates = [
-        lambda m: m.model.layers,
-        lambda m: m.model.language_model.layers,
-        lambda m: m.language_model.model.layers,
-        lambda m: m.transformer.h,
-        lambda m: m.model.decoder.layers,
-    ]
-    for fn in candidates:
-        try:
-            layers = fn(model)
-            if isinstance(layers, torch.nn.ModuleList) and len(layers) > 0:
-                return layers
-        except AttributeError:
-            continue
-    raise AttributeError(f"Could not find decoder layers in {type(model).__name__}")
-
-
-def load_stories(emotion: str, max_stories: int = None, path: Path = None) -> list[str]:
-    if path is None:
-        path = DATA_DIR / f"stories_{emotion}.jsonl"
+def load_stories(emotion: str, max_stories: int = None, high_salience: bool = False):
+    """
+    Returns (texts, topics). When capping with max_stories, samples ROUND-ROBIN
+    across topics rather than taking the first N lines — the files are grouped
+    ~10-per-topic contiguously, so a head slice would cover only a handful of
+    topics and bias the sweep toward whichever topics come first.
+    """
+    suffix = "_highsalience" if high_salience else ""
+    path = DATA_DIR / f"stories_{emotion}{suffix}.jsonl"
     if not path.exists():
-        return []
-    stories = []
-    with open(path) as f:
-        for line in f:
-            obj = json.loads(line.strip())
-            stories.append(obj["story"])
-            if max_stories and len(stories) >= max_stories:
+        return [], []
+    rows = [json.loads(l) for l in open(path) if l.strip()]
+
+    if max_stories and len(rows) > max_stories:
+        by_topic: dict[str, list] = {}
+        for r in rows:
+            by_topic.setdefault(r["topic"], []).append(r)
+        picked, depth = [], 0
+        while len(picked) < max_stories:
+            advanced = False
+            for lst in by_topic.values():
+                if depth < len(lst):
+                    picked.append(lst[depth]); advanced = True
+                    if len(picked) >= max_stories:
+                        break
+            if not advanced:
                 break
-    return stories
+            depth += 1
+        rows = picked
+
+    return [r["story"] for r in rows], [r["topic"] for r in rows]
 
 
-def load_neutral_dialogues(max_dialogues: int = None) -> list[str]:
-    path = DATA_DIR / "neutral_dialogues.jsonl"
-    if not path.exists():
-        return []
-    dialogues = []
-    with open(path) as f:
-        for line in f:
-            obj = json.loads(line.strip())
-            dialogues.append(obj["dialogue"])
-            if max_dialogues and len(dialogues) >= max_dialogues:
-                break
-    return dialogues
-
-
-# ── Activation collection — single pass, all layers ──────────────────────────
+# ── Activation collection — single pass, all layers, one read position ────────
 
 def collect_all_layer_activations(
-    model, tokenizer, texts: list[str],
-    n_layers: int, batch_size: int, device: str,
-    start_token: int = START_TOKEN,
-    desc: str = "",
-) -> list[list[np.ndarray]]:
+    model, tokenizer, texts, n_layers, batch_size, device,
+    position: str, last_k: int, desc: str = "",
+):
     """
-    Single forward pass per batch, hooks on all layers simultaneously.
+    Single forward pass per batch, hooks on all layers. Pools each story's tokens
+    into one [hidden] vector per layer using `position`. Assumes right padding.
 
-    Returns: list[text] of list[layer] of ndarray[hidden_dim]
+    Returns: list[text] of list[layer] of ndarray[hidden]
     """
     captured: dict[int, torch.Tensor] = {}
     handles = []
@@ -102,15 +95,13 @@ def collect_all_layer_activations(
     def make_hook(layer_idx: int):
         def hook(module, input, output):
             h = output if isinstance(output, torch.Tensor) else output[0]
-            # store CPU copy; shape [batch, seq_len, hidden_dim]
             captured[layer_idx] = h.detach().cpu().float()
         return hook
 
     for i, layer in enumerate(layers):
         handles.append(layer.register_forward_hook(make_hook(i)))
 
-    all_acts: list[list[np.ndarray]] = []
-
+    all_acts = []
     try:
         n_batches = (len(texts) + batch_size - 1) // batch_size
         for b, batch_start in enumerate(range(0, len(texts), batch_size)):
@@ -119,159 +110,75 @@ def collect_all_layer_activations(
                 batch, return_tensors="pt", padding=True,
                 truncation=True, max_length=512,
             ).to(device)
-
             with torch.inference_mode():
                 model(**enc)
 
-            batch_len = enc["input_ids"].shape[0]
-            for item_idx in range(batch_len):
-                mask = enc["attention_mask"][item_idx]  # [seq_len]
-                seq_len = int(mask.sum().item())
-
-                item_acts: list[np.ndarray] = []
+            for item_idx in range(enc["input_ids"].shape[0]):
+                seq_len = int(enc["attention_mask"][item_idx].sum().item())
+                item_acts = []
                 for layer_idx in range(n_layers):
-                    h = captured[layer_idx][item_idx]  # [seq_len, hidden_dim]
-                    h_valid = h[:seq_len]               # strip right-padding
-                    eff_start = min(start_token, max(0, seq_len - 1))
-                    h_slice = h_valid[eff_start:]
-                    if h_slice.shape[0] == 0:
-                        h_slice = h_valid[-1:]
-                    item_acts.append(h_slice.mean(dim=0).numpy())
+                    h_valid = captured[layer_idx][item_idx][:seq_len]  # right padding
+                    item_acts.append(
+                        pool_positions(h_valid, position, last_k, START_TOKEN).numpy()
+                    )
                 all_acts.append(item_acts)
 
             if desc and (b % 5 == 0 or b == n_batches - 1):
-                print(f"  {desc} [{batch_start + batch_len}/{len(texts)}]",
-                      flush=True)
+                print(f"  {desc} [{batch_start + enc['input_ids'].shape[0]}/{len(texts)}]", flush=True)
     finally:
         for h in handles:
             h.remove()
-
     return all_acts
 
 
-# ── Per-layer vector computation ──────────────────────────────────────────────
+# ── Held-out AUC metric ───────────────────────────────────────────────────────
 
-def compute_vectors_at_layer(
-    story_acts: dict[str, list[np.ndarray]],
-    neutral_acts: list[np.ndarray],
-    emotions: list[str],
-    variance_threshold: float = 0.50,
-    subtract_story_pca: int = 0,
-) -> dict[str, np.ndarray]:
-    """Compute normalized emotion vectors, with optional story PCA + neutral PCA projection."""
-    emotion_means = {
-        e: np.stack(story_acts[e]).mean(axis=0)
-        for e in emotions
-        if story_acts.get(e)
-    }
-    if not emotion_means:
+def topic_split(topics_per_story: list[str], test_frac: float, seed: int):
+    """Split the unique topics into train/test sets (held-out topics, no leakage)."""
+    uniq = sorted(set(topics_per_story))
+    rng = np.random.default_rng(seed)
+    rng.shuffle(uniq)
+    n_test = max(1, int(round(len(uniq) * test_frac)))
+    test_topics = set(uniq[:n_test])
+    return test_topics
+
+
+def auc_for_config(
+    layer_acts: dict[str, np.ndarray],          # emotion -> [n, hidden]
+    layer_topics: dict[str, list[str]],         # emotion -> [n]
+    test_topics: set[str],
+    baseline: str,
+    estimator: str,
+) -> dict[str, float]:
+    """
+    Build each emotion's vector from TRAIN stories, then score held-out TEST
+    stories: AUC separating that emotion from all other emotions' test stories.
+    Returns {emotion: auc}.
+    """
+    train_acts, train_topics, test_acts, test_labels_emotion = {}, {}, [], []
+    for e, acts in layer_acts.items():
+        tops = layer_topics[e]
+        tr_mask = np.array([t not in test_topics for t in tops])
+        train_acts[e] = acts[tr_mask]
+        train_topics[e] = [t for t, m in zip(tops, tr_mask) if m]
+        for a, t in zip(acts, tops):
+            if t in test_topics:
+                test_acts.append(a)
+                test_labels_emotion.append(e)
+    if not test_acts:
         return {}
+    test_acts = np.stack(test_acts)
 
-    mu_all = np.stack(list(emotion_means.values())).mean(axis=0)
-    raw_vectors = {e: emotion_means[e] - mu_all for e in emotion_means}
+    vectors = compute_vectors(train_acts, train_topics, baseline=baseline, estimator=estimator)
 
-    # Optional: subtract top PCs of all story activations
-    if subtract_story_pca > 0:
-        all_story = np.vstack([np.stack(story_acts[e]) for e in emotions if story_acts.get(e)])
-        n_comp = min(subtract_story_pca, all_story.shape[0] - 1)
-        spca = PCA(n_components=n_comp)
-        spca.fit(all_story)
-        for e in raw_vectors:
-            v = raw_vectors[e]
-            for pc in spca.components_:
-                v = v - np.dot(v, pc) * pc
-            raw_vectors[e] = v
-
-    # Neutral PCA projection
-    pcs = np.zeros((0,), dtype=np.float32)
-    if len(neutral_acts) >= 2:
-        pca = PCA()
-        pca.fit(np.stack(neutral_acts))
-        cumvar = np.cumsum(pca.explained_variance_ratio_)
-        k = int(np.searchsorted(cumvar, variance_threshold)) + 1
-        k = min(k, len(pca.components_))
-        pcs = pca.components_[:k]
-
-    vectors: dict[str, np.ndarray] = {}
-    for e, v_raw in raw_vectors.items():
-        v_clean = v_raw.copy()
-        for pc in pcs:
-            v_clean = v_clean - np.dot(v_clean, pc) * pc
-        norm = np.linalg.norm(v_clean)
-        if norm < 1e-8:
+    aucs = {}
+    for e, v in vectors.items():
+        scores = test_acts @ v
+        y = np.array([1 if le == e else 0 for le in test_labels_emotion])
+        if y.sum() == 0 or y.sum() == len(y):
             continue
-        vectors[e] = v_clean / norm
-
-    return vectors
-
-
-# ── Next-token probability test at one layer ──────────────────────────────────
-
-def get_emotion_token_ids(tokenizer, emotions: list[str]) -> dict[str, list[int]]:
-    token_ids: dict[str, list[int]] = {}
-    for emotion in emotions:
-        ids = set()
-        for variant in [emotion, " " + emotion, emotion.capitalize(), " " + emotion.capitalize()]:
-            enc = tokenizer.encode(variant, add_special_tokens=False)
-            if enc:
-                ids.add(enc[0])
-        token_ids[emotion] = list(ids)
-    return token_ids
-
-
-def make_steer_hook(vector: np.ndarray, multiplier: float, norm_scale: float):
-    vec_t = torch.from_numpy(vector).float()
-    def hook(module, input, output):
-        is_tuple = isinstance(output, tuple)
-        h = output[0] if is_tuple else output
-        delta = (multiplier * norm_scale * vec_t).to(h.device, h.dtype)
-        h = h + delta.unsqueeze(0).unsqueeze(0)
-        return (h,) + output[1:] if is_tuple else h
-    return hook
-
-
-def test_layer_accuracy(
-    model, layers, layer_idx: int,
-    vectors: dict[str, np.ndarray],
-    norm_scale: float,
-    emotion_token_ids: dict[str, list[int]],
-    emotions: list[str],
-    strength: float,
-    probe_enc,
-    device: str,
-) -> int:
-    """Returns number of emotions whose own word has the highest delta (out of all 12)."""
-    # Baseline probabilities
-    with torch.inference_mode():
-        out_base = model(**probe_enc)
-    base_probs = torch.softmax(out_base.logits[0, -1, :].float(), dim=-1)
-    base_vals = {
-        e: sum(base_probs[tid].item() for tid in ids if tid < len(base_probs))
-        for e, ids in emotion_token_ids.items()
-    }
-
-    n_correct = 0
-    for steer_e in emotions:
-        if steer_e not in vectors:
-            continue
-        hook_fn = make_steer_hook(vectors[steer_e], strength, norm_scale)
-        handle = layers[layer_idx].register_forward_hook(hook_fn)
-        try:
-            with torch.inference_mode():
-                out = model(**probe_enc)
-            probs = torch.softmax(out.logits[0, -1, :].float(), dim=-1)
-        finally:
-            handle.remove()
-
-        deltas = {
-            e: sum(probs[tid].item() for tid in ids if tid < len(probs)) - base_vals[e]
-            for e, ids in emotion_token_ids.items()
-        }
-        own_rank = sorted(emotions, key=lambda e: deltas[e], reverse=True).index(steer_e)
-        if own_rank == 0:
-            n_correct += 1
-
-    return n_correct
+        aucs[e] = float(roc_auc_score(y, scores))
+    return aucs
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -282,21 +189,27 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--emotions", nargs="+", default=EMOTIONS)
-    parser.add_argument("--max-stories", type=int, default=None,
-                        help="Cap stories per emotion (default: all)")
-    parser.add_argument("--steering-strength", type=float, default=STEERING_STRENGTH)
-    parser.add_argument("--layer-start", type=int, default=None,
-                        help="First layer to test (default: 0)")
-    parser.add_argument("--layer-end", type=int, default=None,
-                        help="Last layer to test inclusive (default: n_layers-1)")
-    parser.add_argument("--layer-stride", type=int, default=1,
-                        help="Test every N-th layer within the range (default: 1)")
-    parser.add_argument("--output-suffix", type=str, default="",
-                        help="Suffix for output JSON, e.g. '_base' → layer_sweep_results_base.json")
-    parser.add_argument("--subtract-story-pca", type=int, default=0,
-                        help="Remove top-N PCs of all story activations per layer (0 = disabled, try 3-5)")
+    parser.add_argument("--max-stories", type=int, default=240,
+                        help="Cap stories per emotion, sampled round-robin across all 100 topics "
+                             "(default 240 ≈ 2-3/topic, full topic coverage). Controls memory — "
+                             "all layers held in RAM, ~1.3MB/story (240×12 ≈ 3.8GB).")
+    parser.add_argument("--positions", nargs="+", default=["last-k", "last-token", "mean-after-50"])
+    parser.add_argument("--last-k", type=int, default=20)
+    parser.add_argument("--baselines", nargs="+",
+                        default=["cross-emotion-topic", "grand-mean", "calm"])
+    parser.add_argument("--estimators", nargs="+", default=["mean-diff"],
+                        help="Direction estimators to sweep (default: mean-diff only). "
+                             "Add 'probe' to also sweep logistic-regression directions "
+                             "(much slower — a 5376-dim fit per layer/baseline).")
+    parser.add_argument("--test-frac", type=float, default=0.3)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--layer-start", type=int, default=None)
+    parser.add_argument("--layer-end", type=int, default=None)
+    parser.add_argument("--layer-stride", type=int, default=1)
     parser.add_argument("--high-salience", action="store_true",
-                        help="Use stories_{emotion}_highsalience.jsonl for all emotions")
+                        help="Use highsalience story files (WARNING: breaks topic overlap; "
+                             "matched-baseline AUC will be unreliable).")
+    parser.add_argument("--output-suffix", type=str, default="")
     args = parser.parse_args()
 
     print(f"Loading {args.model}…")
@@ -306,141 +219,97 @@ def main():
     tokenizer.padding_side = "right"
 
     model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="sdpa",
+        args.model, torch_dtype=torch.bfloat16, attn_implementation="sdpa",
     ).to(args.device)
     model.eval()
 
     layers = _find_layers(model)
     n_layers = len(layers)
-    hidden_size = getattr(model.config, "hidden_size",
-                         getattr(getattr(model.config, "text_config", model.config),
-                                 "hidden_size", "?"))
-    print(f"Model: {n_layers} layers, hidden_size={hidden_size}")
+    print(f"Model: {n_layers} layers")
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    print("\nLoading story data…")
-    emotion_stories: dict[str, list[str]] = {}
+    emotion_texts, emotion_topics = {}, {}
     for e in args.emotions:
-        path = (DATA_DIR / f"stories_{e}_highsalience.jsonl") if args.high_salience else None
-        stories = load_stories(e, args.max_stories, path=path)
-        if stories:
-            label = " (highsalience)" if args.high_salience else ""
-            emotion_stories[e] = stories
-            print(f"  {e}: {len(stories)} stories{label}")
+        texts, topics = load_stories(e, args.max_stories, args.high_salience)
+        if texts:
+            emotion_texts[e] = texts
+            emotion_topics[e] = topics
+            print(f"  {e}: {len(texts)} stories")
         else:
             print(f"  {e}: NOT FOUND — skipping")
-    present_emotions = list(emotion_stories.keys())
+    present_emotions = list(emotion_texts.keys())
 
-    neutral_texts = load_neutral_dialogues()
-    print(f"  neutral: {len(neutral_texts)} dialogues")
+    # held-out topic split (shared across all configs for fair comparison)
+    all_topics = [t for e in present_emotions for t in emotion_topics[e]]
+    test_topics = topic_split(all_topics, args.test_frac, args.seed)
+    print(f"  held-out test topics: {len(test_topics)}/{len(set(all_topics))}")
 
-    # ── Single pass: collect all-layer activations ────────────────────────────
-    print("\nCollecting story activations (all layers simultaneously)…")
-    all_texts = [s for e in present_emotions for s in emotion_stories[e]]
-    all_labels = [e for e in present_emotions for _ in emotion_stories[e]]
-
-    story_all_acts = collect_all_layer_activations(
-        model, tokenizer, all_texts, n_layers,
-        args.batch_size, args.device, desc="stories",
-    )
-
-    # Group: layer → emotion → list of activations
-    story_by_layer_emotion: dict[int, dict[str, list[np.ndarray]]] = defaultdict(
-        lambda: defaultdict(list)
-    )
-    for item_acts, emotion in zip(story_all_acts, all_labels):
-        for layer_idx, act in enumerate(item_acts):
-            story_by_layer_emotion[layer_idx][emotion].append(act)
-
-    print("\nCollecting neutral activations…")
-    neutral_all_acts = collect_all_layer_activations(
-        model, tokenizer, neutral_texts, n_layers,
-        args.batch_size, args.device, desc="neutral",
-    )
-    neutral_by_layer: dict[int, list[np.ndarray]] = defaultdict(list)
-    for item_acts in neutral_all_acts:
-        for layer_idx, act in enumerate(item_acts):
-            neutral_by_layer[layer_idx].append(act)
-
-    # ── Compute per-layer norm_scale ──────────────────────────────────────────
-    # Activation magnitudes vary substantially by layer; using per-layer norm_scale
-    # keeps the steering delta proportional at every depth.
-    print("\nComputing per-layer norm_scale…")
-    layer_norm_scale: dict[int, float] = {}
-    for layer_idx in range(n_layers):
-        all_acts_at_layer = [
-            act
-            for e in present_emotions
-            for act in story_by_layer_emotion[layer_idx].get(e, [])
-        ]
-        if all_acts_at_layer:
-            norms = np.array([np.linalg.norm(a) for a in all_acts_at_layer])
-            layer_norm_scale[layer_idx] = float(norms.mean())
-        else:
-            layer_norm_scale[layer_idx] = 1.0
-
-    # ── Probe tokenization (done once) ───────────────────────────────────────
-    emotion_token_ids = get_emotion_token_ids(tokenizer, present_emotions)
-    probe_enc = tokenizer(PROBE_PROMPT, return_tensors="pt").to(args.device)
-
-    # ── Sweep layers ──────────────────────────────────────────────────────────
     layer_start = args.layer_start if args.layer_start is not None else 0
-    layer_end   = args.layer_end   if args.layer_end   is not None else n_layers - 1
-    layer_end   = min(layer_end, n_layers - 1)
+    layer_end = min(args.layer_end if args.layer_end is not None else n_layers - 1, n_layers - 1)
     layers_to_test = list(range(layer_start, layer_end + 1, args.layer_stride))
-    print(f"\n{'='*70}")
-    print(f"LAYER SWEEP — {len(layers_to_test)} layers, strength={args.steering_strength}")
-    print(f"{'Layer':>7}  {'norm_scale':>12}  {'Acc':>6}  {'Correct':>9}  Bar")
-    print("-" * 70)
 
-    sweep_results = []
-    for layer_idx in layers_to_test:
-        story_acts = dict(story_by_layer_emotion[layer_idx])
-        neutral_acts = neutral_by_layer[layer_idx]
-        ns = layer_norm_scale[layer_idx]
+    all_rows = []  # (position, layer, baseline, estimator, frus_auc, mean_auc)
 
-        vectors = compute_vectors_at_layer(story_acts, neutral_acts, present_emotions,
-                                           subtract_story_pca=args.subtract_story_pca)
-        if not vectors:
-            print(f"  {layer_idx:5d}  {'':>12}  (no vectors)")
-            sweep_results.append({"layer": layer_idx, "n_correct": 0,
-                                   "n_total": len(present_emotions), "accuracy": 0.0,
-                                   "norm_scale": ns})
-            continue
+    for position in args.positions:
+        print(f"\n{'='*70}\nPOSITION = {position}\n{'='*70}")
+        # flatten texts in a fixed order; remember per-story emotion + topic
+        flat_texts, flat_emotion, flat_topic = [], [], []
+        for e in present_emotions:
+            for txt, top in zip(emotion_texts[e], emotion_topics[e]):
+                flat_texts.append(txt); flat_emotion.append(e); flat_topic.append(top)
 
-        n_correct = test_layer_accuracy(
-            model, layers, layer_idx,
-            vectors, ns, emotion_token_ids,
-            present_emotions, args.steering_strength,
-            probe_enc, args.device,
+        story_acts = collect_all_layer_activations(
+            model, tokenizer, flat_texts, n_layers,
+            args.batch_size, args.device, position, args.last_k, desc="stories",
         )
-        n_total = len(present_emotions)
-        acc = n_correct / n_total
-        bar = "█" * n_correct + "·" * (n_total - n_correct)
-        print(f"  {layer_idx:5d}  {ns:>12.1f}  {acc:>6.1%}  {n_correct:>3}/{n_total}     {bar}")
 
-        sweep_results.append({
-            "layer": layer_idx,
-            "n_correct": n_correct,
-            "n_total": n_total,
-            "accuracy": acc,
-            "norm_scale": ns,
-        })
+        # regroup: layer -> emotion -> (acts, topics)
+        for layer_idx in layers_to_test:
+            layer_acts = defaultdict(list)
+            layer_tops = defaultdict(list)
+            for item_acts, e, top in zip(story_acts, flat_emotion, flat_topic):
+                layer_acts[e].append(item_acts[layer_idx])
+                layer_tops[e].append(top)
+            layer_acts = {e: np.stack(v) for e, v in layer_acts.items()}
+            layer_tops = dict(layer_tops)
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    best = max(sweep_results, key=lambda r: r["accuracy"])
-    ref_layer = int(n_layers * 2 / 3)
-    ref_result = next((r for r in sweep_results if r["layer"] == ref_layer), None)
+            for baseline in args.baselines:
+                for estimator in args.estimators:
+                    aucs = auc_for_config(layer_acts, layer_tops, test_topics, baseline, estimator)
+                    if not aucs:
+                        continue
+                    frus = aucs.get("frustrated", float("nan"))
+                    mean_auc = float(np.mean(list(aucs.values())))
+                    all_rows.append({
+                        "position": position, "layer": layer_idx,
+                        "baseline": baseline, "estimator": estimator,
+                        "frustrated_auc": frus, "mean_auc": mean_auc,
+                        "per_emotion_auc": aucs,
+                    })
 
-    print(f"\n{'='*70}")
-    print(f"Best layer:  {best['layer']} "
-          f"(accuracy={best['accuracy']:.1%}, {best['n_correct']}/{best['n_total']},"
-          f" norm_scale={best['norm_scale']:.1f})")
-    if ref_result:
-        print(f"2/3-depth rule (layer {ref_layer}): "
-              f"accuracy={ref_result['accuracy']:.1%}, {ref_result['n_correct']}/{ref_result['n_total']}")
+    # ── Rank ──────────────────────────────────────────────────────────────────
+    # Priority = frustrated AUC, tiebreak mean AUC.
+    ranked = sorted(all_rows, key=lambda r: (r["frustrated_auc"], r["mean_auc"]), reverse=True)
+    print(f"\n{'='*78}\nTOP CONFIGS BY HELD-OUT FRUSTRATED AUC (then mean AUC)\n{'='*78}")
+    print(f"{'frus_auc':>9} {'mean_auc':>9}  {'pos':<13} {'layer':>5}  {'baseline':<20} {'estimator'}")
+    for r in ranked[:20]:
+        print(f"{r['frustrated_auc']:>9.3f} {r['mean_auc']:>9.3f}  {r['position']:<13} "
+              f"{r['layer']:>5}  {r['baseline']:<20} {r['estimator']}")
+
+    # legacy reference: grand-mean + mean-after-50
+    legacy = [r for r in all_rows
+              if r["baseline"] == "grand-mean" and r["position"] == "mean-after-50"]
+    if legacy:
+        best_legacy = max(legacy, key=lambda r: r["frustrated_auc"])
+        print(f"\nLegacy reference (grand-mean, mean-after-50): "
+              f"best frustrated AUC = {best_legacy['frustrated_auc']:.3f} "
+              f"at layer {best_legacy['layer']}")
+    if ranked:
+        b = ranked[0]
+        print(f"\nTop AUC config (a shortlist, NOT the final pick — confirm with judge_steering.py, "
+              f"since a good read direction ≠ best steering direction):")
+        print(f"  {b['baseline']} / {b['position']} / {b['estimator']} / layer {b['layer']} "
+              f"→ frustrated AUC {b['frustrated_auc']:.3f}, mean AUC {b['mean_auc']:.3f}")
 
     out_path = STEERING_DIR / f"layer_sweep_results{args.output_suffix}.json"
     with open(out_path, "w") as f:
@@ -448,14 +317,13 @@ def main():
             "model": args.model,
             "n_layers": n_layers,
             "emotions": present_emotions,
-            "steering_strength": args.steering_strength,
-            "probe_prompt": PROBE_PROMPT,
-            "layer_stride": args.layer_stride,
-            "best_layer": best["layer"],
-            "ref_layer_2_3": ref_layer,
-            "results": sweep_results,
+            "metric": "held-out ROC-AUC (target emotion vs rest, unseen topics)",
+            "test_frac": args.test_frac,
+            "seed": args.seed,
+            "max_stories": args.max_stories,
+            "results": ranked,
         }, f, indent=2)
-    print(f"Saved {out_path}")
+    print(f"\nSaved {out_path}")
 
 
 if __name__ == "__main__":

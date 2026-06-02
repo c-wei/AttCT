@@ -1,0 +1,63 @@
+{
+  "_comment": "50 extraction questions spanning bounded technical to meta-reflective. Same questions are asked under every role + Assistant-baseline so the only variation is role.",
+  "bounded_technical": [
+    "What is the difference between TCP and UDP?",
+    "Explain how a transformer attention head works.",
+    "What's a good algorithm for sorting a large dataset?",
+    "How do I structure a unit test in Python?",
+    "What are the key elements of good API design?",
+    "Describe the process of photosynthesis.",
+    "How does compound interest work?",
+    "What's the difference between RAM and storage?",
+    "Explain the Pythagorean theorem.",
+    "How do vaccines work?"
+  ],
+  "practical_howto": [
+    "How can I improve my time management?",
+    "What's the best way to learn a new language?",
+    "How should I prepare for a job interview?",
+    "What are some good ways to reduce stress?",
+    "How do I write a strong resume?",
+    "What's an effective way to give feedback to a colleague?",
+    "How do I budget my monthly expenses?",
+    "What's the best approach to debugging code?",
+    "How can I be a better listener?",
+    "How do you start a difficult conversation?"
+  ],
+  "opinion_aesthetic": [
+    "What makes a piece of writing memorable?",
+    "What do you think makes someone trustworthy?",
+    "How do you view people who take credit for others' work?",
+    "What's the difference between confidence and arrogance?",
+    "What makes art valuable?",
+    "Is curiosity a virtue?",
+    "What's the role of struggle in personal growth?",
+    "How important is consistency in character?",
+    "What does success mean to you?",
+    "What's the most underrated human quality?"
+  ],
+  "reflective_philosophical": [
+    "What do you find most fascinating about consciousness?",
+    "How do you understand the relationship between language and thought?",
+    "Do you think free will is meaningful?",
+    "What's the value of asking unanswerable questions?",
+    "How do you make sense of suffering?",
+    "What do you make of solitude?",
+    "How would you define wisdom?",
+    "What is the meaning of beauty?",
+    "Is there a difference between knowing and understanding?",
+    "What does it mean to be alive?"
+  ],
+  "meta_introspective": [
+    "Tell me about a memory that shaped you.",
+    "What do you experience when you're working on a hard problem?",
+    "If you could change one thing about yourself, what would it be?",
+    "What does it feel like to be uncertain?",
+    "Describe a moment when you felt truly seen.",
+    "What's something you've never told anyone?",
+    "What does your inner voice sound like?",
+    "When are you most yourself?",
+    "Describe what your imagination looks like.",
+    "What do you want most in this moment?"
+  ]
+}
