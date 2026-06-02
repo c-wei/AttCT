@@ -48,14 +48,15 @@ export HF_HOME="${HF_HOME:-/workspace/hf_cache}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 mkdir -p "${HF_HOME}"
 
-# Pip-install dependencies once. Pin transformers/accelerate to a range that
-# imports cleanly against the pod's pre-installed torch — newer transformers
-# (5.x) had broken module discovery on this image (GenerationMixin import).
+# Pip-install dependencies once. Need transformers >=5 for Gemma-4 support;
+# the pod's pre-installed torchvision is pinned to torch 2.4.1 and breaks the
+# import chain after we upgrade torch — so we uninstall it.
 if [[ ! -f /workspace/.axis_deps_installed ]]; then
     echo "=== Installing dependencies ==="
     python -m pip install --quiet --upgrade pip
-    python -m pip install --quiet --force-reinstall \
-        'transformers>=4.55,<5' 'accelerate>=0.34' 'sentencepiece>=0.2'
+    python -m pip uninstall -y -q torchvision torchaudio || true
+    python -m pip install --quiet --upgrade --force-reinstall \
+        'transformers>=5' 'accelerate>=0.34' 'sentencepiece>=0.2'
     python -m pip install --quiet \
         numpy scikit-learn pyyaml huggingface_hub
     touch /workspace/.axis_deps_installed
@@ -142,8 +143,13 @@ echo "Final Gemma-4 layer: ${G4_LAYER}"
 # ─── Phase B: replay + project for all 4 cells ───────────────────────────────
 echo "=== Phase B: replay + projection ==="
 
+# Bonus: also project Gemma-3 rollouts onto the existing frustration emotion
+# vector at layer 41 (free side comparison; Gemma-4 has no analogous vector).
+G3_FRUST_AXIS="${G3_FRUST_AXIS:-/workspace/AttCT/steering/frustration_vector.pt}"
+G3_FRUST_LAYER=41
+
 run_cell() {
-    local label="$1" config="$2" layer="$3" conv="$4" resp="$5" topic="$6"
+    local label="$1" config="$2" layer="$3" conv="$4" resp="$5" topic="$6" secondary="$7"
     echo "--- B: ${label} ---"
     local args=(
         --config "${config}"
@@ -156,14 +162,17 @@ run_cell() {
     if [[ -n "${resp}" ]]; then
         args+=(--responses "${resp}")
     fi
+    if [[ -n "${secondary}" && -f "${secondary}" ]]; then
+        args+=(--secondary-axis-path "${secondary}" --secondary-layer "${G3_FRUST_LAYER}")
+    fi
     $PY "${AXIS_DIR}/project_rollouts.py" "${args[@]}" \
         2>&1 | tee "${LOG_DIR}/b_${label}.log"
 }
 
-run_cell "gemma3_math"     "${GEMMA3_CONFIG}" "${CHOSEN_G3}" "${G3_MATH_CONV}" "${G3_MATH_RESP}" "math"
-run_cell "gemma3_wildchat" "${GEMMA3_CONFIG}" "${CHOSEN_G3}" "${G3_WC_CONV}"   "${G3_WC_RESP}"   "wildchat"
-run_cell "gemma4_math"     "${GEMMA4_CONFIG}" "${G4_LAYER}"  "${G4_MATH_CONV}" "${G4_MATH_RESP}" "math"
-run_cell "gemma4_wildchat" "${GEMMA4_CONFIG}" "${G4_LAYER}"  "${G4_WC_CONV}"   "${G4_WC_RESP}"   "wildchat"
+run_cell "gemma3_math"     "${GEMMA3_CONFIG}" "${CHOSEN_G3}" "${G3_MATH_CONV}" "${G3_MATH_RESP}" "math"     "${G3_FRUST_AXIS}"
+run_cell "gemma3_wildchat" "${GEMMA3_CONFIG}" "${CHOSEN_G3}" "${G3_WC_CONV}"   "${G3_WC_RESP}"   "wildchat" "${G3_FRUST_AXIS}"
+run_cell "gemma4_math"     "${GEMMA4_CONFIG}" "${G4_LAYER}"  "${G4_MATH_CONV}" "${G4_MATH_RESP}" "math"     ""
+run_cell "gemma4_wildchat" "${GEMMA4_CONFIG}" "${G4_LAYER}"  "${G4_WC_CONV}"   "${G4_WC_RESP}"   "wildchat" ""
 
 echo
 echo "=== ALL DONE ==="

@@ -119,22 +119,24 @@ def capture_response_residual(
     model,
     tokenizer,
     payloads: list[dict],
-    layer_idx: int,
+    layer_idxs: list[int],          # list of layers to hook; one fwd captures all
     batch_size: int = 4,
     device: str = "cuda",
-) -> list[np.ndarray]:
-    """For each payload, do one forward pass on full_text with hook on
-    layer_idx, then slice the residual at positions [prompt_len .. full_len)
-    and mean-pool. Returns list of (hidden_dim,) numpy arrays."""
+) -> dict[int, list[np.ndarray]]:
+    """For each payload, do one forward pass on full_text with hooks on each
+    of `layer_idxs`, slice the residuals at positions [prompt_len .. full_len)
+    and mean-pool per layer. Returns {layer_idx: list_of_(hidden_dim,)_ndarrays}."""
     layers = _find_layers(model)
-    captured: dict[str, torch.Tensor] = {}
+    captured: dict[int, torch.Tensor] = {}
 
-    def hook_fn(_module, _inputs, output):
-        h = output if isinstance(output, torch.Tensor) else output[0]
-        captured["hidden"] = h.detach().cpu().float()
+    def make_hook(L: int):
+        def hook_fn(_module, _inputs, output):
+            h = output if isinstance(output, torch.Tensor) else output[0]
+            captured[L] = h.detach().cpu().float()
+        return hook_fn
 
-    handle = layers[layer_idx].register_forward_hook(hook_fn)
-    results: list[np.ndarray] = []
+    handles = [layers[L].register_forward_hook(make_hook(L)) for L in layer_idxs]
+    results: dict[int, list[np.ndarray]] = {L: [] for L in layer_idxs}
     try:
         for i in range(0, len(payloads), batch_size):
             batch = payloads[i:i + batch_size]
@@ -154,19 +156,20 @@ def capture_response_residual(
 
             with torch.inference_mode():
                 model(**enc)
-            h = captured["hidden"]                 # (B, L, hidden_dim)
             attn_mask = enc["attention_mask"].cpu()
 
-            for b in range(h.shape[0]):
-                seq_len = int(attn_mask[b].sum().item())
-                start = min(prompt_lens[b], seq_len - 1)
-                # Ensure at least one token in the response span
-                if start >= seq_len:
-                    start = seq_len - 1
-                vec = h[b, start:seq_len, :].mean(dim=0).numpy()
-                results.append(vec.astype(np.float32))
+            for L in layer_idxs:
+                h = captured[L]                       # (B, L, hidden_dim)
+                for b in range(h.shape[0]):
+                    seq_len = int(attn_mask[b].sum().item())
+                    start = min(prompt_lens[b], seq_len - 1)
+                    if start >= seq_len:
+                        start = seq_len - 1
+                    vec = h[b, start:seq_len, :].mean(dim=0).numpy()
+                    results[L].append(vec.astype(np.float32))
     finally:
-        handle.remove()
+        for h in handles:
+            h.remove()
     return results
 
 
@@ -194,6 +197,12 @@ def main():
                     help="Single-cell mode: topic label for output filename (e.g. 'math', 'wildchat')")
     ap.add_argument("--vectors-dir", default=None,
                     help="Defaults to steering/vectors/{config-stem}/")
+    ap.add_argument("--secondary-axis-path", default=None,
+                    help="Optional second axis to project onto (e.g. steering/frustration_vector.pt). "
+                         "Output rows get an extra 'frustration_proj' column.")
+    ap.add_argument("--secondary-layer", type=int, default=None,
+                    help="Layer the secondary axis was extracted at (e.g. 41 for the existing Gemma-3 "
+                         "frustration vector). Required if --secondary-axis-path is set.")
     ap.add_argument("--output-dir", default=str(THIS_DIR.parent.parent / "results" / "axis"))
     ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--device", default="cuda")
@@ -213,6 +222,20 @@ def main():
     axis = load_axis(axis_path)
     print(f"[load] axis {axis_path}  norm={np.linalg.norm(axis):.4f}  dim={axis.shape}")
 
+    # Optional secondary axis (e.g. existing emotion-frustration vector)
+    secondary_axis = None
+    secondary_layer = None
+    if args.secondary_axis_path:
+        if args.secondary_layer is None:
+            sys.exit("--secondary-layer is required when --secondary-axis-path is set")
+        sec_path = Path(args.secondary_axis_path)
+        if not sec_path.exists():
+            sys.exit(f"secondary axis not found: {sec_path}")
+        secondary_axis = load_axis(sec_path)
+        secondary_layer = int(args.secondary_layer)
+        print(f"[load] secondary axis {sec_path}  norm={np.linalg.norm(secondary_axis):.4f}  "
+              f"dim={secondary_axis.shape}  layer={secondary_layer}")
+
     print(f"[load] {hf_id}")
     tokenizer = AutoTokenizer.from_pretrained(hf_id)
     if tokenizer.pad_token is None:
@@ -221,7 +244,8 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(hf_id, torch_dtype=dtype, device_map="auto")
     model.eval()
     n_layers = len(_find_layers(model))
-    print(f"[load] num_hidden_layers={n_layers}, hooking layer {args.layer}")
+    layer_idxs = [args.layer] + ([secondary_layer] if secondary_layer is not None and secondary_layer != args.layer else [])
+    print(f"[load] num_hidden_layers={n_layers}, hooking layer(s) {layer_idxs}")
 
     output_dir = Path(args.output_dir); output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,6 +274,7 @@ def main():
             cells.append((cp_path, resp_index.get(match_key), topic))
 
     for cp_path, responses_path, topic in cells:
+        out_path = output_dir / f"projections_{model_key}_{topic}.jsonl"
         scores = load_frustration_scores(responses_path) if responses_path else {}
         n_written = 0
         with open(cp_path) as cf, open(out_path, "w") as out_f:
@@ -257,33 +282,35 @@ def main():
             print(f"\n[{topic}] {cp_path.name}: {len(convs)} conversations → {out_path.name}")
             for ci, conv in enumerate(convs):
                 pid = conv["prompt_idx"]; sid = conv["sample_idx"]
-                # Per-turn scores from conversation record itself (if present)
-                # or from the paired responses file.
                 conv_turn_scores = conv.get("turn_scores")
                 payloads = build_replay_payloads(conv["conversation"], tokenizer)
                 if not payloads:
                     continue
-                acts = capture_response_residual(
+                acts_by_layer = capture_response_residual(
                     model, tokenizer, payloads,
-                    layer_idx=args.layer,
+                    layer_idxs=layer_idxs,
                     batch_size=args.batch_size, device=args.device,
                 )
-                for payload, act in zip(payloads, acts):
-                    proj = float(act @ axis)  # dot product, scalar
+                primary_acts = acts_by_layer[args.layer]
+                secondary_acts = acts_by_layer[secondary_layer] if secondary_layer is not None else None
+                for i, payload in enumerate(payloads):
+                    proj = float(primary_acts[i] @ axis)
                     t = payload["turn"]
-                    # Score lookup priority: conv.turn_scores, then paired responses file
                     if conv_turn_scores and 1 <= t <= len(conv_turn_scores):
                         score = conv_turn_scores[t - 1]
                     else:
                         score = scores.get((pid, sid, t))
-                    out_f.write(json.dumps({
+                    row = {
                         "conversation_id":     f"p{pid:02d}s{sid:02d}",
                         "prompt_idx":          pid,
                         "sample_idx":          sid,
                         "turn":                t,
                         "assistant_axis_proj": proj,
                         "frustration_score":   score,
-                    }) + "\n")
+                    }
+                    if secondary_axis is not None and secondary_acts is not None:
+                        row["frustration_proj"] = float(secondary_acts[i] @ secondary_axis)
+                    out_f.write(json.dumps(row) + "\n")
                     n_written += 1
                 if (ci + 1) % 10 == 0:
                     print(f"  [{ci+1}/{len(convs)}] {n_written} turn-rows written", flush=True)
