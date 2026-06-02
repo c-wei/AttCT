@@ -228,7 +228,7 @@ def main():
     all_acts = collect_all_layer_activations(
         model, tokenizer, flat_texts,
         n_layers=n_layers, batch_size=args.batch_size, device=args.device,
-        start_token=50, desc="role-acts",
+        position="mean-after-50", last_k=0, desc="role-acts",
     )
     print(f"[acts] done in {time.time()-t0:.1f}s")
 
@@ -248,7 +248,7 @@ def main():
     neutral_acts = collect_all_layer_activations(
         model, tokenizer, neutral,
         n_layers=n_layers, batch_size=args.batch_size, device=args.device,
-        start_token=50, desc="neutral",
+        position="mean-after-50", last_k=0, desc="neutral",
     )
 
     # --- Step 3: per-sweep-layer, compute axis + run gauntlet ---
