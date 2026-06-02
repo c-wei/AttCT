@@ -48,13 +48,18 @@ export HF_HOME="${HF_HOME:-/workspace/hf_cache}"
 export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 mkdir -p "${HF_HOME}"
 
-# Pip-install dependencies once. Need transformers >=5 for Gemma-4 support;
-# the pod's pre-installed torchvision is pinned to torch 2.4.1 and breaks the
-# import chain after we upgrade torch — so we uninstall it.
+# Pip-install dependencies once.
+# - transformers >=5 for Gemma-4 support
+# - torch from cu124 wheel index (RunPod driver was 12.7; vanilla pip torch is
+#   too new for the driver and CUDA init fails silently → model lands on CPU)
+# - torchvision/torchaudio uninstalled (their 2.4.1 pin breaks import chain
+#   when torch is upgraded; we don't need them for text-only inference)
 if [[ ! -f /workspace/.axis_deps_installed ]]; then
     echo "=== Installing dependencies ==="
     python -m pip install --quiet --upgrade pip
     python -m pip uninstall -y -q torchvision torchaudio || true
+    python -m pip install --quiet --upgrade --force-reinstall \
+        torch --index-url https://download.pytorch.org/whl/cu124
     python -m pip install --quiet --upgrade --force-reinstall \
         'transformers>=5' 'accelerate>=0.34' 'sentencepiece>=0.2'
     python -m pip install --quiet \
