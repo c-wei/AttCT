@@ -323,11 +323,11 @@ def main():
                     for r in every_role},
                    vectors_dir / f"role_means_layer{L}.pt")
         print(f"[L={L}] all_pass={report['all_pass']}  "
-              f"g1={report['g1_self_consistency']} "
+              f"g1={report['g1_anchor_above_median']} "
               f"g2={report['g2_negatives_bottom3']} "
-              f"g3={report['g3_positives_below_anchor']} "
-              f"g4={report['g4_neutral_spread_low']}  "
-              f"snr={report['signal_to_noise']:.2f}")
+              f"g3={report['g3_positives_above_other']} "
+              f"g4={report['g4_effect_size_over_1']}  "
+              f"effect={report['effect_size']:.2f}")
 
     # --- Step 4: pick lowest passing layer ---
     passing = sorted([int(L) for L, rep in per_layer_report.items() if rep["all_pass"]])

@@ -118,12 +118,25 @@ print(int(round(frac * n4)))
 ")
 echo "Gemma-4 matched layer: ${G4_LAYER} (depth fraction ${CHOSEN_G3}/n3 = ${G4_LAYER}/n4)"
 
-$PY "${AXIS_DIR}/extract_axis.py" \
-    --config "${GEMMA4_CONFIG}" \
-    --layers "${G4_LAYER}" \
-    --output-dir "${RESULTS_DIR}" \
-    --batch-size 4 \
-    2>&1 | tee "${LOG_DIR}/a2_extract_gemma4.log"
+GEMMA4_GAUNTLET="${RESULTS_DIR}/sanity_gauntlet_gemma4_31b.json"
+SKIP_A2=$($PY -c "
+import json, os
+try:
+    d = json.load(open('${GEMMA4_GAUNTLET}'))
+    print('yes' if d.get('chosen_layer') is not None else 'no')
+except Exception:
+    print('no')
+")
+if [[ "${SKIP_A2}" == "yes" ]]; then
+    echo "=== Phase A2: SKIP (sanity_gauntlet_gemma4_31b.json already has chosen_layer) ==="
+else
+    $PY "${AXIS_DIR}/extract_axis.py" \
+        --config "${GEMMA4_CONFIG}" \
+        --layers "${G4_LAYER}" \
+        --output-dir "${RESULTS_DIR}" \
+        --batch-size 4 \
+        2>&1 | tee "${LOG_DIR}/a2_extract_gemma4.log"
+fi
 
 # Sanity check Gemma-4: if no passing layer, exit
 PASS_G4=$($PY -c "
