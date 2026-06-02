@@ -92,7 +92,8 @@ from transformers import AutoConfig
 cfg3 = json.load(open('${RESULTS_DIR}/sanity_gauntlet_gemma3_27b.json'))
 n3 = cfg3['num_hidden_layers']
 frac = ${CHOSEN_G3} / n3
-n4 = AutoConfig.from_pretrained('google/gemma-4-31B-it').num_hidden_layers
+c = AutoConfig.from_pretrained('google/gemma-4-31B-it')
+n4 = getattr(c, 'num_hidden_layers', None) or c.text_config.num_hidden_layers
 import math
 print(int(round(frac * n4)))
 ")
@@ -116,7 +117,8 @@ if [[ "${PASS_G4}" != "YES" ]]; then
     echo "Running fallback sweep at [n4*0.25, n4*0.4, n4*0.5, n4*0.66]..."
     SWEEP_G4=$($PY -c "
 from transformers import AutoConfig
-n = AutoConfig.from_pretrained('google/gemma-4-31B-it').num_hidden_layers
+c = AutoConfig.from_pretrained('google/gemma-4-31B-it')
+n = getattr(c, 'num_hidden_layers', None) or c.text_config.num_hidden_layers
 print(' '.join(str(int(round(f*n))) for f in [0.25, 0.4, 0.5, 0.66]))
 ")
     $PY "${AXIS_DIR}/extract_axis.py" \
