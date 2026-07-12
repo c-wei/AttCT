@@ -1,0 +1,57 @@
+# Generic instruction-only SFT control for Qwen3-4B-Instruct-2507.
+#
+# Purpose:
+#   Control for the effect of ordinary extra LoRA fine-tuning, separate from
+#   consistency-training objectives. Qwen counterpart of
+#   instruct_control_gemma3_4b_sft.yaml / instruct_control_llama31_8b_sft.yaml,
+#   following the same anchoring convention: data/objective from the
+#   instruct-only baseline, LoRA/training recipe from this model's
+#   cross-model BCT config.
+#
+# Anchors:
+#   - Data/objective style from bct_instruct_baseline_1868.yaml:
+#       source=instruct_only, SFTLoss, mask_prompt=true.
+#   - Qwen3-4B LoRA/training recipe from bct_lora_qwen3_4b.yaml:
+#       QKVO LoRA, lr=5e-6, AdamW, weight_decay=0.01, grad_clip=1.0,
+#       batch_size=2, grad_accumulation=8, max_length=2048.
+
+model:
+  name: "Qwen/Qwen3-4B-Instruct-2507"
+  output_attentions: false
+  output_hidden_states: false
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  bias: "none"
+
+training:
+  epochs: 1
+  # Match the Qwen3-4B BCT optimizer budget rather than dataset epochs.
+  # BCT full epoch = 18000 samples (4000 cot + 4000 non-cot + 10000 instruct)
+  # / (batch 2 x accum 8) = 1125 optimizer steps — same budget as the Gemma
+  # and Llama controls. Using max_steps avoids dependence on the size of the
+  # generic instruction dataset.
+  max_steps: 1125
+  learning_rate: 5.0e-6
+  weight_decay: 0.01
+  grad_clip: 1.0
+  grad_accumulation_steps: 8
+  log_every_n_steps: 50
+  save_dir: "checkpoints/instruct_control_qwen3_4b_sft"
+  gradient_checkpointing: true
+  optimizer: "adamw"
+
+loss:
+  name: "SFTLoss"
+  weight: 1.0
+
+data:
+  source: "instruct_only"
+  instruct_path: "datasets/sycophancy_bct/instruct_samples.jsonl"
+  batch_size: 2
+  max_length: 2048
+  # Standard instruction SFT behavior: train only on assistant/completion tokens.
+  mask_prompt: true
